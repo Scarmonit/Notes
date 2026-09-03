@@ -420,6 +420,7 @@ function emptyListMessage(): HTMLElement {
     } else {
       hint.innerHTML = 'Press <kbd>Enter</kbd> to start a note titled ';
       const title = document.createElement('b');
+      title.className = 'as-typed';
       title.textContent = `“${q}”`;
       hint.append(title);
     }
@@ -3255,8 +3256,9 @@ function drawPicker(): void {
     name.textContent = it.label;
     row.append(name);
     if (it.hint) {
+      // A snippet of the thing itself, so it keeps its own case.
       const hint = document.createElement('span');
-      hint.className = 'palette-group u';
+      hint.className = 'palette-hint';
       hint.textContent = it.hint;
       row.append(hint);
     }
@@ -3949,8 +3951,19 @@ function renderKeyGroups(): void {
       for (const other of action.also ?? []) {
         dt.append(' / ', chordKeys(other));
       }
+      // What the key does, in the command's own name; the hint, when there is
+      // one, goes under it in the quieter register.
       const dd = document.createElement('dd');
-      dd.textContent = action.hint ?? action.label;
+      const name = document.createElement('span');
+      name.className = 'key-name';
+      name.textContent = action.label;
+      dd.append(name);
+      if (action.hint) {
+        const hint = document.createElement('span');
+        hint.className = 'key-hint';
+        hint.textContent = action.hint;
+        dd.append(hint);
+      }
       list.append(dt, dd);
     }
     el.keyGroups.append(head, list);

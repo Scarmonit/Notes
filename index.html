@@ -25,14 +25,14 @@
             />
             <kbd class="search-hint">Ctrl K</kbd>
           </div>
-          <!-- The search operators, shown while one is being typed. -->
-          <p id="search-ops" class="search-ops u no-drag" hidden></p>
           <button id="new" class="icon-btn no-drag" title="New note (Ctrl+N)" aria-label="New note">
             <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
               <path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
             </svg>
           </button>
         </div>
+        <!-- The search operators, on a line under the box while one is being typed. -->
+        <p id="search-ops" class="search-ops u" hidden></p>
         <div id="tags" class="tags" role="group" aria-label="Tags" hidden></div>
         <div id="list" class="list" role="listbox" aria-label="Notes" tabindex="-1"></div>
         <div class="sidebar-foot">
@@ -250,29 +250,35 @@
           </label>
           <label class="layout-row layout-check">
             <input id="margin-show" type="checkbox" />
-            <span class="u">Show the margin (edit time and word count)</span>
+            <span class="u layout-name">Margin</span>
+            <span class="layout-text">The edit time and word count, left of the rule</span>
           </label>
           <label class="layout-row layout-check">
             <input id="outline-show" type="checkbox" />
-            <span class="u">Show the outline — the note's headings, beside it, to jump by</span>
+            <span class="u layout-name">Outline</span>
+            <span class="layout-text">The note’s headings beside it, to jump by</span>
           </label>
           <label class="layout-row layout-check">
             <input id="live-format" type="checkbox" />
-            <span class="u">Live formatting — headings, bold and code take shape as you write</span>
+            <span class="u layout-name">Live formatting</span>
+            <span class="layout-text">Headings, bold and code take shape as you write</span>
           </label>
           <label class="layout-row layout-check">
             <input id="focus-mode" type="checkbox" />
-            <span class="u">Focus mode — dim everything but the paragraph you are in</span>
+            <span class="u layout-name">Focus mode</span>
+            <span class="layout-text">Dim everything but the paragraph you are in</span>
           </label>
           <label class="layout-row layout-check">
             <input id="typewriter" type="checkbox" />
-            <span class="u">Typewriter scrolling — keep the line you are writing in the middle</span>
+            <span class="u layout-name">Typewriter</span>
+            <span class="layout-text">Keep the line you are writing in the middle</span>
           </label>
 
           <h3 class="layout-head">Window</h3>
           <label class="layout-row layout-check">
             <input id="close-tray" type="checkbox" />
-            <span class="u">Closing the window keeps Notes running in the tray</span>
+            <span class="u layout-name">Close to tray</span>
+            <span class="layout-text">Closing the window keeps Notes running in the tray</span>
           </label>
           <div class="layout-row">
             <span class="u">Summon Notes</span>
@@ -288,7 +294,8 @@
           <p id="capture-hotkey-note" class="layout-note u"></p>
           <label class="layout-row layout-check">
             <input id="reminders-on" type="checkbox" />
-            <span class="u">Remind me of scheduled tasks — a Windows notification when a task's @date comes due, while Notes runs</span>
+            <span class="u layout-name">Reminders</span>
+            <span class="layout-text">A Windows notification when a task’s @date comes due, while Notes runs</span>
           </label>
 
           <h3 class="layout-head">Files</h3>
