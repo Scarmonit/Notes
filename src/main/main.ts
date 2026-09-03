@@ -6,6 +6,7 @@ import { IPC } from '../shared/channels';
 import type { ExportRequest, NotesFile } from '../shared/types';
 import type { Settings } from '../shared/settings';
 import { installAssetProtocol, pickAttachments, registerAssetScheme, saveAttachment, sweepOrphans } from './attachments';
+import { installContextMenu } from './context-menu';
 import { exportNote } from './export';
 import { pickImports } from './import';
 import { loadNotes, saveNotes } from './notes-store';
@@ -59,6 +60,8 @@ function createWindow(): BrowserWindow {
   });
 
   win.once('ready-to-show', () => win.show());
+
+  installContextMenu(win);
 
   win.webContents.on('before-input-event', (_event, input) => {
     if (input.type === 'keyDown' && input.key === 'F12') win.webContents.toggleDevTools();

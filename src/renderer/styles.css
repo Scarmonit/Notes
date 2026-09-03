@@ -20,6 +20,9 @@
   --sidebar-w: 284px;
   --head-h: 40px;
   --margin-w: 176px;
+  /* The writing column, in px. Measured in px on purpose: a `ch` here would be
+     the 13px utility font, not the 17px serif the words are actually set in. */
+  --text-w: 960px;
   --serif: 'Sitka Text', 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
   --serif-display: 'Sitka Heading', 'Sitka Text', 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
   --utility: Bahnschrift, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
@@ -405,7 +408,7 @@ kbd {
   display: flex;
   height: 100%;
   width: 100%;
-  max-width: calc(76ch + var(--margin-w));
+  max-width: calc(var(--text-w) + var(--margin-w));
   margin: 0 auto;
 }
 
@@ -633,7 +636,7 @@ kbd {
   border-left: 0;
 }
 .app.margin-hidden .page {
-  max-width: 76ch;
+  max-width: var(--text-w);
 }
 
 /* Narrow windows: the margin folds above the text and the rule goes away. */
@@ -799,7 +802,7 @@ kbd {
   accent-color: var(--blue);
 }
 .layout-row output {
-  flex: 0 0 44px;
+  flex: 0 0 56px;
   text-align: right;
   color: var(--paper);
   font-variant-numeric: tabular-nums;

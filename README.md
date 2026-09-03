@@ -14,6 +14,8 @@ A minimal, keyboard-first markdown notes app for Windows. One window, a sidebar 
 - Import `.md` and `.txt` files by dropping them on the window or with `Ctrl+Shift+O`
 - Export any note as Markdown (with its images alongside), plain text, or a PNG rendered like the preview
 - Stays in the tray and comes back on a shortcut of your choosing (Layout, `Ctrl+,`)
+- Adjustable line width, so the words fill as much of the window as you want (Layout, `Ctrl+,`)
+- Right-click a word the spellchecker underlines to correct it, or add it to the dictionary for good
 - Autosave to `%APPDATA%\Notes\notes.json` (atomic writes, flushed on close)
 
 ## Shortcuts

@@ -63,6 +63,8 @@ const el = {
   helpBtn: $<HTMLButtonElement>('help'),
   layoutBtn: $<HTMLButtonElement>('layout'),
   layoutSheet: $('layout-sheet'),
+  textW: $<HTMLInputElement>('text-w'),
+  textWOut: $<HTMLOutputElement>('text-w-out'),
   marginW: $<HTMLInputElement>('margin-w'),
   marginWOut: $<HTMLOutputElement>('margin-w-out'),
   marginShow: $<HTMLInputElement>('margin-show'),
@@ -105,6 +107,8 @@ interface UiState {
   selectedId: string | null;
   preview: boolean;
   sidebarHidden: boolean;
+  /** Width of the writing column in px, before the window's own limit. */
+  textW: number;
   /** Width of the marginalia column in px. */
   marginW: number;
   marginHidden: boolean;
@@ -118,6 +122,13 @@ const MARGIN_DEFAULT = 176;
 const MARGIN_MIN = 90;
 const MARGIN_MAX = 280;
 
+const TEXT_DEFAULT = 960;
+const TEXT_MIN = 520;
+const TEXT_MAX = 1800;
+
+const clamp = (value: unknown, min: number, max: number, fallback: number): number =>
+  Math.min(max, Math.max(min, Number(value) || fallback));
+
 const UI_KEY = 'notes.ui';
 
 function loadUi(): UiState {
@@ -125,6 +136,7 @@ function loadUi(): UiState {
     selectedId: null,
     preview: false,
     sidebarHidden: false,
+    textW: TEXT_DEFAULT,
     marginW: MARGIN_DEFAULT,
     marginHidden: false,
     focusMode: false,
@@ -133,7 +145,8 @@ function loadUi(): UiState {
   try {
     const raw = localStorage.getItem(UI_KEY);
     const state = raw ? { ...fallback, ...(JSON.parse(raw) as Partial<UiState>) } : fallback;
-    state.marginW = Math.min(MARGIN_MAX, Math.max(MARGIN_MIN, Number(state.marginW) || MARGIN_DEFAULT));
+    state.marginW = clamp(state.marginW, MARGIN_MIN, MARGIN_MAX, MARGIN_DEFAULT);
+    state.textW = clamp(state.textW, TEXT_MIN, TEXT_MAX, TEXT_DEFAULT);
     return state;
   } catch {
     return fallback;
@@ -423,7 +436,10 @@ function applySidebar(): void {
 }
 
 function applyLayout(): void {
+  el.app.style.setProperty('--text-w', `${ui.textW}px`);
   el.app.style.setProperty('--margin-w', `${ui.marginW}px`);
+  el.textW.value = String(ui.textW);
+  el.textWOut.value = `${ui.textW} px`;
   el.app.classList.toggle('margin-hidden', ui.marginHidden);
   el.marginW.value = String(ui.marginW);
   el.marginWOut.value = `${ui.marginW} px`;
@@ -1396,10 +1412,15 @@ function focusTitle(): void {
 function toggleLayout(force?: boolean): void {
   const open = force ?? el.layoutSheet.hidden;
   el.layoutSheet.hidden = !open;
-  if (open) el.marginW.focus();
+  if (open) el.textW.focus();
   else focusEditor();
 }
 
+el.textW.addEventListener('input', () => {
+  ui.textW = Number(el.textW.value);
+  saveUi();
+  applyLayout();
+});
 el.marginW.addEventListener('input', () => {
   ui.marginW = Number(el.marginW.value);
   saveUi();
@@ -1717,10 +1738,10 @@ const ACTIONS: Action[] = [
   {
     id: 'layout',
     label: 'Layout and window settings',
-    hint: 'Margin, focus, the tray and the summon shortcut',
+    hint: 'Line width, margin, focus, the tray and the summon shortcut',
     group: 'Window',
     chord: 'ctrl+,',
-    terms: 'preferences options tray hotkey margin',
+    terms: 'preferences options tray hotkey margin width',
     run: () => toggleLayout(),
   },
   {
