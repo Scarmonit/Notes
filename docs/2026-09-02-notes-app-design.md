@@ -38,4 +38,4 @@ Vitest with jsdom for the pure modules. Manual verification: `npm run make`, lau
 
 ## Shipping
 
-Git repo `Scarmonit/Notes`, release v0.1.0 with `Notes Setup.exe` and the ZIP, `Notes.exe` copied to the Desktop.
+Git repo `Scarmonit/Notes`, release v0.1.0 with `Notes Setup.exe` and the ZIP. The local install goes through the Squirrel installer (which creates the Desktop shortcut); the bare `Notes.exe` from `out/` is not standalone, it needs its sibling resources folder.
