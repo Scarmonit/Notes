@@ -430,43 +430,45 @@ async function pickImages(): Promise<void> {
   showStatus(urls.length === 1 ? 'Image attached' : `${urls.length} images attached`, 2500);
 }
 
-el.editor.addEventListener('paste', (e) => {
-  const files = Array.from(e.clipboardData?.files ?? []);
-  if (files.some(isImage)) {
-    e.preventDefault();
-    void attachFiles(files);
-  }
+// Paste an image from anywhere in the window, whatever holds focus. A text
+// paste has no files, so it falls through to the browser untouched.
+window.addEventListener('paste', (e) => {
+  const files = Array.from(e.clipboardData?.files ?? []).filter(isImage);
+  if (files.length === 0) return;
+  e.preventDefault();
+  void attachFiles(files);
 });
 
+// Drop an image file onto any part of the window to attach it. The whole
+// document is the target, and every dragover is cancelled so a stray drop can
+// never navigate the window away to the file.
 let dragDepth = 0;
 const hasFiles = (e: DragEvent): boolean => Array.from(e.dataTransfer?.types ?? []).includes('Files');
 
-el.pane.addEventListener('dragenter', (e) => {
+document.addEventListener('dragenter', (e) => {
   if (!hasFiles(e)) return;
   e.preventDefault();
   dragDepth++;
   el.pane.classList.add('dropping');
 });
-el.pane.addEventListener('dragover', (e) => {
-  if (!hasFiles(e)) return;
+document.addEventListener('dragover', (e) => {
   e.preventDefault();
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  if (hasFiles(e) && e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
 });
-el.pane.addEventListener('dragleave', () => {
+document.addEventListener('dragleave', (e) => {
+  if (!hasFiles(e)) return;
   if (--dragDepth <= 0) {
     dragDepth = 0;
     el.pane.classList.remove('dropping');
   }
 });
-el.pane.addEventListener('drop', (e) => {
+document.addEventListener('drop', (e) => {
   e.preventDefault();
   dragDepth = 0;
   el.pane.classList.remove('dropping');
-  void attachFiles(Array.from(e.dataTransfer?.files ?? []));
+  const files = Array.from(e.dataTransfer?.files ?? []);
+  if (files.length > 0) void attachFiles(files);
 });
-// Anywhere else, a dropped file must not navigate the window.
-document.addEventListener('dragover', (e) => e.preventDefault());
-document.addEventListener('drop', (e) => e.preventDefault());
 
 // --- export -----------------------------------------------------------------
 

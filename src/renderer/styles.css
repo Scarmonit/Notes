@@ -682,9 +682,8 @@ kbd {
 
 /* --- drop target -------------------------------------------------------- */
 
-.pane.dropping .text {
-  box-shadow: inset 0 0 0 1px var(--blue);
-  border-left-color: var(--blue);
+.pane.dropping {
+  box-shadow: inset 0 0 0 2px var(--blue);
 }
 
 /* --- PNG export page (rendered offscreen by the main process) ----------- */
