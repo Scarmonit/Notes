@@ -1,3 +1,4 @@
+import { assetNameFromUrl } from '../shared/assets';
 import type { ExportKind, ExportRequest, Note, NotesFile } from '../shared/types';
 import { renderMarkdown } from './markdown';
 import {
@@ -12,6 +13,7 @@ import {
   wordCount,
 } from './notes';
 import { markdownToText } from './plaintext';
+import { imageChipHtml, markEmpty, renderEditor as renderEditorDom, serializeEditor } from './richeditor';
 import stylesText from './styles.css?inline';
 import { absoluteTime, relativeTime } from './time';
 
@@ -41,7 +43,7 @@ const el = {
   exportMenu: $('export-menu'),
   deleteBtn: $<HTMLButtonElement>('delete'),
   editorWrap: $('editor-wrap'),
-  editor: $<HTMLTextAreaElement>('editor'),
+  editor: $<HTMLDivElement>('editor'),
   preview: $('preview'),
   empty: $('empty'),
   helpSheet: $('help-sheet'),
@@ -228,9 +230,8 @@ function renderEditor(): void {
   }
 
   if (editorNoteId !== n.id) {
-    el.editor.value = n.body;
+    renderEditorDom(el.editor, n.body);
     el.editor.scrollTop = 0;
-    el.editor.setSelectionRange(n.body.length, n.body.length);
     editorNoteId = n.id;
     // Restart the short fade so switching notes reads as turning a page.
     el.text.classList.remove('swap');
@@ -264,8 +265,14 @@ function select(id: string | null): void {
 
 function focusEditor(): void {
   if (!selected()) return;
-  if (ui.preview) el.preview.focus();
-  else el.editor.focus();
+  if (ui.preview) {
+    el.preview.focus();
+    return;
+  }
+  // Entering the editor from elsewhere drops the caret at the end, ready to write.
+  const alreadyHere = document.activeElement === el.editor;
+  el.editor.focus();
+  if (!alreadyHere) caretToEnd();
 }
 
 function focusList(): void {
@@ -382,15 +389,41 @@ function ensureEditable(): void {
   el.editor.focus();
 }
 
-/** Inserts a snippet at the caret on its own line and treats it as typed input. */
-function insertAtCursor(snippet: string): void {
-  const { selectionStart: start, selectionEnd: end, value } = el.editor;
-  const before = value.slice(0, start);
-  const after = value.slice(end);
-  const lead = before.length > 0 && !before.endsWith('\n') ? '\n' : '';
-  const tail = after.length > 0 && !after.startsWith('\n') ? '\n' : '';
-  el.editor.setRangeText(`${lead}${snippet}${tail}`, start, end, 'end');
-  el.editor.dispatchEvent(new Event('input'));
+/** Puts the caret at the very end of the editor's content. */
+function caretToEnd(): void {
+  const range = document.createRange();
+  range.selectNodeContents(el.editor);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+}
+
+/** True when the caret or selection is currently inside the editor. */
+function selectionInEditor(): boolean {
+  const sel = window.getSelection();
+  return sel !== null && sel.rangeCount > 0 && el.editor.contains(sel.getRangeAt(0).commonAncestorContainer);
+}
+
+/** Inserts an attachment as a picture chip at the caret, as if it were typed. */
+function insertImageChip(name: string, alt: string): void {
+  el.editor.focus();
+  if (!selectionInEditor()) caretToEnd();
+  // execCommand keeps the caret and undo history working inside contenteditable.
+  document.execCommand('insertHTML', false, imageChipHtml(name, alt));
+  // A programmatic insert may not raise 'input' on every build, so store now.
+  commitEditor();
+}
+
+/** Reads the editor back into the model and refreshes anything derived from it. */
+function commitEditor(): void {
+  const n = selected();
+  if (!n || editorNoteId !== n.id) return;
+  notes = updateBody(notes, n.id, serializeEditor(el.editor));
+  markEmpty(el.editor);
+  scheduleSave();
+  renderList();
+  renderMeta();
 }
 
 function altFor(fileName: string): string {
@@ -411,7 +444,8 @@ async function attachFiles(files: File[]): Promise<void> {
   for (const file of images) {
     try {
       const url = await window.notesApi.attach(new Uint8Array(await file.arrayBuffer()), file.name || 'image.png');
-      insertAtCursor(`![${altFor(file.name)}](${url})`);
+      const name = assetNameFromUrl(url);
+      if (name) insertImageChip(name, altFor(file.name));
       attached++;
     } catch (err) {
       console.error('[notes] attach failed', err);
@@ -426,7 +460,10 @@ async function pickImages(): Promise<void> {
   const urls = await window.notesApi.pickAttachments();
   if (urls.length === 0) return;
   ensureEditable();
-  for (const url of urls) insertAtCursor(`![image](${url})`);
+  for (const url of urls) {
+    const name = assetNameFromUrl(url);
+    if (name) insertImageChip(name, 'image');
+  }
   showStatus(urls.length === 1 ? 'Image attached' : `${urls.length} images attached`, 2500);
 }
 
@@ -560,30 +597,36 @@ document.addEventListener('pointerdown', (e) => {
 
 // --- editor input -----------------------------------------------------------
 
-el.editor.addEventListener('input', () => {
-  const n = selected();
-  if (!n || editorNoteId !== n.id) return;
-  notes = updateBody(notes, n.id, el.editor.value);
-  scheduleSave();
-  renderList();
-  renderMeta();
+el.editor.addEventListener('input', commitEditor);
+
+// Enter inserts a plain line break rather than a new paragraph block, so the
+// content stays a flat run of text, breaks and image chips.
+el.editor.addEventListener('beforeinput', (e) => {
+  if (e.inputType === 'insertParagraph') {
+    e.preventDefault();
+    document.execCommand('insertLineBreak');
+  }
 });
 
 el.editor.addEventListener('keydown', (e) => {
-  // Tab indents instead of leaving the editor; Escape is the way out.
+  // Tab indents by two spaces instead of leaving the editor; Escape is the way out.
   if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey) {
     e.preventDefault();
     if (e.shiftKey) {
-      const start = el.editor.selectionStart;
-      const lineStart = el.editor.value.lastIndexOf('\n', start - 1) + 1;
-      if (el.editor.value.startsWith('  ', lineStart)) {
-        el.editor.setRangeText('', lineStart, lineStart + 2, 'end');
-        el.editor.setSelectionRange(Math.max(lineStart, start - 2), Math.max(lineStart, start - 2));
-        el.editor.dispatchEvent(new Event('input'));
+      const sel = window.getSelection();
+      const node = sel?.anchorNode;
+      // Outdent: drop up to two spaces immediately before the caret.
+      if (sel?.isCollapsed && node?.nodeType === Node.TEXT_NODE) {
+        const offset = sel.anchorOffset;
+        const text = node.textContent ?? '';
+        const remove = text.slice(Math.max(0, offset - 2), offset).length - text.slice(Math.max(0, offset - 2), offset).replace(/ {1,2}$/, '').length;
+        if (remove > 0) {
+          (node as Text).deleteData(offset - remove, remove);
+          commitEditor();
+        }
       }
     } else {
-      el.editor.setRangeText('  ', el.editor.selectionStart, el.editor.selectionEnd, 'end');
-      el.editor.dispatchEvent(new Event('input'));
+      document.execCommand('insertText', false, '  ');
     }
   }
 });

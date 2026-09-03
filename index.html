@@ -71,7 +71,16 @@
               <span id="words" class="u"></span>
             </aside>
             <div id="text" class="text">
-              <textarea id="editor" class="editor" spellcheck="true" placeholder="Start writing…" aria-label="Note body"></textarea>
+              <div
+                id="editor"
+                class="editor"
+                contenteditable="true"
+                role="textbox"
+                aria-multiline="true"
+                spellcheck="true"
+                data-placeholder="Start writing…"
+                aria-label="Note body"
+              ></div>
               <article id="preview" class="preview markdown" tabindex="0" hidden></article>
             </div>
           </div>

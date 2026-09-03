@@ -6,7 +6,7 @@ A minimal, keyboard-first markdown notes app for Windows. One window, a sidebar 
 - Instant search across every note as you type
 - Markdown editor with a rendered preview toggle (GitHub-flavoured, sanitised)
 - Create and delete notes without leaving the keyboard, no dialogs
-- Attach images by pasting, dropping a file on the editor, or `Ctrl+Shift+I`; they live in `%APPDATA%\Notes\attachments`
+- Attach images by pasting, dropping a file anywhere on the window, or `Ctrl+Shift+I`; they render as pictures inline in the editor and live in `%APPDATA%\Notes\attachments`
 - Export any note as Markdown (with its images alongside), plain text, or a PNG rendered like the preview
 - Autosave to `%APPDATA%\Notes\notes.json` (atomic writes, flushed on close)
 - Focus mode: hide the sidebar and write in a reading-width column

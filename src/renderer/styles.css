@@ -402,15 +402,41 @@ kbd {
 }
 
 .editor {
-  resize: none;
   border: 0;
   outline: none;
   background: transparent;
   caret-color: var(--margin);
+  /* Keep the writer's own spaces and newlines; markdown depends on them. */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
-.editor::placeholder {
+.editor.is-empty::before {
+  content: attr(data-placeholder);
   color: var(--paper-faint);
   font-style: italic;
+  pointer-events: none;
+}
+
+/* Attached images render as pictures inline, each on its own line. */
+.inline-img {
+  display: block;
+  max-width: min(100%, 520px);
+  max-height: 60vh;
+  width: auto;
+  margin: 6px 0;
+  border-radius: 6px;
+  /* A hairline so a pale image still has an edge against the ink. */
+  box-shadow: 0 0 0 1px var(--line);
+  user-select: none;
+}
+/* The browser outlines a selected non-editable node; make it read as chosen. */
+.editor .inline-img::selection {
+  background: transparent;
+}
+.inline-img.cm-selected,
+.editor:focus-within .inline-img:focus {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
 }
 
 .preview {
