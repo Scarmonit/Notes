@@ -75,17 +75,30 @@ async function append(note: Note, at: number): Promise<void> {
   lastKnown.set(note.id, snap);
 }
 
-/** Keeps the note as it stands right now, whatever the usual gap would say. */
-export async function keepNow(note: Note): Promise<void> {
-  const last = await lastOf(note.id);
-  if (last && last.body === note.body && (last.title ?? '') === (note.title?.trim() ?? '')) return;
-  await append(note, Date.now());
-}
-
 // One pass over the notes at a time: saves come every few hundred
-// milliseconds while typing, and they must not pile up on each other.
+// milliseconds while typing, and they must not pile up on each other — nor
+// on a version kept by hand, which writes the same file through the same
+// temporary name.
 let recording: Promise<void> = Promise.resolve();
 let swept = false;
+
+function serial<T>(run: () => Promise<T>): Promise<T> {
+  const result = recording.then(run, run);
+  recording = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+/** Keeps the note as it stands right now, whatever the usual gap would say. */
+export function keepNow(note: Note): Promise<void> {
+  return serial(async () => {
+    const last = await lastOf(note.id);
+    if (last && last.body === note.body && (last.title ?? '') === (note.title?.trim() ?? '')) return;
+    await append(note, Date.now());
+  });
+}
 
 /**
  * Records anything worth recording from a just-saved file. Called after the
@@ -97,7 +110,7 @@ let swept = false;
  * stay — the ones waiting in the trash, which may yet come back.
  */
 export function record(notes: Note[], alsoKeep: ReadonlySet<string>): Promise<void> {
-  const run = async () => {
+  return serial(async () => {
     const now = Date.now();
     for (const note of notes) {
       if (shouldSnapshot(await lastOf(note.id), note, now)) await append(note, now);
@@ -107,9 +120,7 @@ export function record(notes: Note[], alsoKeep: ReadonlySet<string>): Promise<vo
       swept = true;
       await sweepDeleted(notes, alsoKeep);
     }
-  };
-  recording = recording.then(run, run).catch((err) => console.error('[notes] history failed', err));
-  return recording;
+  }).catch((err) => console.error('[notes] history failed', err));
 }
 
 /** Throws away the history of notes that are neither live nor in the trash. */

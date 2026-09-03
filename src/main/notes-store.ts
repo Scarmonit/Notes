@@ -253,14 +253,25 @@ export function trashedIds(): ReadonlySet<string> {
   return trashed;
 }
 
+/**
+ * Replaces the set of trashed ids in one step. The history sweep reads the
+ * set whenever its turn comes; emptying it and refilling it across a read of
+ * the folder would leave a moment in which every trashed note looked gone,
+ * and its history with it.
+ */
+function setTrashed(ids: Iterable<string>): void {
+  const next = [...ids];
+  trashed.clear();
+  for (const id of next) trashed.add(id);
+}
+
 /** Everything in the trash, most recently deleted first. */
 export function listTrash(): Promise<TrashedNote[]> {
   return queue(async () => {
     const files = await readNoteFiles(trashDir());
-    trashed.clear();
+    setTrashed(files.map((f) => f.note.id));
     const out: TrashedNote[] = [];
     for (const f of files) {
-      trashed.add(f.note.id);
       out.push({
         id: f.note.id,
         title: titleOf(f.note),
@@ -323,16 +334,17 @@ export function expireTrash(now = Date.now()): Promise<string[]> {
   return queue(async () => {
     const files = await readNoteFiles(trashDir());
     const gone: string[] = [];
-    trashed.clear();
+    const kept: string[] = [];
     for (const f of files) {
       const deletedAt = f.deletedAt ?? f.note.updatedAt;
       if (now - deletedAt > TRASH_AGE_MS) {
         await fs.unlink(path.join(trashDir(), f.name)).catch(() => undefined);
         gone.push(f.note.id);
       } else {
-        trashed.add(f.note.id);
+        kept.push(f.note.id);
       }
     }
+    setTrashed(kept);
     return gone;
   });
 }

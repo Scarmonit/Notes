@@ -60,6 +60,7 @@ import {
   textBefore,
   textOfRange,
   type LineSpan,
+  type Segment,
 } from './richeditor';
 import stylesText from './styles.css?inline';
 import { absoluteTime, relativeTime } from './time';
@@ -392,6 +393,9 @@ function emptyListMessage(): HTMLElement {
 function renderList(): void {
   renderTags();
   const vis = visibleNotes();
+  // Rebuilding the rows removes the one that has focus, and focus would fall
+  // to the body: the list must be redrawn, and then be the list again.
+  const hadFocus = el.list.contains(document.activeElement);
   el.list.replaceChildren();
   if (vis.length === 0) el.list.append(emptyListMessage());
 
@@ -436,6 +440,7 @@ function renderList(): void {
     filtering() && notes.length > 0
       ? `${vis.length} of ${notes.length}`
       : `${notes.length} ${notes.length === 1 ? 'note' : 'notes'}`;
+  if (hadFocus) focusList();
 }
 
 function renderMeta(): void {
@@ -720,10 +725,36 @@ function caretRect(): DOMRect | null {
   if (!el.editor.contains(range.startContainer)) return null;
   const rect = range.getBoundingClientRect();
   if (rect.height > 0) return rect;
+  // A collapsed caret at a line boundary — before a newline, beside a <br> —
+  // measures zero; the character or node it sits against does not.
+  const { startContainer: holder, startOffset: offset } = range;
+  const probe = document.createRange();
+  if (holder.nodeType === Node.TEXT_NODE) {
+    const length = (holder.textContent ?? '').length;
+    probe.setStart(holder, Math.max(0, offset - 1));
+    probe.setEnd(holder, Math.min(length, Math.max(offset, 1)));
+  } else {
+    const beside = holder.childNodes[offset - 1] ?? holder.childNodes[offset];
+    if (beside) probe.selectNode(beside);
+    else probe.selectNodeContents(holder);
+  }
+  const near = probe.getBoundingClientRect();
+  if (near.height > 0) return near;
   // A collapsed caret on an empty line measures zero; the line it sits on does not.
-  const line = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement;
+  const line = holder instanceof Element ? holder : holder.parentElement;
   const fallback = line?.getBoundingClientRect();
   return fallback && fallback.height > 0 ? fallback : null;
+}
+
+/** Scrolls the editor so a rect — the caret's, a line's — is on screen, when a re-render has left it off. */
+function scrollEditorTo(rect: DOMRect | null): void {
+  if (!rect) return;
+  const box = el.editor.getBoundingClientRect();
+  if (rect.top < box.top || rect.bottom > box.bottom) el.editor.scrollTop += rect.top - (box.top + box.height / 2);
+}
+
+function keepCaretInView(): void {
+  scrollEditorTo(caretRect());
 }
 
 /** Where in the editor the line being written should sit. */
@@ -989,6 +1020,8 @@ function commitEditor(): void {
   const n = selected();
   if (!n || editorNoteId !== n.id) return;
   notes = updateBody(notes, n.id, serializeEditor(el.editor));
+  // Whatever was taken before an edit is now behind the model, not ahead of it.
+  pendingEdit = null;
   markEmpty(el.editor);
   scheduleSave();
   renderList();
@@ -1232,6 +1265,7 @@ function endResize(): void {
   resizing = null;
   el.text.classList.remove('resizing');
   el.imgSize.hidden = true;
+  rememberNow('resize');
   commitEditor();
   selectChip(chip);
 }
@@ -1269,7 +1303,9 @@ function insertDivider(): void {
   if (!sel || sel.rangeCount === 0) return;
   // Built straight into the DOM: Chromium's insert commands merge whatever
   // follows a non-editable block onto its line, so the newline after the rule
-  // would be lost and the next words would end up glued to the dashes.
+  // would be lost and the next words would end up glued to the dashes. No
+  // input event comes of that, so the step is remembered here by hand.
+  rememberNow('command');
   const range = sel.getRangeAt(0);
   range.deleteContents();
   const before = textBefore(el.editor, { node: range.startContainer, offset: range.startOffset });
@@ -1302,13 +1338,18 @@ function convertDashesOnEnter(): boolean {
   if (!/^[ \t]{0,3}(?:-{3,}|\*{3,}|_{3,})[ \t]*$/.test(line)) return false;
   const text = pos.node.textContent ?? '';
   if (pos.offset < line.length || text.slice(pos.offset - line.length, pos.offset) !== line) return false;
+  // The dashes go straight out of the DOM rather than through a delete
+  // command, whose input event would log a step of its own: the whole swap
+  // is one edit, and insertDivider remembers it from the model, which still
+  // holds the dashes.
   const range = document.createRange();
   range.setStart(pos.node, pos.offset - line.length);
   range.setEnd(pos.node, pos.offset);
+  range.deleteContents();
+  range.collapse(true);
   const sel = window.getSelection();
   sel?.removeAllRanges();
   sel?.addRange(range);
-  document.execCommand('delete');
   insertDivider();
   return true;
 }
@@ -1394,6 +1435,16 @@ function markEdit(): void {
   if (n && editorNoteId === n.id) pendingEdit = { text: n.body, caret: caretOffsetOrStart() };
 }
 
+/**
+ * Remembers the state before an edit the app makes straight into the DOM,
+ * which raises no input event at all: the model still holds the text as it
+ * was, so it is taken from there, before the change is committed.
+ */
+function rememberNow(kind: string): void {
+  const n = selected();
+  if (n && editorNoteId === n.id) rememberEdit({ text: n.body, caret: caretOffsetOrStart() }, kind);
+}
+
 /** Keeps the state before an edit of `kind`, folding a run of typing into one step. */
 function rememberEdit(before: EditState, kind: string): void {
   const n = selected();
@@ -1422,11 +1473,7 @@ function restoreEdit(state: EditState): void {
     range.setStart(pos.node, pos.offset);
     range.collapse(true);
     sel?.addRange(range);
-    const rect = caretRect();
-    if (rect) {
-      const box = el.editor.getBoundingClientRect();
-      if (rect.top < box.top || rect.bottom > box.bottom) el.editor.scrollTop += rect.top - (box.top + box.height / 2);
-    }
+    keepCaretInView();
   }
   syncWriting();
 }
@@ -1534,6 +1581,11 @@ function caretToLineEnd(line: number): void {
   const sel = window.getSelection();
   sel?.removeAllRanges();
   sel?.addRange(range);
+  // The re-render put the editor back at the top; the line is wherever it is.
+  // The line's own box is the surer measure: a caret at its end sits on a
+  // boundary, which can measure as nothing at all.
+  const lineRect = rangeOver(span, span).getBoundingClientRect();
+  scrollEditorTo(lineRect.height > 0 ? lineRect : caretRect());
   syncWriting();
 }
 
@@ -1541,6 +1593,7 @@ function caretToLineEnd(line: number): void {
 el.editor.addEventListener('dblclick', (e) => {
   if (!isChip(e.target)) return;
   e.preventDefault();
+  rememberNow('resize');
   setChipWidth(e.target, null);
   commitEditor();
   selectChip(e.target);
@@ -1560,6 +1613,7 @@ window.addEventListener('resize', () => {
 function applyMove(moved: { body: string; index: number }): void {
   const n = selected();
   if (!n || moved.body === n.body) return;
+  rememberNow('move');
   drawEditor(moved.body);
   commitEditor();
   const chip = chipsOf(el.editor)[moved.index];
@@ -1835,6 +1889,7 @@ el.editor.addEventListener('keydown', (e) => {
         const text = node.textContent ?? '';
         const remove = text.slice(Math.max(0, offset - 2), offset).length - text.slice(Math.max(0, offset - 2), offset).replace(/ {1,2}$/, '').length;
         if (remove > 0) {
+          rememberNow('outdent');
           (node as Text).deleteData(offset - remove, remove);
           commitEditor();
         }
@@ -2485,16 +2540,25 @@ for (const [btn, key] of [
 /** The HTML each line was last drawn from, by line, so unchanged lines are not touched. */
 let drawn: string[] = [];
 
-/** Where the chips sit on each line of a body, for the decorator to leave alone. */
-function chipSpansByLine(text: string, lines: string[]): Protected[][] {
+/**
+ * Where the chips sit on each line of a body, for the decorator to leave
+ * alone. Only tokens the editor actually holds as chips count: a rule typed
+ * as three dashes, or a link or image token pasted as text, is still text in
+ * the DOM, and a placeholder for it would have no chip to swap back in — the
+ * redraw would drop the characters. Those stay text until something makes
+ * them chips, the way --- becomes a rule on Enter.
+ */
+function chipSpansByLine(text: string, lines: string[], segments: Segment[]): Protected[][] {
   const starts: number[] = [];
   let at = 0;
   for (const line of lines) {
     starts.push(at);
     at += line.length + 1;
   }
+  const chips = new Set(segments.filter((s) => s.kind === 'block').map((s) => `${s.at}:${s.length}`));
   const out: Protected[][] = lines.map(() => []);
   for (const tok of bodyTokens(text)) {
+    if (!chips.has(`${tok.start}:${tok.end - tok.start}`)) continue;
     let line = 0;
     while (line + 1 < starts.length && starts[line + 1] <= tok.start) line++;
     out[line].push({ start: tok.start - starts[line], end: tok.end - starts[line] });
@@ -2572,9 +2636,9 @@ function decorateAll(): void {
   drawn = [];
   el.editor.classList.toggle('live', ui.liveFormat);
   if (!ui.liveFormat) return;
-  const { text, lines } = readEditor(el.editor);
+  const { text, lines, segments } = readEditor(el.editor);
   const rows = text.split('\n');
-  const html = decorateLines(rows, chipSpansByLine(text, rows));
+  const html = decorateLines(rows, chipSpansByLine(text, rows, segments));
   // Bottom up, so redrawing a line cannot move the spans of the lines still to do.
   for (let i = Math.min(lines.length, html.length) - 1; i >= 0; i--) {
     if (isDecorated(html[i])) patchBlock(lines, i, i, html);
@@ -2592,9 +2656,9 @@ function decorateAll(): void {
  */
 function decorateAfterInput(): void {
   if (!ui.liveFormat || ui.preview) return;
-  const { text, lines } = readEditor(el.editor);
+  const { text, lines, segments } = readEditor(el.editor);
   const rows = text.split('\n');
-  const html = decorateLines(rows, chipSpansByLine(text, rows));
+  const html = decorateLines(rows, chipSpansByLine(text, rows, segments));
   const count = Math.min(lines.length, html.length);
   const stale: boolean[] = [];
   let any = false;
@@ -2823,6 +2887,9 @@ function captureToInbox(text: string): void {
   }
   const inbox = inboxNote();
   const body = inbox.body.trimEnd() ? `${inbox.body.trimEnd()}\n\n${clean}` : clean;
+  // A step of its own when the Inbox is the note open, so undo takes the
+  // quick note back out rather than the words typed before it arrived.
+  if (ui.selectedId === inbox.id) rememberNow('capture');
   notes = updateBody(notes, inbox.id, body);
   scheduleSave();
   // If the Inbox is the note on screen, it must show the new line.

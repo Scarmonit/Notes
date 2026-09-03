@@ -25,7 +25,7 @@ import {
   watchNotes,
 } from './notes-store';
 import { loadSettings, saveSettings, settings } from './settings';
-import { applyHotkey, createTray, destroyTray, showWindow, toggleWindow } from './tray';
+import { applyHotkey, createTray, destroyTray, releaseHotkeys, showWindow, toggleWindow } from './tray';
 
 // Squirrel runs the exe with install/update flags; those launches must exit.
 if (started) app.quit();
@@ -158,6 +158,7 @@ let mainWin: BrowserWindow | null = null;
 /** Registers both system-wide chords; returns which of them could not be. */
 function applyHotkeys(): { hotkeyFailed: boolean; captureHotkeyFailed: boolean } {
   const s = settings();
+  releaseHotkeys();
   const summon = applyHotkey('summon', s.hotkey, () => {
     if (mainWin) toggleWindow(mainWin);
   });

@@ -71,6 +71,16 @@ export type HotkeySlot = 'summon' | 'capture';
 const registered = new Map<HotkeySlot, string>();
 
 /**
+ * Lets go of both chords. Done before the two are applied afresh, so a chord
+ * moving from one slot to the other is not refused for still being held by
+ * the slot it is leaving.
+ */
+export function releaseHotkeys(): void {
+  for (const accelerator of registered.values()) globalShortcut.unregister(accelerator);
+  registered.clear();
+}
+
+/**
  * Registers one of the system-wide chords, replacing whatever that slot held
  * before. Returns false when the chord is unusable or another app already
  * owns it, which the settings UI reports rather than failing silently.
