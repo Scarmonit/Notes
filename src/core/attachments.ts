@@ -32,7 +32,13 @@ const ORPHAN_GRACE_MS = 10 * 60 * 1000;
 export interface Attachments {
   readonly dir: string;
   saveAttachment(bytes: Uint8Array, originalName: string): Promise<string>;
-  sweepOrphans(file: NotesFile): Promise<void>;
+  /**
+   * Deletes pictures no note mentions any more, once they have gone
+   * unmentioned for the grace period. `alsoReferenced` supplies bodies that
+   * are not in the file but still count — the notes in the trash, which
+   * come back with their pictures.
+   */
+  sweepOrphans(file: NotesFile, alsoReferenced?: () => Promise<string[]>): Promise<void>;
   /** Writes a markdown export, with the images it mentions copied into a folder beside it. */
   writeMarkdownExport(filePath: string, body: string): Promise<void>;
   /** Rendered HTML with every note-asset image inlined as a data URI, so one file carries the whole note. */
@@ -57,7 +63,13 @@ export function createAttachments(root: string): Attachments {
     return assetUrl(name);
   }
 
-  async function sweepOrphans(file: NotesFile): Promise<void> {
+  // When each picture was first seen with no note mentioning it. The grace
+  // period runs from then, not from when the picture was attached: an image
+  // cut from one note and pasted into another a minute later, or a deleted
+  // note restored from the trash, must find its picture still there.
+  const unmentionedSince = new Map<string, number>();
+
+  async function sweepOrphans(file: NotesFile, alsoReferenced?: () => Promise<string[]>): Promise<void> {
     const referenced = new Set(file.notes.flatMap((n) => assetRefs(n.body)));
     let entries: string[];
     try {
@@ -65,12 +77,29 @@ export function createAttachments(root: string): Attachments {
     } catch {
       return;
     }
-    const cutoff = Date.now() - ORPHAN_GRACE_MS;
+    const now = Date.now();
+    const cutoff = now - ORPHAN_GRACE_MS;
+    const candidates: string[] = [];
     for (const name of entries) {
-      if (referenced.has(name)) continue;
+      if (referenced.has(name)) {
+        unmentionedSince.delete(name);
+        continue;
+      }
+      const since = unmentionedSince.get(name) ?? now;
+      unmentionedSince.set(name, since);
+      if (since < cutoff) candidates.push(name);
+    }
+    for (const name of unmentionedSince.keys()) if (!entries.includes(name)) unmentionedSince.delete(name);
+    if (candidates.length === 0) return;
+    const stillSpokenFor = new Set(((await alsoReferenced?.()) ?? []).flatMap(assetRefs));
+    for (const name of candidates) {
+      if (stillSpokenFor.has(name)) continue;
       const full = path.join(dir, name);
       const stat = await fs.stat(full).catch(() => null);
-      if (stat && stat.isFile() && stat.mtimeMs < cutoff) await fs.unlink(full).catch(() => undefined);
+      if (stat && stat.isFile() && stat.mtimeMs < cutoff) {
+        await fs.unlink(full).catch(() => undefined);
+        unmentionedSince.delete(name);
+      }
     }
   }
 

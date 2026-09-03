@@ -228,6 +228,16 @@ export interface FilterOpts {
 
 const collect = (value: string, previous: string[] = []): string[] => [...previous, value];
 
+/**
+ * Whether any flag that narrows the notes was given, so a command can tell
+ * "all of them" from "nothing said". Only the narrowing flags count: --sort
+ * and --reverse order a list, and a command's own flags are not filters.
+ */
+export function hasFilterOpts(opts: FilterOpts): boolean {
+  const narrowing: Array<keyof FilterOpts> = ['tag', 'pinned', 'untitled', 'createdAfter', 'createdBefore', 'updatedAfter', 'updatedBefore', 'linksTo', 'linkedFrom', 'orphan', 'hasTasks', 'todo', 'done', 'due', 'limit'];
+  return narrowing.some((key) => opts[key] !== undefined);
+}
+
 /** Adds the shared filter flags to a command that takes a set of notes. */
 export function addFilterOptions(cmd: Command): Command {
   return cmd

@@ -61,3 +61,11 @@ describe('replace', () => {
     expect(replaceAll('a$1', '$1', 'x', plain).text).toBe('ax');
   });
 });
+
+describe('regex replace with context', () => {
+  it('expands a match that only exists in context, such as a lookaround or an anchor', () => {
+    expect(replaceOne('ab', findMatches('ab', 'a(?=b)', re)[0], 'a(?=b)', 'X', re)).toBe('Xb');
+    expect(replaceAll('foobar foobaz', '(?<=foo)ba(r|z)', '[$1]', re)).toEqual({ text: 'foo[r] foo[z]', count: 2 });
+    expect(replaceAll('one\ntwo', '^t', 'T', { ...re })).toEqual({ text: 'one\ntwo', count: 0 });
+  });
+});

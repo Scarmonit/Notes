@@ -85,6 +85,7 @@ class Connection {
   private readonly pending = new Map<number, Pending>();
   private readonly listeners = new Set<(method: string, params: unknown) => void>();
   private closed: Error | null = null;
+  private readonly lost = new Set<(err: CliError) => void>();
 
   private constructor(socket: net.Socket) {
     this.socket = socket;
@@ -110,6 +111,7 @@ class Connection {
     } catch {
       return;
     }
+    if (!msg || typeof msg !== 'object') return;
     if ('id' in msg && typeof msg.id === 'number') {
       const p = this.pending.get(msg.id);
       if (!p) return;
@@ -124,8 +126,22 @@ class Connection {
   private fail(err: Error): void {
     if (this.closed) return;
     this.closed = err;
-    for (const p of this.pending.values()) p.reject(new CliError(`Lost the connection to Notes: ${err.message}`, EXIT.appError));
+    const lost = new CliError(`Lost the connection to Notes: ${err.message}`, EXIT.appError);
+    for (const p of this.pending.values()) p.reject(lost);
     this.pending.clear();
+    for (const fn of this.lost) fn(lost);
+    this.lost.clear();
+  }
+
+  /**
+   * Rejects when the connection goes: for a wait on a notification, which
+   * would otherwise sit on a dead socket until the process quietly drained.
+   */
+  whenLost(): Promise<never> {
+    return new Promise((_resolve, reject) => {
+      if (this.closed) reject(new CliError(`Not connected to Notes: ${this.closed.message}`, EXIT.appError));
+      else this.lost.add(reject);
+    });
   }
 
   call<M extends MethodName>(method: M, params: Params<M>): Promise<Result<M>> {
@@ -223,24 +239,27 @@ export class AppBackend implements Backend {
       if (method === 'notes.changed') onChange(params as ExternalChanges);
     });
     await this.call('watch.subscribe', {});
-    await new Promise<void>((resolve) => {
+    const aborted = new Promise<void>((resolve) => {
       if (signal.aborted) resolve();
       else signal.addEventListener('abort', () => resolve(), { once: true });
     });
-    off();
+    try {
+      await Promise.race([aborted, this.conn.whenLost()]);
+    } finally {
+      off();
+    }
     await this.call('watch.unsubscribe', {}).catch(() => undefined);
   }
 
   /** Waits for the window to report a note closed or saved, VS Code's --wait. */
   waitForClose(id: string): Promise<void> {
-    return new Promise((resolve) => {
-      const off = this.conn.onNotification((method, params) => {
-        if (method === 'note.closed' && (params as { id: string }).id === id) {
-          off();
-          resolve();
-        }
+    let off = (): void => undefined;
+    const closed = new Promise<void>((resolve) => {
+      off = this.conn.onNotification((method, params) => {
+        if (method === 'note.closed' && (params as { id: string }).id === id) resolve();
       });
     });
+    return Promise.race([closed, this.conn.whenLost()]).finally(off);
   }
 
   async close(): Promise<void> {

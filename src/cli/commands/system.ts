@@ -66,6 +66,7 @@ export function register(program: Command, use: () => Ctx): void {
           else c.out.write(`${c.out.dim(at)}\tdelete\t${id}`);
         }
       }, controller.signal);
+      c.exitCode = 130;
     });
 
   const cli = program.command('cli').description('the `notes` command itself: put it on PATH, take it off, or check');

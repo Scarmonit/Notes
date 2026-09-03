@@ -16,6 +16,8 @@ async function main(): Promise<void> {
 }
 
 process.on('SIGINT', () => {
+  // A command that handles Ctrl+C itself (`notes watch`) stops and exits on its own.
+  if (process.listenerCount('SIGINT') > 1) return;
   process.exit(130);
 });
 

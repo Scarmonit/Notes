@@ -1,3 +1,5 @@
+import { isFenceLine } from './fences';
+
 /**
  * Task list lines — `- [ ] thing` and `- [x] thing` — as markdown defines
  * them. The preview renders them as checkboxes; ticking one has to write the
@@ -13,10 +15,15 @@
  * the editor.
  */
 
-/** A task line: optional indent, a list bullet, then [ ] or [x]. */
-const TASK = /^(\s*)([-*+])(\s+)\[([ xX])\](\s)/;
+/**
+ * A task line as the preview draws one: optional quote marks and indent, a
+ * bullet or a number, then [ ] or [x] and a space. The nth line here must be
+ * the nth checkbox on the page, so the forms are exactly those marked
+ * turns into a checkbox.
+ */
+const TASK = /^((?:[ \t]*>)*[ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)\[([ xX])\] /;
 /** A plain list item, for turning into a task. */
-const BULLET = /^(\s*)([-*+])(\s+)/;
+const BULLET = /^((?:[ \t]*>)*[ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)/;
 /** `@YYYY-MM-DD`, optionally `@YYYY-MM-DD HH:mm`, standing on its own in the line. */
 const DUE = /(^|\s)@(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2}))?(?=\s|$)/;
 
@@ -50,10 +57,16 @@ export function taskDue(line: string): Due | null {
   return { at: d.getTime(), hasTime, token: m[0].slice(m[1].length) };
 }
 
-/** Every task line in a body, in order. The nth entry is the nth checkbox in the preview. */
+/** Every task line in a body, in order. The nth entry is the nth checkbox in the preview; a task inside a code fence is code. */
 export function tasksIn(body: string): Task[] {
   const out: Task[] = [];
+  let inFence = false;
   body.split('\n').forEach((text, line) => {
+    if (isFenceLine(text)) {
+      inFence = !inFence;
+      return;
+    }
+    if (inFence) return;
     const m = TASK.exec(text);
     if (!m) return;
     const due = taskDue(text);
@@ -69,7 +82,7 @@ export function taskProgress(body: string): { done: number; total: number } {
 }
 
 function setDone(line: string, done: boolean): string {
-  return line.replace(TASK, (_all, indent: string, bullet: string, gap: string, _box: string, tail: string) => `${indent}${bullet}${gap}[${done ? 'x' : ' '}]${tail}`);
+  return line.replace(TASK, (_all, indent: string, bullet: string, gap: string) => `${indent}${bullet}${gap}[${done ? 'x' : ' '}] `);
 }
 
 /** Ticks or unticks the task on one line. Lines that are not tasks are left alone. */
@@ -131,8 +144,14 @@ export function setTaskDue(body: string, line: number, due: { at: number; withTi
     text = bullet ? text.replace(BULLET, '$1$2$3[ ] ') : text.replace(/^(\s*)/, '$1- [ ] ');
   }
   const had = taskDue(text);
-  // The token goes, and with it the one space that separated it from what followed.
-  if (had) text = text.replace(DUE, '').replace(/[ \t]{2,}/g, ' ').replace(/[ \t]+$/, '');
+  // The token goes, and with it the one space that separated it from what
+  // followed. Only the words are tidied: the indent in front is what nests
+  // the task under its parent.
+  if (had) {
+    const head = TASK.exec(text)?.[0] ?? '';
+    const words = text.slice(head.length).replace(DUE, '').replace(/[ \t]{2,}/g, ' ').trim();
+    text = head + words;
+  }
   if (due) text = `${text.trimEnd()} ${dueToken(due.at, due.withTime)}`;
   lines[line] = text;
   return lines.join('\n');

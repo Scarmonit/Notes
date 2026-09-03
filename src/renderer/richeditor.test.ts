@@ -393,3 +393,18 @@ describe('segments and posAt', () => {
     expect(lineSpans(div)).toHaveLength(2);
   });
 });
+
+describe('code fences in the editor', () => {
+  it('makes no chip of a rule or a link inside a fence: there they are the characters typed', () => {
+    const body = '```\n---\n[[x]]\n```\n---\n[[y]]';
+    expect(bodyTokens(body).map((t) => [t.kind, body.slice(t.start, t.end)])).toEqual([
+      ['rule', '---'],
+      ['link', '[[y]]'],
+    ]);
+    expect(bodyTokens('~~~\n---\n[[x]]')).toEqual([]);
+    const div = editor();
+    renderEditor(div, body);
+    expect(div.querySelectorAll('hr.inline-rule')).toHaveLength(1);
+    expect(serializeEditor(div)).toBe(body);
+  });
+});

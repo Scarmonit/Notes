@@ -93,3 +93,34 @@ describe('note links', () => {
     expect(holder.querySelector('.inline-link')?.textContent).toBe('<img src=x onerror=alert(1)>');
   });
 });
+
+describe('0.13.1 regressions', () => {
+  it('highlights the languages whose display name is not their key', () => {
+    for (const [lang, marker] of [
+      ['html', 'hljs-tag'],
+      ['xml', 'hljs-tag'],
+      ['ini', 'hljs-section'],
+      ['toml', 'hljs-section'],
+      ['dos', 'hljs-built_in'],
+    ]) {
+      const html = renderMarkdown(lang === 'ini' || lang === 'toml' ? `\`\`\`${lang}\n[section]\nkey = 1\n\`\`\`` : lang === 'dos' ? `\`\`\`${lang}\necho hi\n\`\`\`` : `\`\`\`${lang}\n<a href="x">y</a>\n\`\`\``);
+      expect(html, lang).toContain(`language-${lang === 'html' ? 'xml' : lang === 'toml' ? 'ini' : lang}`);
+      expect(html, lang).toContain(marker);
+    }
+  });
+
+  it('leaves a $$ in the middle of a line alone', () => {
+    expect(renderMarkdown('that costs $$$ a lot')).toBe('<p>that costs $$$ a lot</p>\n');
+    expect(renderMarkdown('echo $$ is the pid')).not.toContain('<br');
+    expect(renderMarkdown('$$\nx^2\n$$')).toContain('math-block');
+  });
+
+  it('lets no note restyle the window: <style> goes, and a style attribute may not load anything', () => {
+    expect(renderMarkdown('text\n\n<div><style>.sidebar{display:none}</style>hi</div>')).not.toContain('<style');
+    expect(renderMarkdown('<svg><style>*{display:none}</style></svg>')).not.toContain('<style');
+    expect(renderMarkdown('<div style="background:url(https://evil/x)">a</div>')).not.toContain('url(');
+    expect(renderMarkdown('<div style="color:red">a</div>')).toContain('style="color:red"');
+    // KaTeX lays its output out with style attributes; those must stay.
+    expect(renderMarkdown('$x^2$')).toMatch(/style="[^"]*height/);
+  });
+});

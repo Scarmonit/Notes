@@ -24,7 +24,8 @@ describe('parseWhen', () => {
   it('understands spans, days and dates', () => {
     expect(parseWhen('2h', now)).toBe(now - 2 * 3600 * 1000);
     expect(parseWhen('7d', now)).toBe(now - 7 * 86400 * 1000);
-    expect(parseWhen('2026-01-02', now)).toBe(Date.parse('2026-01-02'));
+    // A bare date is that day in local time, like every other date the grammar reads.
+    expect(parseWhen('2026-01-02', now)).toBe(new Date(2026, 0, 2).getTime());
     expect(parseWhen('nonsense', now)).toBeNull();
   });
 });
@@ -81,9 +82,14 @@ describe('parseQuery (the search box grammar)', () => {
     expect(f).toMatchObject({ terms: ['milk', 'a phrase'], excludes: ['eggs'], tags: ['home', 'wow'], errors: [] });
     expect(f.patterns?.[0].source).toBe('sh?op');
     expect(f.patterns?.[0].flags).toContain('i');
-    expect(hasOperators('milk -eggs #home')).toBe(false);
+    expect(hasOperators('milk #home')).toBe(false);
     expect(hasOperators('todo:')).toBe(true);
     expect(hasOperators('meet at 10:30')).toBe(false);
+    // The legend under the search box promises these two, so they must not
+    // fall through to the plain-word matcher, which knows neither.
+    expect(hasOperators('milk -eggs')).toBe(true);
+    expect(hasOperators('"a phrase"')).toBe(true);
+    expect(hasOperators('a - b')).toBe(false);
   });
   it('reads the task, pin, date, link, sort and limit operators', () => {
     expect(parseQuery('todo: done:no pinned: untitled:no orphan: sort:title- limit:5', now)).toMatchObject({
@@ -97,8 +103,8 @@ describe('parseQuery (the search box grammar)', () => {
       limit: 5,
     });
     expect(parseQuery('-todo: pinned:no task:', now)).toMatchObject({ hasTodo: false, pinned: false, hasTasks: true });
-    expect(parseQuery('created:>7d updated:<2026-01-01', now)).toMatchObject({ createdAfter: now - 7 * 86400 * 1000, updatedBefore: Date.parse('2026-01-01') });
-    expect(parseQuery('created:2026-01-02', now)).toMatchObject({ createdAfter: Date.parse('2026-01-02'), createdBefore: Date.parse('2026-01-02') + 86400 * 1000 - 1 });
+    expect(parseQuery('created:>7d updated:<2026-01-01', now)).toMatchObject({ createdAfter: now - 7 * 86400 * 1000, updatedBefore: new Date(2026, 0, 1).getTime() });
+    expect(parseQuery('created:2026-01-02', now)).toMatchObject({ createdAfter: new Date(2026, 0, 2).getTime(), createdBefore: new Date(2026, 0, 3).getTime() - 1 });
     expect(parseQuery('links:"My plan" from:Shopping', now)).toMatchObject({ linksToTitle: 'My plan', linkedFromTitle: 'Shopping' });
     expect(parseQuery('due:today', now).due).toEqual({ until: new Date(2026, 8, 3, 23, 59, 59, 999).getTime() });
   });
@@ -134,5 +140,25 @@ describe('parseWords (command-line arguments)', () => {
     expect(f).toMatchObject({ terms: ['milk', 'a phrase'], excludes: ['eggs'], tags: ['home'], hasTodo: true, linksToTitle: 'My plan', sort: 'title', errors: [] });
     expect(f.patterns?.[0].source).toBe('sh?op');
     expect(parseWords(['10:30', 'http://x']).terms).toEqual(['10:30', 'http://x']);
+  });
+});
+
+describe('0.13.1 regressions', () => {
+  const now = Date.parse('2026-09-03T12:00:00');
+  const note = (id: string, body: string): Note => ({ id, body, createdAt: 1, updatedAt: 1 });
+  it('drops a global or sticky flag from /pattern/g, which would skip every other note', () => {
+    const notes = [note('a', 'plan a'), note('b', 'plan b'), note('c', 'plan c')];
+    expect(applyFilter(notes, parseQuery('/plan/g', now)).map((n) => n.id)).toEqual(['a', 'b', 'c']);
+    expect(parseQuery('/plan/gi', now).patterns?.[0].flags).toBe('i');
+  });
+  it('reads -tag:x as "without that tag" and refuses a - on an operator that has no opposite', () => {
+    const notes = [note('a', 'x #work'), note('b', 'x #home'), note('c', 'x #work/deep')];
+    const f = parseQuery('-tag:work', now);
+    expect(f.tags).toEqual([]);
+    expect(f.excludeTags).toEqual(['work']);
+    expect(applyFilter(notes, f).map((n) => n.id)).toEqual(['b']);
+    expect(parseWords(['-tag:work'], now).excludeTags).toEqual(['work']);
+    expect(parseQuery('-due:today', now).errors[0]).toMatch(/^-due: cannot/);
+    expect(parseQuery('-sort:title', now).sort).toBeUndefined();
   });
 });

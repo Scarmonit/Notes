@@ -17,6 +17,13 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   }
 });
 
+// A stylesheet in a note would apply to the whole window, not the note:
+// `<style>` goes, and a style attribute (KaTeX needs those for its layout)
+// may not load anything or run anything.
+DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
+  if (data.attrName === 'style' && /url\s*\(|@import|expression\s*\(|behavior\s*:/i.test(data.attrValue)) data.keepAttr = false;
+});
+
 // DOMPurify's default only lets http(s)/mailto/tel through on src/href; attached
 // images use the app's own note-asset scheme, which the main process serves
 // from the attachments folder and nowhere else.
@@ -28,6 +35,7 @@ export function renderMarkdown(source: string): string {
   return DOMPurify.sanitize(html, {
     USE_PROFILES: { html: true, mathMl: true, svg: true, svgFilters: true },
     ADD_ATTR: ['target', 'data-diagram', 'data-link'],
+    FORBID_TAGS: ['style'],
     ALLOWED_URI_REGEXP: ALLOWED_URI,
   });
 }

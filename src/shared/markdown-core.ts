@@ -55,7 +55,14 @@ export function renderMath(tex: string, display: boolean): string {
 const blockMath: TokenizerAndRendererExtension = {
   name: 'mathBlock',
   level: 'block',
-  start: (src: string) => src.indexOf('$$'),
+  // Only a $$ that begins a line can start a block. Marked cuts the paragraph
+  // it is reading at whatever this reports and joins the pieces back with a
+  // newline — a line break, since breaks are on — so a $$ mid-line ("that
+  // costs $$$") must not be reported at all.
+  start: (src: string) => {
+    const m = /\n\$\$/.exec(src);
+    return m ? m.index + 1 : -1;
+  },
   tokenizer(src: string) {
     const m = /^\$\$[ \t]*\n?([\s\S]+?)\n?[ \t]*\$\$[ \t]*(?:\n+|$)/.exec(src);
     if (!m) return undefined;

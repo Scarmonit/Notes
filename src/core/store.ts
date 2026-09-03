@@ -64,6 +64,10 @@ export interface Store {
   restoreFromTrash(id: string): Promise<Note | null>;
   purgeTrashed(id: string): Promise<boolean>;
   expireTrash(now?: number): Promise<string[]>;
+  /** The bodies of the notes in the trash: what they mention is still spoken for. */
+  trashBodies(): Promise<string[]>;
+  /** Resolves once every write queued so far has reached the disk. */
+  drain(): Promise<void>;
   watchNotes(onChange: ChangeListener): void;
   stopWatching(): void;
   /** Called after every write this store makes and every change it notices, with what differs. */
@@ -428,7 +432,9 @@ export function createStore(root: string): Store {
   function watchNotes(onChange: ChangeListener): void {
     if (watcher) return;
     try {
-      watcher = watch(notesDir, { persistent: false }, () => {
+      // Persistent: `notes watch` with the app closed has nothing else keeping
+      // the process up. The app closes it on quit, so it costs the app nothing.
+      watcher = watch(notesDir, { persistent: true }, () => {
         if (watchTimer) clearTimeout(watchTimer);
         watchTimer = setTimeout(() => void checkExternal(onChange), WATCH_SETTLE_MS);
       });
@@ -457,6 +463,8 @@ export function createStore(root: string): Store {
     restoreFromTrash,
     purgeTrashed,
     expireTrash,
+    trashBodies: () => queue(async () => (await readNoteFiles(trashDir)).map((f) => f.note.body)),
+    drain: () => queue(async () => undefined),
     watchNotes,
     stopWatching,
     onChange: (listener) => {

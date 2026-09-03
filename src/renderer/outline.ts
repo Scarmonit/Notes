@@ -16,7 +16,8 @@ export interface Heading {
   line: number;
 }
 
-const HEADING = /^[ \t]{0,3}(#{1,6})[ \t]+(.*?)[ \t]*(?:#+[ \t]*)?$/;
+// A closing run of #s is dropped only after a space, as markdown reads it: `# C#` is about C#.
+const HEADING = /^[ \t]{0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/;
 
 export function headingsIn(body: string): Heading[] {
   const out: Heading[] = [];

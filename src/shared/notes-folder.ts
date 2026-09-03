@@ -125,6 +125,8 @@ export function fileNameFor(title: string): string {
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/[. ]+$/, '')
+    // A file starting with a dot or a tilde is a hidden or a lock file to the store (isNoteFileName): it would never be read back.
+    .replace(/^[.~\s]+/, '')
     .slice(0, MAX_NAME)
     .trim();
   // Names Windows reserves, whatever the extension.

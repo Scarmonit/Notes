@@ -70,7 +70,7 @@ import type { ExternalChanges, RenderedExport, TrashedNote } from '../shared/typ
 import { dueLabel, dueTasks, type DueTask } from '../core/due';
 import { applyFilter, hasOperators, OPERATORS, parseQuery } from '../core/query';
 import { graphOf, neighbourhood, relatedNotes, type Graph } from '../core/related';
-import { DATE_FORMAT, expandTemplate, formatDate, templatesOf, TIME_FORMAT } from '../core/templates';
+import { DATE_FORMAT, expandTemplate, formatDate, templatesOf, TIME_FORMAT, usesTitle } from '../core/templates';
 import { hasDiagrams, hasMath } from '../shared/markdown-core';
 import { renderDiagrams } from './diagrams';
 import { layoutGraph, nodeAt, type LaidOut } from './graph';
@@ -711,9 +711,15 @@ async function copyCode(pre: HTMLElement, button: HTMLButtonElement): Promise<vo
  * preview is the nth task line in the body.
  */
 function liveTaskBoxes(): void {
-  el.preview.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((box, i) => {
+  let i = 0;
+  el.preview.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((box) => {
+    // The nth box is the nth task line tasksIn counts, which is a list item's; a checkbox written as HTML is not one.
+    if (!box.closest('li')) {
+      box.disabled = true;
+      return;
+    }
     box.disabled = false;
-    box.dataset.task = String(i);
+    box.dataset.task = String(i++);
     box.setAttribute('aria-label', box.checked ? 'Done' : 'Not done');
   });
 }
@@ -925,10 +931,32 @@ function focusEditor(): void {
     el.preview.focus();
     return;
   }
-  // Entering the editor from elsewhere drops the caret at the end, ready to write.
+  returnToEditor();
+}
+
+/**
+ * Where the caret stood in the editor when a sheet took the focus. Chromium
+ * puts the caret at the very start of a contenteditable it focuses from
+ * elsewhere, so a command chosen from the picker or the palette would act
+ * on the first line: the offset is kept here and put back.
+ */
+let caretBefore: { id: string; at: number } | null = null;
+
+function keepCaret(): void {
+  const n = selected();
+  caretBefore = n && document.activeElement === el.editor && editorNoteId === n.id ? { id: n.id, at: caretOffsetOrStart() } : null;
+}
+
+/** Focus back in the editor: the caret where it was before a sheet took it, else at the end, ready to write. */
+function returnToEditor(): void {
   const alreadyHere = document.activeElement === el.editor;
   el.editor.focus();
-  if (!alreadyHere) caretToEnd();
+  if (!alreadyHere) {
+    const n = selected();
+    if (caretBefore && n && caretBefore.id === n.id && editorNoteId === n.id) placeCaretAt(Math.min(caretBefore.at, n.body.length));
+    else caretToEnd();
+  }
+  caretBefore = null;
 }
 
 function focusList(): void {
@@ -1063,7 +1091,7 @@ function ensureEditable(): void {
     saveUi();
     renderEditor();
   }
-  el.editor.focus();
+  returnToEditor();
 }
 
 /** Puts the caret at the very end of the editor's content. */
@@ -1133,10 +1161,16 @@ async function attachFiles(files: File[]): Promise<void> {
     return;
   }
   ensureEditable();
+  const target = ui.selectedId;
   let attached = 0;
   for (const file of images) {
     try {
       const url = await window.notesApi.attach(new Uint8Array(await file.arrayBuffer()), file.name || 'image.png');
+      if (ui.selectedId !== target) {
+        // The picture was written, but the note it was for is no longer on screen; it is not put into this one.
+        showStatus('The note changed while attaching; nothing was inserted', 4000);
+        return;
+      }
       const name = assetNameFromUrl(url);
       if (name) insertImageChip(name, altFor(file.name));
       attached++;
@@ -1521,6 +1555,22 @@ function markEdit(): void {
 function rememberNow(kind: string): void {
   const n = selected();
   if (n && editorNoteId === n.id) rememberEdit({ text: n.body, caret: caretOffsetOrStart() }, kind);
+}
+
+/**
+ * Remembers the state of a note that is not on screen before the app changes
+ * it — a task ticked from the due sheet, a quick note into the Inbox — so
+ * that undo there takes the change out, and a redo left over cannot put an
+ * older text back over it.
+ */
+function rememberFor(id: string): void {
+  const n = notes.find((x) => x.id === id);
+  if (!n) return;
+  const log = editLogFor(id);
+  log.undo.push({ text: n.body, caret: 0 });
+  if (log.undo.length > UNDO_LIMIT) log.undo.shift();
+  log.redo = [];
+  log.lastKind = '';
 }
 
 /** Keeps the state before an edit of `kind`, folding a run of typing into one step. */
@@ -2008,9 +2058,28 @@ el.title.addEventListener('input', () => {
   renderMeta();
 });
 
+/** The note started from a template whose {{title}} is waiting for the title to be typed. */
+let titleFill: string | null = null;
+
+/** Puts the title into the {{title}} placeholders of a note made from a template, once it has one. */
+function fillTitlePlaceholder(): void {
+  const n = selected();
+  if (!n || n.id !== titleFill) return;
+  const title = n.title?.trim();
+  if (!title) return;
+  titleFill = null;
+  if (!usesTitle(n.body)) return;
+  notes = updateBody(notes, n.id, n.body.replace(/\{\{\s*title\s*\}\}/gi, title));
+  editorNoteId = null;
+  renderEditor();
+  scheduleSave();
+}
+
+el.title.addEventListener('blur', fillTitlePlaceholder);
 el.title.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' || e.key === 'ArrowDown') {
     e.preventDefault();
+    fillTitlePlaceholder();
     if (ui.preview) {
       el.preview.focus();
       return;
@@ -2168,6 +2237,8 @@ async function restoreVersion(): Promise<void> {
   }
   // Keep what is there now first, so going back is itself something to go back from.
   await window.notesApi.historyKeep(n).catch((err) => console.error('[notes] could not keep the current version', err));
+  // Another note may have been chosen while the files were written: the snapshot is this note's alone.
+  if (selected()?.id !== n.id) return;
   if ((snap.title ?? '') !== (n.title ?? '')) {
     notes = updateTitle(notes, n.id, snap.title ?? '');
     el.title.value = snap.title ?? '';
@@ -2396,7 +2467,8 @@ el.search.addEventListener('keydown', (e) => {
     e.preventDefault();
     // Search or create: what you typed becomes the title when nothing matches
     // (or whenever Shift is held), so finding and starting are one motion.
-    if (query.trim() && (e.shiftKey || visibleNotes().length === 0)) createFromSearch();
+    // Not for a query of operators: `due:tomorrow` is a question, not a title.
+    if (query.trim() && !hasOperators(query) && (e.shiftKey || visibleNotes().length === 0)) createFromSearch();
     else focusEditor();
   }
 });
@@ -3074,6 +3146,7 @@ function captureToInbox(text: string): void {
   // A step of its own when the Inbox is the note open, so undo takes the
   // quick note back out rather than the words typed before it arrived.
   if (ui.selectedId === inbox.id) rememberNow('capture');
+  else rememberFor(inbox.id);
   notes = updateBody(notes, inbox.id, body);
   scheduleSave();
   // If the Inbox is the note on screen, it must show the new line.
@@ -3139,6 +3212,7 @@ function openPicker(placeholder: string, items: PickItem[], onClose?: () => void
   el.pickInput.placeholder = placeholder;
   el.pickInput.setAttribute('aria-label', placeholder);
   el.pickInput.value = '';
+  keepCaret();
   el.pickSheet.hidden = false;
   refreshPicker();
   el.pickInput.focus();
@@ -3270,10 +3344,13 @@ function pickTemplate(mode: 'insert' | 'new'): void {
         showStatus(`Inserted “${titleOf(t)}”`, 2000);
         return;
       }
-      // A new note: titled with the search, if there is one, else named afterwards.
+      // A new note: titled with the search, if there is one, else named
+      // afterwards — and then {{title}} waits for that name rather than
+      // being filled with "Untitled" for good.
       const title = query.trim();
-      const made = createNote(Date.now(), expandTemplate(t, { title: title || 'Untitled' }));
+      const made = createNote(Date.now(), expandTemplate(t, { title: title || '{{title}}' }));
       if (title) made.title = title;
+      titleFill = !title && usesTitle(t.body) ? made.id : null;
       notes = [made, ...notes];
       scheduleSave();
       clearFilters();
@@ -3289,7 +3366,8 @@ function pickTemplate(mode: 'insert' | 'new'): void {
 
 /** Today's date at the caret; with Shift, the time as well. */
 function insertDate(): void {
-  const shift = lastChord.includes('shift');
+  // With Shift held, the key reads as ':' on a US keyboard, so the chord ends in it.
+  const shift = lastChord.includes('shift') || lastChord.endsWith(':');
   const now = new Date();
   insertAtCaret(shift ? formatDate(now, `${DATE_FORMAT} ${TIME_FORMAT}`) : formatDate(now, DATE_FORMAT));
 }
@@ -3391,6 +3469,7 @@ function tickDue(t: DueTask): void {
   const body = toggleTaskLine(n.body, t.line);
   if (n.id === ui.selectedId) setBody(body);
   else {
+    rememberFor(n.id);
     notes = updateBody(notes, n.id, body);
     scheduleSave();
     renderList();
@@ -3791,7 +3870,7 @@ const ACTIONS: Action[] = [
     hint: 'Today, as 2026-09-03; with Shift held, the time as well',
     group: 'Writing',
     chord: 'ctrl+;',
-    also: ['ctrl+shift+;'],
+    also: ['ctrl+shift+;', 'ctrl+shift+:'],
     terms: 'today time now timestamp',
     enabled: hasNote,
     run: insertDate,
@@ -3892,6 +3971,7 @@ function togglePalette(force?: boolean): void {
     return;
   }
   el.paletteInput.value = '';
+  keepCaret();
   refreshPalette();
   el.paletteInput.focus();
 }
@@ -4022,7 +4102,8 @@ el.palette.addEventListener('click', (e) => {
 
 function onEscape(): void {
   const chip = selectedChip();
-  if (chip) {
+  // A chip stays selected while a sheet is open; Esc then means the sheet.
+  if (chip && document.activeElement === el.editor) {
     caretAfter(chip);
     return;
   }
@@ -4053,6 +4134,7 @@ function onEscape(): void {
       query = '';
       el.search.value = '';
       renderList();
+      renderSearchOps();
     } else if (tagFilter) {
       setTagFilter(null);
     } else {
@@ -4148,10 +4230,12 @@ function placeCaretAt(offset: number): void {
 /** Takes a note from the command line into the list, redrawing it in place if it is on screen. */
 function takeIn(note: Note): void {
   const i = notes.findIndex((n) => n.id === note.id);
+  // A step of its own, so undo takes the command's change back out: taken
+  // from the model before it changes, or the step would hold the new text.
+  if (ui.selectedId === note.id) rememberNow('cli');
+  else if (i >= 0) rememberFor(note.id);
   notes = i < 0 ? [note, ...notes] : notes.map((n) => (n.id === note.id ? note : n));
   if (ui.selectedId === note.id) {
-    // A step of its own, so undo takes the command's change back out.
-    rememberNow('cli');
     const caret = document.activeElement === el.editor ? caretOffsetOrStart() : null;
     editorNoteId = null;
     el.title.value = note.title ?? '';

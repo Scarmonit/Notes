@@ -13,7 +13,7 @@ import { exportPage } from '../../shared/export-page';
 import type { ExportKind, Note } from '../../shared/types';
 import stylesText from '../../renderer/styles.css?inline';
 import katexText from '../../renderer/generated/katex.css?inline';
-import { addFilterOptions, describe, filteredNotes, type Ctx, type FilterOpts } from '../context';
+import { addFilterOptions, describe, filteredNotes, hasFilterOpts, type Ctx, type FilterOpts } from '../context';
 import { save } from './notes';
 
 /** Files in and out: attachments, import, export. */
@@ -142,8 +142,7 @@ export function register(program: Command, use: () => Ctx): void {
       targets = [];
       for (const s of selectors) targets.push(await c.note(s, all));
     } else {
-      const filtering = Object.values(opts).some((v) => v !== undefined && v !== false && typeof v !== 'string') || opts.tag !== undefined || opts.due !== undefined;
-      targets = filtering ? (await filteredNotes(c, opts)).kept : all;
+      targets = hasFilterOpts(opts) ? (await filteredNotes(c, opts)).kept : all;
     }
     if (targets.length === 0) throw new CliError('No notes to export', EXIT.notFound);
     const toStdout = opts.out === '-';

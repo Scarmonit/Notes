@@ -50,8 +50,11 @@ export async function renderDiagrams(root: ParentNode, theme: DiagramTheme = 'da
     const source = pre.textContent ?? '';
     const holder = document.createElement('div');
     holder.className = 'diagram';
+    // Taken before the await: another render can start while this one waits,
+    // and the counter would then name that one's element.
+    const id = `diagram-${++counter}`;
     try {
-      const { svg, bindFunctions } = await mermaid.render(`diagram-${++counter}`, source);
+      const { svg, bindFunctions } = await mermaid.render(id, source);
       holder.innerHTML = svg;
       bindFunctions?.(holder);
       drawn++;
@@ -63,8 +66,9 @@ export async function renderDiagrams(root: ParentNode, theme: DiagramTheme = 'da
       const code = document.createElement('pre');
       code.textContent = source;
       holder.append(message, code);
+    } finally {
       // Mermaid leaves the element it drew into behind on failure.
-      document.getElementById(`ddiagram-${counter}`)?.remove();
+      document.getElementById(`d${id}`)?.remove();
     }
     pre.replaceWith(holder);
   }

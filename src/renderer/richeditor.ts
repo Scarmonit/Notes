@@ -1,4 +1,5 @@
 import { assetNameFromUrl, assetUrl, isSafeAssetName } from '../shared/assets';
+import { isFenceLine } from './fences';
 import { LINK_PATTERN, linkMarkdown } from './notes';
 
 /**
@@ -87,10 +88,13 @@ export type BodyToken =
 /** Every image, section rule and note link in a body, in order, with the span of text each occupies. */
 export function bodyTokens(body: string): BodyToken[] {
   const out: BodyToken[] = [];
+  const fenced = fencedSpans(body);
   TOKEN.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = TOKEN.exec(body)) !== null) {
     const span = { start: match.index, end: match.index + match[0].length };
+    // Inside a code fence it is the characters that were typed, as the preview shows them.
+    if (fenced.some((f) => span.start >= f.start && span.start < f.end)) continue;
     if (match[4] !== undefined) {
       out.push({ kind: 'rule', ...span });
       continue;
@@ -103,6 +107,25 @@ export function bodyTokens(body: string): BodyToken[] {
     const ref = refOf(match);
     if (ref) out.push({ kind: 'image', ...ref, ...span });
   }
+  return out;
+}
+
+/** The spans of fenced code blocks, fence lines included; an unclosed fence runs to the end. */
+function fencedSpans(body: string): Array<{ start: number; end: number }> {
+  const out: Array<{ start: number; end: number }> = [];
+  let at = 0;
+  let open = -1;
+  for (const line of body.split('\n')) {
+    if (isFenceLine(line)) {
+      if (open < 0) open = at;
+      else {
+        out.push({ start: open, end: at + line.length });
+        open = -1;
+      }
+    }
+    at += line.length + 1;
+  }
+  if (open >= 0) out.push({ start: open, end: body.length });
   return out;
 }
 

@@ -1,7 +1,7 @@
 import { linkKey, linksIn, tagMatches, tagsOf, titleOf, wordCount } from '../renderer/notes';
 import { tasksIn } from '../renderer/tasks';
 import type { Note } from '../shared/types';
-import { inWindow, parseDueWindow, type DueWindow } from './due';
+import { addDays, inWindow, parseDueWindow, type DueWindow } from './due';
 
 /**
  * One filter grammar for every command that takes a set of notes, so
@@ -24,6 +24,8 @@ export interface Filter {
   terms: string[];
   excludes: string[];
   tags: string[];
+  /** Tags a note must not carry: `-tag:wow`. */
+  excludeTags?: string[];
   pinned?: boolean;
   untitled?: boolean;
   createdAfter?: number;
@@ -86,10 +88,13 @@ export function parseWhen(text: string, now = Date.now()): number | null {
   if (!s) return null;
   if (s === 'now') return now;
   if (s === 'today') return startOfDay(now);
-  if (s === 'yesterday') return startOfDay(now) - UNIT_MS.d;
+  if (s === 'yesterday') return addDays(startOfDay(now), -1);
   const span = /^(\d+(?:\.\d+)?)\s*([mhdwy])$/.exec(s);
   if (span) return now - Number(span[1]) * UNIT_MS[span[2]];
   if (/^\d+$/.test(s) && s.length >= 12) return Number(s);
+  // A bare date is that day here, as every other date in the grammar is; Date.parse would make it UTC midnight.
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (day) return new Date(Number(day[1]), Number(day[2]) - 1, Number(day[3])).getTime();
   const t = Date.parse(text.trim());
   return Number.isFinite(t) ? t : null;
 }
@@ -128,9 +133,12 @@ export const OPERATORS: Array<{ op: string; means: string }> = [
   { op: 'limit:5', means: 'at most that many' },
 ];
 
-/** Whether a query holds anything beyond plain words, -words and #tags. */
+/**
+ * Whether a query needs the grammar: an operator, a pattern, a "quoted
+ * phrase" or a -word. Plain words and #tags are the search box's own.
+ */
 export function hasOperators(text: string): boolean {
-  return tokenize(text).some((t) => t.kind !== 'word');
+  return tokenize(text).some((t) => t.kind !== 'word' || t.quoted || (t.text.length > 1 && t.text.startsWith('-')));
 }
 
 interface Token {
@@ -138,6 +146,8 @@ interface Token {
   text: string;
   /** For ops: the part after the colon. */
   value: string;
+  /** A word that was written in quotes: a phrase. */
+  quoted?: boolean;
 }
 
 /**
@@ -164,7 +174,7 @@ export function tokenize(text: string): Token[] {
     }
     if (s[i] === '"') {
       const phrase = readQuoted();
-      if (phrase.trim()) out.push({ kind: 'word', text: phrase, value: '' });
+      if (phrase.trim()) out.push({ kind: 'word', text: phrase, value: '', quoted: true });
       continue;
     }
     if (s[i] === '/') {
@@ -204,6 +214,9 @@ const OPERATOR_NAMES = new Set(['tag', 'todo', 'done', 'task', 'tasks', 'due', '
 
 const yes = (v: string): boolean => !/^(no|false|off|0)$/i.test(v.trim());
 
+/** The operators a leading `-` can say no to. */
+const NEGATABLE = new Set(['tag', 'todo', 'done', 'task', 'tasks', 'pinned', 'pin', 'untitled']);
+
 /** A `>7d` / `<2026-01-01` / `7d` bound as after/before moments. */
 function bounds(value: string, now: number): { after?: number; before?: number } | null {
   const m = /^([<>]?)=?(.+)$/.exec(value.trim());
@@ -213,7 +226,7 @@ function bounds(value: string, now: number): { after?: number; before?: number }
   // `created:2026-01-01` means that day; `created:7d` means since then.
   if (m[1] === '<') return { before: t };
   if (m[1] === '>') return { after: t };
-  return /^\d{4}-\d{2}-\d{2}$/.test(m[2].trim()) ? { after: t, before: t + UNIT_MS.d - 1 } : { after: t };
+  return /^\d{4}-\d{2}-\d{2}$/.test(m[2].trim()) ? { after: t, before: addDays(t, 1) - 1 } : { after: t };
 }
 
 /**
@@ -233,7 +246,9 @@ export function parseQuery(text: string, now = Date.now()): Filter & { errors: s
     }
     if (tok.kind === 'regex') {
       try {
-        (filter.patterns ??= []).push(new RegExp(tok.text, tok.value.includes('i') ? tok.value : `${tok.value}i`));
+        // A global or sticky flag would carry lastIndex from one note to the next.
+        const flags = tok.value.replace(/[gy]/g, '');
+        (filter.patterns ??= []).push(new RegExp(tok.text, flags.includes('i') ? flags : `${flags}i`));
       } catch {
         filter.errors.push(`/${tok.text}/ is not a valid pattern`);
       }
@@ -242,9 +257,13 @@ export function parseQuery(text: string, now = Date.now()): Filter & { errors: s
     const negate = tok.text.startsWith('-');
     const name = negate ? tok.text.slice(1) : tok.text;
     const v = tok.value.trim();
+    if (negate && !NEGATABLE.has(name)) {
+      filter.errors.push(`-${name}: cannot be turned around; only tag, todo, done, task, pinned and untitled can`);
+      continue;
+    }
     switch (name) {
       case 'tag':
-        if (v) filter.tags.push(v.replace(/^#/, '').toLowerCase());
+        if (v) (negate ? (filter.excludeTags ??= []) : filter.tags).push(v.replace(/^#/, '').toLowerCase());
         break;
       case 'todo':
         filter.hasTodo = negate ? !yes(v) : yes(v);
@@ -351,6 +370,7 @@ export function applyFilter(notes: Note[], filter: Filter): Note[] {
     if (!matchesTerms(n, filter.terms, filter.excludes)) return false;
     if (filter.patterns && !filter.patterns.every((re) => re.test(`${titleOf(n)}\n${n.body}`))) return false;
     if (filter.tags.some((tag) => !hasTag(n, tag))) return false;
+    if (filter.excludeTags?.some((tag) => hasTag(n, tag))) return false;
     if (filter.pinned !== undefined && (n.pinned === true) !== filter.pinned) return false;
     if (filter.untitled !== undefined && Boolean(n.title?.trim()) === filter.untitled) return false;
     if (filter.createdAfter !== undefined && n.createdAt < filter.createdAfter) return false;
@@ -410,6 +430,7 @@ export function parseWords(words: readonly string[], now = Date.now()): Filter &
     merged.tags.push(...one.tags);
     merged.errors.push(...one.errors);
     if (one.patterns) (merged.patterns ??= []).push(...one.patterns);
+    if (one.excludeTags) (merged.excludeTags ??= []).push(...one.excludeTags);
     for (const key of ['pinned', 'untitled', 'createdAfter', 'createdBefore', 'updatedAfter', 'updatedBefore', 'linksToTitle', 'linkedFromTitle', 'orphan', 'hasTasks', 'hasTodo', 'hasDone', 'due', 'sort', 'reverse', 'limit'] as const) {
       if (one[key] !== undefined) (merged as unknown as Record<string, unknown>)[key] = one[key];
     }

@@ -43,6 +43,12 @@ const LATE_MS = 24 * 60 * 60 * 1000;
 const MAX_WAIT_MS = 2 ** 31 - 1;
 /** Keys older than this are dropped from reminded.json. */
 const REMEMBER_MS = 60 * LATE_MS;
+/**
+ * A note edited this recently is still being typed. A task due earlier
+ * today would otherwise fire the moment its date was typed, and again on
+ * every keystroke of the words after it, since the words are in its key.
+ */
+export const QUIET_MS = 5000;
 
 export function createReminders(deps: RemindersDeps): Reminders {
   const file = pathsFor(deps.userData).reminded;
@@ -61,8 +67,13 @@ export function createReminders(deps: RemindersDeps): Reminders {
     }
   }
 
-  async function persist(): Promise<void> {
-    await fs.writeFile(file, JSON.stringify(Object.fromEntries(shown)), 'utf8').catch((err) => console.error('[notes] could not write reminded.json', err));
+  let persisting: Promise<void> = Promise.resolve();
+
+  /** One write at a time: two at once would leave the file with the bytes of both. */
+  function persist(): Promise<void> {
+    const text = JSON.stringify(Object.fromEntries(shown));
+    persisting = persisting.then(() => fs.writeFile(file, text, 'utf8')).catch((err) => console.error('[notes] could not write reminded.json', err));
+    return persisting;
   }
 
   function show(title: string, body: string, noteId?: string): boolean {
@@ -84,16 +95,21 @@ export function createReminders(deps: RemindersDeps): Reminders {
     timer = null;
     if (!deps.enabled()) return;
     const now = Date.now();
+    const edited = new Map(notes.map((n) => [n.id, n.updatedAt]));
     let next = Infinity;
     let fired = false;
     for (const task of dueTasks(notes)) {
       const at = reminderAt(task);
       const key = reminderKey(task);
       if (at <= now) {
-        if (now - at <= LATE_MS && !shown.has(key)) {
-          fire(task);
-          fired = true;
+        if (now - at > LATE_MS || shown.has(key)) continue;
+        const quietUntil = (edited.get(task.noteId) ?? 0) + QUIET_MS;
+        if (quietUntil > now) {
+          next = Math.min(next, quietUntil);
+          continue;
         }
+        fire(task);
+        fired = true;
         continue;
       }
       next = Math.min(next, at);

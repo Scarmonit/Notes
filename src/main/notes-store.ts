@@ -10,5 +10,5 @@ export const store = createStore(app.getPath('userData'));
 
 export const notesDir = (): string => store.notesDir;
 export const trashDir = (): string => store.trashDir;
-export const { loadNotes, saveNotes, trashedIds, listTrash, getTrashed, restoreFromTrash, purgeTrashed, expireTrash, watchNotes, stopWatching } = store;
+export const { loadNotes, saveNotes, trashedIds, listTrash, getTrashed, restoreFromTrash, purgeTrashed, expireTrash, trashBodies, drain, watchNotes, stopWatching } = store;
 export { TRASH_AGE_MS } from '../core/store';

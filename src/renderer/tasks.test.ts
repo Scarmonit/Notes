@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cycleTaskLine, taskProgress, tasksIn, toggleTaskAt, toggleTaskLine } from './tasks';
+import { cycleTaskLine, setTaskDue, taskProgress, tasksIn, toggleTaskAt, toggleTaskLine } from './tasks';
 
 const LIST = '# Shopping\n\n- [ ] bread\n- [x] milk\n* [ ] jam\n\nnot a task';
 
@@ -81,5 +81,31 @@ describe('cycleTaskLine', () => {
 
   it('leaves the body alone when the line does not exist', () => {
     expect(cycleTaskLine('one line', 4)).toBe('one line');
+  });
+});
+
+describe('tasksIn mirrors the checkboxes the preview draws', () => {
+  it('skips a task inside a code fence, so the nth line is the nth box', () => {
+    const body = '```\n- [ ] in code\n```\n- [ ] real';
+    expect(tasksIn(body)).toEqual([{ line: 3, done: false }]);
+    expect(toggleTaskAt(body, 0)).toBe('```\n- [ ] in code\n```\n- [x] real');
+  });
+
+  it('counts tasks in ordered lists and quotes, which the preview also draws as boxes', () => {
+    expect(tasksIn('1. [ ] numbered\n> - [x] quoted\n- [ ]\ttab')).toEqual([
+      { line: 0, done: false },
+      { line: 1, done: true },
+    ]);
+    expect(toggleTaskLine('1. [ ] numbered', 0)).toBe('1. [x] numbered');
+    expect(toggleTaskLine('> - [x] quoted', 0)).toBe('> - [ ] quoted');
+  });
+});
+
+describe('setTaskDue keeps the line where it was', () => {
+  it('leaves the indent that nests a task under its parent', () => {
+    const body = '- [ ] parent\n    - [ ] child  x @2026-09-10';
+    expect(setTaskDue(body, 1, { at: new Date(2026, 8, 12).getTime(), withTime: false })).toBe('- [ ] parent\n    - [ ] child x @2026-09-12');
+    expect(setTaskDue(body, 1, null)).toBe('- [ ] parent\n    - [ ] child x');
+    expect(setTaskDue('- [ ] @2026-09-10 first', 0, null)).toBe('- [ ] first');
   });
 });

@@ -203,7 +203,7 @@ export async function startIpcServer(deps: ServerDeps): Promise<IpcServer> {
         send(socket, { jsonrpc: '2.0', id: 0, error: errorShape(RPC_ERROR.parse, 'Not JSON', EXIT.appError) });
         return;
       }
-      if (typeof request.id !== 'number' || typeof request.method !== 'string') {
+      if (!request || typeof request !== 'object' || typeof request.id !== 'number' || typeof request.method !== 'string') {
         send(socket, { jsonrpc: '2.0', id: 0, error: errorShape(RPC_ERROR.invalidRequest, 'Not a request', EXIT.appError) });
         return;
       }

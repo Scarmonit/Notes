@@ -69,8 +69,11 @@ export function languageOf(info: string): string | null {
   const name = info.trim().split(/\s+/)[0].toLowerCase();
   if (!name) return null;
   const found = hljs.getLanguage(name);
-  // The canonical name, so `js` and `javascript` end up as one class.
-  return found ? (found.name ?? name).toLowerCase() : null;
+  if (!found) return null;
+  // The key it was registered under, so `js` and `javascript` end up as one
+  // class — and one hljs.highlight can find. (The display name is not that
+  // key: html is "HTML, XML", ini is "TOML, also INI".)
+  return Object.keys(LANGUAGES).find((key) => hljs.getLanguage(key) === found) ?? name;
 }
 
 /**

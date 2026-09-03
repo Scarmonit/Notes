@@ -17,6 +17,8 @@ import {
   expireTrash,
   getTrashed,
   listTrash,
+  trashBodies,
+  drain,
   loadNotes,
   notesDir,
   purgeTrashed,
@@ -49,7 +51,7 @@ function devIcon(): string | undefined {
 }
 
 function isExternal(url: string): boolean {
-  return /^https?:\/\//i.test(url);
+  return /^(?:https?:\/\/|mailto:)/i.test(url);
 }
 
 // Closing the window can mean "hide to the tray", so a real quit has to say so.
@@ -289,7 +291,7 @@ if (squirrelLaunch) {
     // Both run behind the save, never in front of it: neither the snapshot
     // ring nor the attachment sweep may delay or endanger the write itself.
     void record(file.notes, trashedIds());
-    void sweepOrphans(file).catch((err) => console.error('[notes] attachment sweep failed', err));
+    void sweepOrphans(file, trashBodies).catch((err) => console.error('[notes] attachment sweep failed', err));
   });
   ipcMain.handle(IPC.openFolder, () => shell.openPath(notesDir()).then(() => undefined));
   ipcMain.handle(IPC.attach, (_event, bytes: Uint8Array, name: string) => saveAttachment(bytes, name));
@@ -368,18 +370,23 @@ if (squirrelLaunch) {
   });
 
   app.on('window-all-closed', () => app.quit());
+  let drained = false;
   app.on('will-quit', (event) => {
     globalShortcut.unregisterAll();
     stopWatching();
     reminders?.stop();
     destroyCapture();
     destroyTray();
-    if (ipcServer) {
-      // ipc.json must not outlive the process that wrote it.
-      event.preventDefault();
-      const server = ipcServer;
-      ipcServer = null;
-      void server.close().finally(() => app.quit());
-    }
+    if (drained) return;
+    drained = true;
+    // The last save may still be on its way to the disk — the window answers
+    // a flush with nothing while its own save is in flight — and ipc.json
+    // must not outlive the process that wrote it. Quit once both are settled.
+    event.preventDefault();
+    const server = ipcServer;
+    ipcServer = null;
+    const settled = Promise.all([server?.close(), drain()]);
+    const atMost = new Promise<void>((resolve) => setTimeout(resolve, 5000));
+    void Promise.race([settled, atMost]).finally(() => app.quit());
   });
 }

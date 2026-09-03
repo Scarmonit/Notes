@@ -18,9 +18,9 @@ export interface FindMatch {
 const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** The pattern for a query, or null when it is empty or not a valid expression. */
-function patternOf(query: string, opts: FindOptions, global: boolean): RegExp | null {
+function patternOf(query: string, opts: FindOptions, mode: 'all' | 'here' | 'one'): RegExp | null {
   if (!query) return null;
-  const flags = `${global ? 'g' : ''}${opts.caseSensitive ? '' : 'i'}u`;
+  const flags = `${mode === 'all' ? 'g' : mode === 'here' ? 'y' : ''}${opts.caseSensitive ? '' : 'i'}u`;
   try {
     return new RegExp(opts.regex ? query : escapeRegex(query), flags);
   } catch {
@@ -30,12 +30,12 @@ function patternOf(query: string, opts: FindOptions, global: boolean): RegExp | 
 
 /** Whether the query is something that can be searched for at all. */
 export function validQuery(query: string, opts: FindOptions): boolean {
-  return patternOf(query, opts, true) !== null;
+  return patternOf(query, opts, 'all') !== null;
 }
 
 /** Every match in the text, in order. An empty match is skipped, so `a*` cannot match everywhere. */
 export function findMatches(text: string, query: string, opts: FindOptions): FindMatch[] {
-  const re = patternOf(query, opts, true);
+  const re = patternOf(query, opts, 'all');
   if (!re) return [];
   const out: FindMatch[] = [];
   let m: RegExpExecArray | null;
@@ -58,13 +58,17 @@ export function matchFrom(matches: FindMatch[], offset: number): number {
 
 /**
  * What one match becomes. In regex mode the replacement can refer to groups
- * ($1), so the match is run again on its own text to expand them.
+ * ($1), so the pattern is run again, at the match's place in the whole text
+ * — not on the matched slice alone, where a lookbehind or an anchor that
+ * found it there would find nothing.
  */
 export function replacementFor(text: string, match: FindMatch, query: string, replacement: string, opts: FindOptions): string {
-  const piece = text.slice(match.start, match.end);
   if (!opts.regex) return replacement;
-  const re = patternOf(query, opts, false);
-  return re ? piece.replace(re, replacement) : replacement;
+  const re = patternOf(query, opts, 'here');
+  if (!re) return replacement;
+  re.lastIndex = match.start;
+  const out = text.replace(re, replacement);
+  return out.slice(match.start, out.length - (text.length - match.end));
 }
 
 /** The text with one match replaced. */

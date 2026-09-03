@@ -100,3 +100,15 @@ describe('isNoteFileName', () => {
     expect(isNoteFileName('readme.txt')).toBe(false);
   });
 });
+
+describe('fileNameFor and isNoteFileName agree', () => {
+  it('never makes a name the store would take for a hidden or lock file', () => {
+    // A leading dot or tilde is what isNoteFileName rejects: the note was written and never read again.
+    for (const title of ['.env cheatsheet', '~tilde title', '..', '~', '. .', '~/.config notes']) {
+      const name = `${fileNameFor(title)}.md`;
+      expect(isNoteFileName(name), `${JSON.stringify(title)} -> ${name}`).toBe(true);
+    }
+    expect(fileNameFor('.env cheatsheet')).toBe('env cheatsheet');
+    expect(fileNameFor('..')).toBe('Untitled');
+  });
+});

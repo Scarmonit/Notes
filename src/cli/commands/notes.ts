@@ -8,7 +8,7 @@ import { createNote, snippetOf, tagsOf, titleOf, updateBody, updateTitle, wordCo
 import { taskProgress } from '../../renderer/tasks';
 import type { Note } from '../../shared/types';
 import { AppBackend } from '../client';
-import { addFilterOptions, describe, filteredNotes, type Ctx, type FilterOpts } from '../context';
+import { addFilterOptions, describe, filteredNotes, hasFilterOpts, type Ctx, type FilterOpts } from '../context';
 import { editText } from '../editor';
 import { gatherBody, normalise } from '../body';
 import { iso, oneLine, relative, type Column } from '../output';
@@ -365,15 +365,14 @@ export function register(program: Command, use: () => Ctx): void {
       targets = [];
       for (const s of selectors) targets.push(await c.note(s, all));
     } else {
-      const { kept } = await filteredNotes(c, opts);
-      const filtering = Object.values(opts).some((v) => v !== undefined && v !== false);
-      if (!filtering) throw new CliError('Say which notes to delete: names, or a filter such as --tag', EXIT.usage);
-      targets = kept;
+      // --force and --permanent say how to delete, not which: on their own they must not mean "everything".
+      if (!hasFilterOpts(opts)) throw new CliError('Say which notes to delete: names, or a filter such as --tag', EXIT.usage);
+      targets = (await filteredNotes(c, opts)).kept;
     }
     if (targets.length === 0) throw new CliError('No notes to delete', EXIT.notFound);
     const names = targets.map((n) => `"${titleOf(n)}"`).join(', ');
     const what = opts.permanent ? 'Delete for good' : 'Move to the trash';
-    if (!opts.force && !(await c.confirm(`${what}: ${names}?`))) {
+    if (!(await c.confirm(`${what}: ${names}?`))) {
       c.out.message('Nothing deleted');
       return;
     }

@@ -36,3 +36,9 @@ describe('headingAt', () => {
     expect(headingAt([], 3)).toBe(-1);
   });
 });
+
+describe('headings that end in #', () => {
+  it('keeps a # that is part of the last word and drops only a spaced closing run', () => {
+    expect(headingsIn('# C#\n## Learning F#\n### Three ###\n#### Four #').map((h) => h.text)).toEqual(['C#', 'Learning F#', 'Three', 'Four']);
+  });
+});

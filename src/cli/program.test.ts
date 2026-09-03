@@ -293,3 +293,34 @@ describe('notes 0.13: templates, due tasks, operators, related, graph, html expo
     expect(stdout.trim()).toBe('false');
   });
 });
+
+describe('0.13.1 regressions', () => {
+  it('does not take --force or --permanent for a filter, and --force does not stand in for --yes', async () => {
+    expect(await run('new', 'One', '--content', 'a')).toBe(0);
+    expect(await run('new', 'Two', '--content', 'b')).toBe(0);
+    expect(await run('delete', '--force')).toBe(2);
+    expect(await run('delete', '--permanent')).toBe(2);
+    expect(await run('delete', '--tag', 'nothing', '--force')).toBe(3); // nothing matched
+    expect(await run('list', '--plain')).toBe(0);
+    expect(lines()).toHaveLength(2);
+    // A filter that is a `false` still counts as one.
+    expect(await run('delete', '--no-pinned', '--yes')).toBe(0);
+    expect(await run('list', '--plain')).toBe(0);
+    expect(lines()).toHaveLength(0);
+  });
+
+  it('honours string-valued filters on export, such as --limit', async () => {
+    expect(await run('new', 'Alpha', '--content', 'a')).toBe(0);
+    expect(await run('new', 'Beta', '--content', 'b')).toBe(0);
+    const out = path.join(root, 'exp');
+    await fs.mkdir(out);
+    expect(await run('export', '--limit', '1', '-o', out)).toBe(0);
+    expect((await fs.readdir(out)).filter((f) => f.endsWith('.md'))).toHaveLength(1);
+  });
+
+  it('keeps a note titled with a leading dot', async () => {
+    expect(await run('new', '.env cheatsheet', '--content', 'secrets')).toBe(0);
+    expect(await run('list', '--plain')).toBe(0);
+    expect(stdout).toContain('.env cheatsheet');
+  });
+});

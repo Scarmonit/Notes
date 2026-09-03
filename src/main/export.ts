@@ -51,6 +51,8 @@ export async function exportTo(filePath: string, request: ExportRequest): Promis
 
 const PNG_WIDTH = 820;
 const PNG_SCALE = 2;
+/** A picture from the web that never arrives must not hold the export, and its window, open. */
+const LOAD_TIMEOUT_MS = 30_000;
 
 /** The export page for a rendered note, pictures inlined. */
 async function pageFor(request: RenderedExport, look: 'ink' | 'paper', width?: number): Promise<string> {
@@ -72,13 +74,24 @@ async function openPage(doc: string, options: { width: number; offscreen: boolea
     win.destroy();
     await fs.unlink(tmp).catch(() => undefined);
   };
-  try {
+  const load = (async () => {
     await win.loadFile(tmp);
     await win.webContents.executeJavaScript('Promise.all(Array.from(document.images, (i) => i.complete ? null : new Promise((r) => { i.onload = r; i.onerror = r; })))');
     await win.webContents.executeJavaScript('document.fonts ? document.fonts.ready.then(() => true) : true');
+  })();
+  // Destroying the window on a timeout rejects the load too; that rejection has been heard.
+  load.catch(() => undefined);
+  let timer: NodeJS.Timeout | undefined;
+  const expiry = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('The page did not finish loading in time: a picture from the web that never came?')), LOAD_TIMEOUT_MS);
+  });
+  try {
+    await Promise.race([load, expiry]);
   } catch (err) {
     await done();
     throw err;
+  } finally {
+    clearTimeout(timer);
   }
   return { win, done };
 }
