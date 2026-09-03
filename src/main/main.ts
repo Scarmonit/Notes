@@ -1,9 +1,11 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { IPC } from '../shared/channels';
-import type { NotesFile } from '../shared/types';
+import type { ExportRequest, NotesFile } from '../shared/types';
+import { installAssetProtocol, pickAttachments, registerAssetScheme, saveAttachment, sweepOrphans } from './attachments';
+import { exportNote } from './export';
 import { loadNotes, saveNotes } from './notes-store';
 
 // Squirrel runs the exe with install/update flags; those launches must exit.
@@ -95,9 +97,20 @@ function createWindow(): BrowserWindow {
   return win;
 }
 
+function windowFor(event: Electron.IpcMainInvokeEvent): BrowserWindow {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) throw new Error('no window for request');
+  return win;
+}
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
+  registerAssetScheme();
+  // No application menu: its default accelerators (Ctrl+Shift+I, Ctrl+R...)
+  // would shadow the app's own shortcuts. F12 still opens DevTools.
+  Menu.setApplicationMenu(null);
+
   app.on('second-instance', () => {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) return;
@@ -106,8 +119,17 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   ipcMain.handle(IPC.notesLoad, () => loadNotes());
-  ipcMain.handle(IPC.notesSave, (_event, file: NotesFile) => saveNotes(file));
+  ipcMain.handle(IPC.notesSave, async (_event, file: NotesFile) => {
+    await saveNotes(file);
+    void sweepOrphans(file).catch((err) => console.error('[notes] attachment sweep failed', err));
+  });
+  ipcMain.handle(IPC.attach, (_event, bytes: Uint8Array, name: string) => saveAttachment(bytes, name));
+  ipcMain.handle(IPC.pickAttachments, (event) => pickAttachments(windowFor(event)));
+  ipcMain.handle(IPC.exportNote, (event, request: ExportRequest) => exportNote(windowFor(event), request));
 
-  void app.whenReady().then(createWindow);
+  void app.whenReady().then(() => {
+    installAssetProtocol();
+    createWindow();
+  });
   app.on('window-all-closed', () => app.quit());
 }

@@ -12,8 +12,13 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   }
 });
 
+// DOMPurify's default only lets http(s)/mailto/tel through on src/href; attached
+// images use the app's own note-asset scheme, which the main process serves
+// from the attachments folder and nowhere else.
+const ALLOWED_URI = /^(?:(?:https?|mailto|note-asset):|[^a-z]|[a-z+.-]+(?:[^a-z+.:-]|$))/i;
+
 /** Markdown source to sanitized HTML, safe to assign to innerHTML. */
 export function renderMarkdown(source: string): string {
   const html = marked.parse(source, { async: false }) as string;
-  return DOMPurify.sanitize(html, { USE_PROFILES: { html: true }, ADD_ATTR: ['target'] });
+  return DOMPurify.sanitize(html, { USE_PROFILES: { html: true }, ADD_ATTR: ['target'], ALLOWED_URI_REGEXP: ALLOWED_URI });
 }

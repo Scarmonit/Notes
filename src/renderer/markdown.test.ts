@@ -27,6 +27,13 @@ describe('renderMarkdown', () => {
     expect(html).not.toContain('javascript:');
   });
 
+  it('keeps attached images but still drops other odd schemes', () => {
+    const html = renderMarkdown('![cat](note-asset://deadbeef.png)\n\n![x](file:///C:/secret.png)\n\n<img src="javascript:alert(1)">');
+    expect(html).toContain('src="note-asset://deadbeef.png"');
+    expect(html).not.toContain('file:///');
+    expect(html).not.toContain('javascript:');
+  });
+
   it('sends links to a new window so the main process can open them externally', () => {
     const html = renderMarkdown('[site](https://example.com)');
     expect(html).toContain('href="https://example.com"');

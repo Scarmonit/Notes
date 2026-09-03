@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self' ws: http://localhost:*;"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: note-asset:; font-src 'self'; connect-src 'self' ws: http://localhost:*;"
     />
     <title>Notes</title>
     <link rel="stylesheet" href="/src/renderer/styles.css" />
@@ -38,7 +38,7 @@
         </div>
       </aside>
 
-      <main class="pane">
+      <main id="pane" class="pane">
         <header class="pane-head drag">
           <button id="toggle-sidebar" class="icon-btn no-drag" title="Toggle sidebar (Ctrl+\)" aria-label="Toggle sidebar">
             <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
@@ -47,10 +47,19 @@
             </svg>
           </button>
           <div class="pane-meta">
-            <span id="saved" class="saved u" aria-live="polite"></span>
+            <span id="status" class="status u" aria-live="polite"></span>
           </div>
           <div class="pane-actions no-drag">
             <button id="preview-toggle" class="pill u" title="Toggle preview (Ctrl+E)" aria-pressed="false">Preview</button>
+            <button id="attach" class="pill u" title="Attach image (Ctrl+Shift+I)">Attach</button>
+            <div id="export-wrap" class="menu-wrap">
+              <button id="export" class="pill u" title="Export (Ctrl+Shift+S)" aria-haspopup="menu" aria-expanded="false">Export</button>
+              <div id="export-menu" class="menu" role="menu" aria-label="Export as" hidden>
+                <button class="menu-item" role="menuitem" data-kind="md"><span>Markdown <span class="menu-ext">.md</span></span><kbd>M</kbd></button>
+                <button class="menu-item" role="menuitem" data-kind="txt"><span>Plain text <span class="menu-ext">.txt</span></span><kbd>T</kbd></button>
+                <button class="menu-item" role="menuitem" data-kind="png"><span>Image <span class="menu-ext">.png</span></span><kbd>P</kbd></button>
+              </div>
+            </div>
             <button id="delete" class="pill u danger" title="Delete note (Ctrl+Shift+D)">Delete</button>
           </div>
         </header>
@@ -84,6 +93,8 @@
             <dt><kbd>Enter</kbd></dt><dd>Open the note in the editor</dd>
             <dt><kbd>Ctrl</kbd> <kbd>↑</kbd> / <kbd>Ctrl</kbd> <kbd>↓</kbd></dt><dd>Previous or next note from anywhere</dd>
             <dt><kbd>Ctrl</kbd> <kbd>E</kbd></dt><dd>Toggle markdown preview</dd>
+            <dt><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>I</kbd></dt><dd>Attach an image (or paste / drop one)</dd>
+            <dt><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>S</kbd></dt><dd>Export as Markdown, plain text or image</dd>
             <dt><kbd>Ctrl</kbd> <kbd>S</kbd></dt><dd>Save now (autosave is always on)</dd>
             <dt><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>D</kbd></dt><dd>Delete note, press again to confirm</dd>
             <dt><kbd>Ctrl</kbd> <kbd>\</kbd></dt><dd>Toggle sidebar</dd>

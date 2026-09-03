@@ -21,6 +21,17 @@ describe('wordCount', () => {
     expect(wordCount('')).toBe(0);
     expect(wordCount('---\n***')).toBe(0);
   });
+  it('does not count link or image targets', () => {
+    expect(wordCount('see [the site](https://example.com/a/b) now')).toBe(4);
+    expect(wordCount('![garden photo](note-asset://deadbeef.png)')).toBe(2);
+  });
+});
+
+describe('titleOf with links and images', () => {
+  it('uses alt and link text instead of URLs', () => {
+    expect(titleOf({ body: '![Garden photo](note-asset://deadbeef.png)' })).toBe('Garden photo');
+    expect(titleOf({ body: '[Docs](https://example.com) to read' })).toBe('Docs to read');
+  });
 });
 
 const note = (id: string, body: string, updatedAt: number): Note => ({ id, body, createdAt: updatedAt, updatedAt });

@@ -8,6 +8,9 @@ const api: NotesApi = {
   onFlushRequest: (fn) => {
     ipcRenderer.on(IPC.flushRequest, () => ipcRenderer.send(IPC.flushReply, fn()));
   },
+  attach: (bytes, name) => ipcRenderer.invoke(IPC.attach, bytes, name),
+  pickAttachments: () => ipcRenderer.invoke(IPC.pickAttachments),
+  exportNote: (request) => ipcRenderer.invoke(IPC.exportNote, request),
 };
 
 contextBridge.exposeInMainWorld('notesApi', api);
