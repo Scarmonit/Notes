@@ -214,8 +214,9 @@ export class AppBackend implements Backend {
   run = (id: string) => this.call('run', { id }).then((r) => r.ran);
   open = (options: { id?: string; search?: string }) => this.call('open', options).then((r) => r.opened);
   captureShow = () => this.call('capture.show', {}).then((r) => r.shown);
-  exportPng = (id: string, target: string) => this.call('export.png', { id, path: target }).then(() => undefined);
+  exportRendered = (id: string, target: string, kind: 'png' | 'pdf' | 'html') => this.call('export.render', { id, path: target, kind }).then(() => undefined);
   renderHtml = (body: string) => this.call('render.html', { body }).then((r) => r.html);
+  notify = (title: string, body: string, noteId?: string) => this.call('notify', { title, body, noteId }).then((r) => r.shown);
 
   async watch(onChange: (changes: ExternalChanges) => void, signal: AbortSignal): Promise<void> {
     const off = this.conn.onNotification((method, params) => {

@@ -9,7 +9,7 @@ import { isTextFile, noteFromFile } from './importer';
 import { decorateLines, isDecorated, type Protected } from './inline';
 import { renderMarkdown } from './markdown';
 import { headingAt, headingsIn, type Heading } from './outline';
-import { cycleTaskLine, toggleTaskAt } from './tasks';
+import { cycleTaskLine, toggleTaskAt, toggleTaskLine } from './tasks';
 import {
   backlinksOf,
   createNote,
@@ -65,7 +65,17 @@ import {
 import stylesText from './styles.css?inline';
 import { absoluteTime, relativeTime } from './time';
 import type { SnapshotSummary } from '../shared/history';
-import type { ExternalChanges, TrashedNote } from '../shared/types';
+import type { ExternalChanges, RenderedExport, TrashedNote } from '../shared/types';
+// 0.13: templates, scheduled tasks, search operators, math and diagrams, related notes and the graph.
+import { dueLabel, dueTasks, type DueTask } from '../core/due';
+import { applyFilter, hasOperators, OPERATORS, parseQuery } from '../core/query';
+import { graphOf, neighbourhood, relatedNotes, type Graph } from '../core/related';
+import { DATE_FORMAT, expandTemplate, formatDate, templatesOf, TIME_FORMAT } from '../core/templates';
+import { hasDiagrams, hasMath } from '../shared/markdown-core';
+import { renderDiagrams } from './diagrams';
+import { layoutGraph, nodeAt, type LaidOut } from './graph';
+import './generated/katex.css';
+import katexText from './generated/katex.css?inline';
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const node = document.getElementById(id);
@@ -156,6 +166,18 @@ const el = {
   cliText: $<HTMLSpanElement>('cli-text'),
   cliInstall: $<HTMLButtonElement>('cli-install'),
   cliNote: $<HTMLParagraphElement>('cli-note'),
+  searchOps: $<HTMLParagraphElement>('search-ops'),
+  related: $('related'),
+  remindersOn: $<HTMLInputElement>('reminders-on'),
+  pickSheet: $('pick-sheet'),
+  pickInput: $<HTMLInputElement>('pick-input'),
+  pickList: $('pick-list'),
+  dueSheet: $('due-sheet'),
+  dueList: $('due-list'),
+  graphSheet: $('graph-sheet'),
+  graphCanvas: $<HTMLCanvasElement>('graph-canvas'),
+  graphScope: $<HTMLButtonElement>('graph-scope'),
+  graphNote: $('graph-note'),
 };
 
 // --- UI state (per-machine conveniences, kept in localStorage) --------------
@@ -242,7 +264,18 @@ let tagFilter: string | null = null;
 /** Which note the textarea currently holds, so re-renders never clobber the caret. */
 let editorNoteId: string | null = null;
 
-const visibleNotes = (): Note[] => searchNotes(sortByEdited(notes), query, tagFilter);
+/**
+ * The notes the sidebar shows. Plain words go through the search box's own
+ * matching, as always; a query with an operator in it — `todo:`,
+ * `due:today`, `links:Plan`, `/regex/` — is read by the same grammar the
+ * command line uses, so the two never disagree about what a query means.
+ */
+const visibleNotes = (): Note[] => {
+  if (!hasOperators(query)) return searchNotes(sortByEdited(notes), query, tagFilter);
+  const filter = parseQuery(query);
+  if (tagFilter) filter.tags.push(tagFilter);
+  return applyFilter(sortByEdited(notes), filter);
+};
 const filtering = (): boolean => query.trim() !== '' || tagFilter !== null;
 const selected = (): Note | null => notes.find((n) => n.id === ui.selectedId) ?? null;
 
@@ -382,10 +415,14 @@ function emptyListMessage(): HTMLElement {
     msg.textContent = 'No notes match that.';
     const hint = document.createElement('span');
     hint.className = 'u';
-    hint.innerHTML = 'Press <kbd>Enter</kbd> to start a note titled ';
-    const title = document.createElement('b');
-    title.textContent = `“${q}”`;
-    hint.append(title);
+    if (hasOperators(q)) {
+      hint.textContent = 'Operators: todo: done: due:today tag: pinned: created:>7d links: sort:title /regex/';
+    } else {
+      hint.innerHTML = 'Press <kbd>Enter</kbd> to start a note titled ';
+      const title = document.createElement('b');
+      title.textContent = `“${q}”`;
+      hint.append(title);
+    }
     msg.append(hint);
   } else {
     msg.textContent = `No notes tagged #${tagFilter ?? ''}.`;
@@ -502,9 +539,13 @@ function renderEditor(): void {
       : '<p class="preview-empty">Nothing to preview yet.</p>';
     liveTaskBoxes();
     liveCodeBlocks();
+    // Diagrams are drawn in after the words are on the page; the source
+    // block stands in until then, so nothing jumps.
+    void renderDiagrams(el.preview).catch((err) => console.error('[notes] diagrams failed', err));
     el.preview.scrollTop = scroll;
   }
   renderBacklinks();
+  renderRelated();
   renderOutline();
   syncChipUi();
   syncWriting();
@@ -542,6 +583,36 @@ function renderBacklinks(): void {
       focusEditor();
     });
     el.backlinks.append(chip);
+  }
+}
+
+/**
+ * Notes near this one that nothing on the page already points at: the
+ * ones sharing its tags, and the ones two links away. Under the backlinks,
+ * in the same dress, because they answer the same question — what else
+ * belongs with this? — from the other direction.
+ */
+function renderRelated(): void {
+  const n = selected();
+  const near = n ? relatedNotes(notes, n.id, 8) : [];
+  el.related.hidden = near.length === 0 || el.editorWrap.hidden;
+  el.related.replaceChildren();
+  if (near.length === 0) return;
+  const label = document.createElement('span');
+  label.className = 'backlinks-label u';
+  label.textContent = 'Related';
+  el.related.append(label);
+  for (const r of near) {
+    const chip = document.createElement('button');
+    chip.className = 'backlink';
+    chip.type = 'button';
+    chip.textContent = titleOf(r.note);
+    chip.title = r.reasons.join(' · ');
+    chip.addEventListener('click', () => {
+      select(r.note.id);
+      focusEditor();
+    });
+    el.related.append(chip);
   }
 }
 
@@ -602,6 +673,8 @@ function clearFilters(): void {
 function liveCodeBlocks(): void {
   for (const pre of Array.from(el.preview.querySelectorAll('pre'))) {
     if (pre.parentElement?.classList.contains('code-block')) continue;
+    // A diagram's source is about to become a picture; no copy button for it.
+    if (pre.classList.contains('mermaid') || pre.closest('.diagram')) continue;
     const wrap = document.createElement('div');
     wrap.className = 'code-block';
     pre.replaceWith(wrap);
@@ -1719,6 +1792,24 @@ function closeExportMenu(restoreFocus: boolean): void {
 
 const fileNameOf = (p: string): string => p.split(/[\\/]/).pop() ?? p;
 
+/**
+ * The note as the preview shows it, ready to be laid on a page: math
+ * rendered, diagrams drawn (in the theme the page will have), and the
+ * stylesheets the page needs. The PNG, the PDF and the HTML export all
+ * start from this, as does `notes render --html` through the window.
+ */
+async function renderedExport(n: Note, look: 'ink' | 'paper' = 'ink'): Promise<RenderedExport> {
+  const body = exportBody(n);
+  let html = renderMarkdown(body);
+  if (hasDiagrams(html)) {
+    const holder = document.createElement('div');
+    holder.innerHTML = html;
+    await renderDiagrams(holder, look === 'paper' ? 'neutral' : 'dark');
+    html = holder.innerHTML;
+  }
+  return { title: titleOf(n), html, css: stylesText, mathCss: hasMath(html) ? katexText : undefined, edited: `Edited ${absoluteTime(n.updatedAt)}` };
+}
+
 async function runExport(kind: ExportKind): Promise<void> {
   const n = selected();
   if (!n) return;
@@ -1726,12 +1817,12 @@ async function runExport(kind: ExportKind): Promise<void> {
   focusEditor();
   const title = titleOf(n);
   const body = exportBody(n);
+  showStatus('Exporting…', 0);
   let request: ExportRequest;
   if (kind === 'md') request = { kind, title, body };
   else if (kind === 'txt') request = { kind, title, text: markdownToText(body) };
-  else request = { kind, title, html: renderMarkdown(body), css: stylesText, edited: `Edited ${absoluteTime(n.updatedAt)}` };
+  else request = { kind, ...(await renderedExport(n, kind === 'pdf' ? 'paper' : 'ink')) };
 
-  showStatus('Exporting…', 0);
   try {
     const savedTo = await window.notesApi.exportNote(request);
     if (savedTo) showStatus(`Exported to ${fileNameOf(savedTo)}`, 4000);
@@ -1775,7 +1866,7 @@ el.exportMenu.addEventListener('keydown', (e) => {
       closeExportMenu(false);
       break;
     default: {
-      const kind = ({ m: 'md', t: 'txt', p: 'png' } as Record<string, ExportKind>)[e.key.toLowerCase()];
+      const kind = ({ m: 'md', t: 'txt', p: 'png', h: 'html', d: 'pdf' } as Record<string, ExportKind>)[e.key.toLowerCase()];
       if (kind && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault();
         void runExport(kind);
@@ -2114,6 +2205,7 @@ const hotkeyRows: HotkeyRow[] = [
 
 function renderSettings(notes: Partial<Record<HotkeyRow['key'], string>> = {}): void {
   el.closeTray.checked = settings.closeToTray;
+  el.remindersOn.checked = settings.reminders;
   for (const row of hotkeyRows) {
     const chord = settings[row.key];
     row.btn.classList.toggle('recording', row.recording);
@@ -2141,7 +2233,7 @@ async function saveSettings(next: Settings): Promise<void> {
   renderSettings();
   try {
     const stored = await window.notesApi.setSettings(next);
-    settings = { closeToTray: stored.closeToTray, hotkey: stored.hotkey, captureHotkey: stored.captureHotkey };
+    settings = { closeToTray: stored.closeToTray, hotkey: stored.hotkey, captureHotkey: stored.captureHotkey, reminders: stored.reminders };
     const notes: Partial<Record<HotkeyRow['key'], string>> = {};
     for (const row of hotkeyRows) if (stored[row.failed]) notes[row.key] = 'Another program already uses that combination.';
     renderSettings(notes);
@@ -2154,6 +2246,9 @@ async function saveSettings(next: Settings): Promise<void> {
 
 el.closeTray.addEventListener('change', () => {
   void saveSettings({ ...settings, closeToTray: el.closeTray.checked });
+});
+el.remindersOn.addEventListener('change', () => {
+  void saveSettings({ ...settings, reminders: el.remindersOn.checked });
 });
 
 for (const row of hotkeyRows) {
@@ -2248,8 +2343,42 @@ el.cliInstall.addEventListener('click', () => {
 
 // --- search -----------------------------------------------------------------
 
+/**
+ * A line under the box while an operator is being typed: the operators,
+ * or what the one just typed could not read. Plain words get nothing —
+ * the line is help for the grammar, not a banner over every search.
+ */
+function renderSearchOps(): void {
+  const focused = document.activeElement === el.search;
+  const q = query.trim();
+  const typingOne = /(^|\s)-?[a-z]+:\S*$/i.test(q) || /(^|\s)\/[^/]*$/.test(q);
+  if (!focused || (!typingOne && !hasOperators(q))) {
+    el.searchOps.hidden = true;
+    return;
+  }
+  const { errors } = parseQuery(q);
+  el.searchOps.hidden = false;
+  el.searchOps.classList.toggle('is-error', errors.length > 0);
+  el.searchOps.replaceChildren();
+  if (errors.length > 0) {
+    el.searchOps.textContent = errors[0];
+    return;
+  }
+  OPERATORS.forEach((o, i) => {
+    const b = document.createElement('b');
+    b.textContent = o.op;
+    b.title = o.means;
+    if (i > 0) el.searchOps.append(' ');
+    el.searchOps.append(b);
+  });
+}
+
+el.search.addEventListener('focus', renderSearchOps);
+el.search.addEventListener('blur', renderSearchOps);
+
 el.search.addEventListener('input', () => {
   query = el.search.value;
+  renderSearchOps();
   const vis = visibleNotes();
   // Keep the current note when it still matches; otherwise land on the best hit.
   if (vis.length > 0 && !vis.some((n) => n.id === ui.selectedId)) {
@@ -2990,6 +3119,423 @@ function applyExternal(changes: ExternalChanges): void {
 
 window.notesApi.onExternalChange(applyExternal);
 
+// --- a picker: the palette's shape, for choosing from a list ------------------
+
+interface PickItem {
+  label: string;
+  hint?: string;
+  run: () => void;
+}
+
+let pickItems: PickItem[] = [];
+let pickShown: PickItem[] = [];
+let pickAt = 0;
+let pickReturn: (() => void) | null = null;
+
+/** Opens the picker over some choices. `onClose` runs when it goes away without a choice. */
+function openPicker(placeholder: string, items: PickItem[], onClose?: () => void): void {
+  pickItems = items;
+  pickReturn = onClose ?? null;
+  el.pickInput.placeholder = placeholder;
+  el.pickInput.setAttribute('aria-label', placeholder);
+  el.pickInput.value = '';
+  el.pickSheet.hidden = false;
+  refreshPicker();
+  el.pickInput.focus();
+}
+
+function closePicker(chosen = false): void {
+  if (el.pickSheet.hidden) return;
+  el.pickSheet.hidden = true;
+  const back = pickReturn;
+  pickReturn = null;
+  if (!chosen) {
+    back?.();
+    focusEditor();
+  }
+}
+
+function refreshPicker(): void {
+  const q = el.pickInput.value.trim().toLowerCase();
+  pickShown = pickItems.filter((it) => !q || it.label.toLowerCase().includes(q) || (it.hint ?? '').toLowerCase().includes(q));
+  pickAt = 0;
+  drawPicker();
+}
+
+function drawPicker(): void {
+  el.pickList.replaceChildren();
+  if (pickShown.length === 0) {
+    const none = document.createElement('div');
+    none.className = 'palette-none u';
+    none.textContent = pickItems.length === 0 ? 'Nothing to choose from.' : 'Nothing matches that.';
+    el.pickList.append(none);
+    return;
+  }
+  pickShown.forEach((it, i) => {
+    const row = document.createElement('div');
+    row.className = `palette-row${i === pickAt ? ' at' : ''}`;
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', String(i === pickAt));
+    const name = document.createElement('span');
+    name.className = 'palette-name';
+    name.textContent = it.label;
+    row.append(name);
+    if (it.hint) {
+      const hint = document.createElement('span');
+      hint.className = 'palette-group u';
+      hint.textContent = it.hint;
+      row.append(hint);
+    }
+    row.addEventListener('mousemove', () => {
+      if (pickAt !== i) {
+        pickAt = i;
+        drawPicker();
+      }
+    });
+    row.addEventListener('click', () => runPick(i));
+    el.pickList.append(row);
+  });
+  el.pickList.children[pickAt]?.scrollIntoView({ block: 'nearest' });
+}
+
+function runPick(i: number): void {
+  const it = pickShown[i];
+  if (!it) return;
+  closePicker(true);
+  it.run();
+}
+
+el.pickInput.addEventListener('input', refreshPicker);
+el.pickInput.addEventListener('keydown', (e) => {
+  switch (e.key) {
+    case 'ArrowDown':
+    case 'ArrowUp': {
+      e.preventDefault();
+      if (pickShown.length === 0) break;
+      pickAt = (pickAt + (e.key === 'ArrowDown' ? 1 : pickShown.length - 1)) % pickShown.length;
+      drawPicker();
+      break;
+    }
+    case 'Enter':
+      e.preventDefault();
+      runPick(pickAt);
+      break;
+    case 'Tab':
+      e.preventDefault();
+      break;
+  }
+});
+el.pickSheet.addEventListener('click', (e) => {
+  if (e.target === el.pickSheet) closePicker();
+});
+
+// --- templates ----------------------------------------------------------------
+
+/**
+ * Puts text into the open note at the caret, as one undo step, and leaves
+ * the caret after it. Done through the model and a re-render rather than
+ * an insert command: a template is several lines, and the editor's live
+ * formatting is only certain of a redraw it made itself.
+ */
+function insertAtCaret(text: string): void {
+  ensureEditable();
+  const n = selected();
+  if (!n) return;
+  if (!selectionInEditor()) caretToEnd();
+  const at = caretOffsetOrStart();
+  const before = n.body.slice(0, at);
+  const after = n.body.slice(at);
+  // On its own line when it is a block, unless it is being typed mid-line.
+  const pad = text.includes('\n') && before && !before.endsWith('\n') ? '\n' : '';
+  const body = `${before}${pad}${text}${after}`;
+  setBody(body);
+  placeCaretAt(at + pad.length + text.length);
+}
+
+/** The choice of templates, for inserting into this note or starting a new one. */
+function pickTemplate(mode: 'insert' | 'new'): void {
+  const templates = templatesOf(notes);
+  if (templates.length === 0) {
+    showStatus('No templates yet: tag a note #template to make it one', 4000);
+    return;
+  }
+  const items: PickItem[] = templates.map((t) => ({
+    label: titleOf(t),
+    hint: snippetOf(t, 40),
+    run: () => {
+      if (mode === 'insert') {
+        const n = selected();
+        if (!n) return;
+        insertAtCaret(expandTemplate(t, { title: titleOf(n) }));
+        showStatus(`Inserted “${titleOf(t)}”`, 2000);
+        return;
+      }
+      // A new note: titled with the search, if there is one, else named afterwards.
+      const title = query.trim();
+      const made = createNote(Date.now(), expandTemplate(t, { title: title || 'Untitled' }));
+      if (title) made.title = title;
+      notes = [made, ...notes];
+      scheduleSave();
+      clearFilters();
+      if (ui.preview) ui.preview = false;
+      select(made.id);
+      if (title) focusEditor();
+      else focusTitle();
+      showStatus(`Started from “${titleOf(t)}”`, 2500);
+    },
+  }));
+  openPicker(mode === 'insert' ? 'Insert which template?' : 'Start from which template?', items);
+}
+
+/** Today's date at the caret; with Shift, the time as well. */
+function insertDate(): void {
+  const shift = lastChord.includes('shift');
+  const now = new Date();
+  insertAtCaret(shift ? formatDate(now, `${DATE_FORMAT} ${TIME_FORMAT}`) : formatDate(now, DATE_FORMAT));
+}
+
+/** The chord that ran the current command, for commands that read a modifier. */
+let lastChord = '';
+
+// --- scheduled tasks -------------------------------------------------------------
+
+function toggleDue(force?: boolean): void {
+  const open = force ?? el.dueSheet.hidden;
+  el.dueSheet.hidden = !open;
+  if (!open) {
+    focusEditor();
+    return;
+  }
+  drawDue();
+  (el.dueList.querySelector<HTMLElement>('.due-row') ?? el.dueSheet.querySelector<HTMLElement>('.sheet-card'))?.focus();
+}
+
+/** Opens a note at one of its lines, with the caret there. */
+function openAtLine(id: string, line: number): void {
+  if (query || tagFilter) clearFilters();
+  if (ui.preview) ui.preview = false;
+  select(id);
+  const n = selected();
+  if (!n) return;
+  const offset = n.body.split('\n').slice(0, line).reduce((sum, l) => sum + l.length + 1, 0);
+  placeCaretAt(offset);
+}
+
+function drawDue(): void {
+  const now = Date.now();
+  const all = dueTasks(notes, { includeDone: true }).filter((t) => !t.done || t.due > now - 24 * 3600 * 1000);
+  el.dueList.replaceChildren();
+  if (all.length === 0) {
+    const none = document.createElement('div');
+    none.className = 'due-empty';
+    none.textContent = 'Nothing scheduled. Put @2026-09-10 on a checklist line to see it here.';
+    el.dueList.append(none);
+    return;
+  }
+  const endOfToday = new Date(now);
+  endOfToday.setHours(23, 59, 59, 999);
+  const endOfWeek = endOfToday.getTime() + 6 * 24 * 3600 * 1000;
+  const groups: Array<[string, (t: DueTask) => boolean]> = [
+    ['Overdue', (t) => !t.done && t.due < now && t.due < new Date(now).setHours(0, 0, 0, 0)],
+    ['Today', (t) => t.due >= new Date(now).setHours(0, 0, 0, 0) && t.due <= endOfToday.getTime()],
+    ['This week', (t) => t.due > endOfToday.getTime() && t.due <= endOfWeek],
+    ['Later', (t) => t.due > endOfWeek],
+    ['Done', (t) => t.done && t.due < new Date(now).setHours(0, 0, 0, 0)],
+  ];
+  const placed = new Set<DueTask>();
+  for (const [name, test] of groups) {
+    const rows = all.filter((t) => !placed.has(t) && test(t));
+    if (rows.length === 0) continue;
+    const head = document.createElement('div');
+    head.className = 'due-group';
+    head.textContent = name;
+    el.dueList.append(head);
+    for (const t of rows) {
+      placed.add(t);
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = `due-row${t.done ? ' is-done' : ''}${!t.done && t.due < now ? ' is-overdue' : ''}`;
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = t.done;
+      box.setAttribute('aria-label', t.done ? 'Done' : 'Not done');
+      box.addEventListener('click', (e) => {
+        e.stopPropagation();
+        tickDue(t);
+      });
+      const text = document.createElement('span');
+      text.className = 'due-text';
+      text.textContent = t.text || '(no words)';
+      const note = document.createElement('span');
+      note.className = 'due-note';
+      note.textContent = t.noteTitle;
+      text.append(note);
+      const when = document.createElement('span');
+      when.className = 'due-when u';
+      when.textContent = dueLabel(t.due, t.hasTime, now);
+      when.title = absoluteTime(t.due);
+      row.append(box, text, when);
+      row.addEventListener('click', () => {
+        toggleDue(false);
+        openAtLine(t.noteId, t.line);
+      });
+      el.dueList.append(row);
+    }
+  }
+}
+
+/** Ticks a task from the sheet, in whichever note it lives. */
+function tickDue(t: DueTask): void {
+  const n = notes.find((x) => x.id === t.noteId);
+  if (!n) return;
+  const body = toggleTaskLine(n.body, t.line);
+  if (n.id === ui.selectedId) setBody(body);
+  else {
+    notes = updateBody(notes, n.id, body);
+    scheduleSave();
+    renderList();
+  }
+  drawDue();
+}
+
+el.dueSheet.addEventListener('click', (e) => {
+  if (e.target === el.dueSheet) toggleDue(false);
+});
+
+// --- the graph -----------------------------------------------------------------------
+
+let graphAround = false;
+let graphPoints: LaidOut[] = [];
+let graphShown: Graph = { nodes: [], edges: [] };
+let graphRadii = new Map<string, number>();
+let graphHover: string | null = null;
+
+function toggleGraph(force?: boolean): void {
+  const open = force ?? el.graphSheet.hidden;
+  el.graphSheet.hidden = !open;
+  if (!open) {
+    focusEditor();
+    return;
+  }
+  drawGraph();
+  el.graphSheet.querySelector<HTMLElement>('.sheet-card')?.focus();
+}
+
+/** Lays the graph out and paints it. Cheap enough to redo on every open. */
+function drawGraph(): void {
+  const current = selected();
+  const whole = graphOf(notes);
+  graphShown = graphAround && current ? neighbourhood(whole, current.id, 2) : whole;
+  el.graphScope.setAttribute('aria-pressed', String(graphAround));
+  el.graphScope.disabled = !current;
+  el.graphNote.textContent = `${graphShown.nodes.length} ${graphShown.nodes.length === 1 ? 'note' : 'notes'} · ${graphShown.edges.length} ${graphShown.edges.length === 1 ? 'link' : 'links'}`;
+  const canvas = el.graphCanvas;
+  const width = canvas.width;
+  const height = canvas.height;
+  graphPoints = layoutGraph(graphShown, { width, height, iterations: graphShown.nodes.length > 200 ? 150 : 300 });
+  graphRadii = new Map(graphShown.nodes.map((n) => [n.id, 4 + Math.min(10, Math.sqrt(n.in + n.out) * 3)]));
+  paintGraph();
+}
+
+function paintGraph(): void {
+  const canvas = el.graphCanvas;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const style = getComputedStyle(document.documentElement);
+  const colour = (name: string): string => style.getPropertyValue(name).trim();
+  const at = new Map(graphPoints.map((p) => [p.id, p]));
+  const current = ui.selectedId;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = colour('--ink');
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (graphShown.nodes.length === 0) {
+    ctx.fillStyle = colour('--paper-faint');
+    ctx.font = 'italic 15px ' + colour('--serif');
+    ctx.textAlign = 'center';
+    ctx.fillText('No notes to draw yet.', canvas.width / 2, canvas.height / 2);
+    return;
+  }
+  // Links first, under the dots.
+  ctx.lineWidth = 1;
+  for (const e of graphShown.edges) {
+    const a = at.get(e.from);
+    const b = at.get(e.to);
+    if (!a || !b) continue;
+    const lit = graphHover === e.from || graphHover === e.to || current === e.from || current === e.to;
+    ctx.strokeStyle = lit ? colour('--blue') : colour('--line');
+    ctx.globalAlpha = lit ? 0.9 : 0.8;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.font = '11px ' + colour('--utility');
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  const linked = new Set(graphShown.edges.flatMap((e) => [e.from, e.to]));
+  for (const n of graphShown.nodes) {
+    const p = at.get(n.id);
+    if (!p) continue;
+    const r = graphRadii.get(n.id) ?? 5;
+    const isCurrent = n.id === current;
+    const isHover = n.id === graphHover;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = isCurrent ? colour('--margin') : isHover ? colour('--blue') : linked.has(n.id) ? colour('--paper-dim') : colour('--paper-faint');
+    ctx.fill();
+    if (isCurrent || isHover) {
+      ctx.strokeStyle = colour('--paper');
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+    // Labels for the notes that matter: linked ones, the current one, the hovered one; the rest on hover only.
+    if (isCurrent || isHover || linked.has(n.id) || graphShown.nodes.length <= 40) {
+      ctx.fillStyle = isCurrent || isHover ? colour('--paper') : colour('--paper-dim');
+      const label = n.title.length > 28 ? `${n.title.slice(0, 27)}…` : n.title;
+      ctx.fillText(label, p.x, p.y + r + 3);
+    }
+  }
+}
+
+/** Canvas coordinates of a pointer event, whatever size the canvas is drawn at. */
+function graphPoint(e: MouseEvent): { x: number; y: number } {
+  const rect = el.graphCanvas.getBoundingClientRect();
+  return { x: ((e.clientX - rect.left) / rect.width) * el.graphCanvas.width, y: ((e.clientY - rect.top) / rect.height) * el.graphCanvas.height };
+}
+
+el.graphCanvas.addEventListener('mousemove', (e) => {
+  const { x, y } = graphPoint(e);
+  const hit = nodeAt(graphPoints, graphRadii, x, y);
+  if (hit === graphHover) return;
+  graphHover = hit;
+  el.graphCanvas.classList.toggle('has-hover', hit !== null);
+  el.graphCanvas.title = hit ? (graphShown.nodes.find((n) => n.id === hit)?.title ?? '') : '';
+  paintGraph();
+});
+el.graphCanvas.addEventListener('mouseleave', () => {
+  if (graphHover === null) return;
+  graphHover = null;
+  el.graphCanvas.classList.remove('has-hover');
+  paintGraph();
+});
+el.graphCanvas.addEventListener('click', (e) => {
+  const { x, y } = graphPoint(e);
+  const hit = nodeAt(graphPoints, graphRadii, x, y);
+  if (!hit) return;
+  toggleGraph(false);
+  if (query || tagFilter) clearFilters();
+  select(hit);
+  focusEditor();
+});
+el.graphScope.addEventListener('click', () => {
+  graphAround = !graphAround;
+  drawGraph();
+});
+el.graphSheet.addEventListener('click', (e) => {
+  if (e.target === el.graphSheet) toggleGraph(false);
+});
+
 // --- the command registry ---------------------------------------------------
 
 /**
@@ -3220,6 +3766,55 @@ const ACTIONS: Action[] = [
     run: toggleTypewriter,
   },
 
+  {
+    id: 'template-insert',
+    label: 'Insert a template…',
+    hint: 'A note tagged #template, its {{date}}, {{time}} and {{title}} filled in, at the caret',
+    group: 'Writing',
+    chord: 'ctrl+shift+e',
+    terms: 'snippet boilerplate expand',
+    enabled: hasNote,
+    run: () => pickTemplate('insert'),
+  },
+  {
+    id: 'template-new',
+    label: 'New note from a template…',
+    hint: 'Titled with whatever is in the search box, or named afterwards',
+    group: 'Notes',
+    chord: 'ctrl+shift+n',
+    terms: 'template start',
+    run: () => pickTemplate('new'),
+  },
+  {
+    id: 'date',
+    label: 'Insert the date',
+    hint: 'Today, as 2026-09-03; with Shift held, the time as well',
+    group: 'Writing',
+    chord: 'ctrl+;',
+    also: ['ctrl+shift+;'],
+    terms: 'today time now timestamp',
+    enabled: hasNote,
+    run: insertDate,
+  },
+  {
+    id: 'due',
+    label: 'Scheduled tasks…',
+    hint: 'Every checklist line with an @date, across the notes, overdue first',
+    group: 'Notes',
+    chord: 'ctrl+shift+u',
+    terms: 'due reminders deadline agenda today',
+    run: () => toggleDue(),
+  },
+  {
+    id: 'graph',
+    label: 'Graph of the notes…',
+    hint: 'Every note as a dot, every [[link]] as a line; click a dot to go there',
+    group: 'View',
+    chord: 'ctrl+shift+g',
+    terms: 'map links network related',
+    run: () => toggleGraph(),
+  },
+
   { id: 'sidebar', label: 'Toggle the sidebar', group: 'Window', chord: 'ctrl+\\', run: toggleSidebar },
   {
     id: 'layout',
@@ -3435,6 +4030,12 @@ function onEscape(): void {
     togglePalette(false);
   } else if (!el.exportMenu.hidden) {
     closeExportMenu(true);
+  } else if (!el.pickSheet.hidden) {
+    closePicker();
+  } else if (!el.dueSheet.hidden) {
+    toggleDue(false);
+  } else if (!el.graphSheet.hidden) {
+    toggleGraph(false);
   } else if (!el.findBar.hidden) {
     closeFind(true);
   } else if (!el.trashSheet.hidden) {
@@ -3473,7 +4074,9 @@ document.addEventListener('keydown', (e) => {
   const action = CHORDS.get(chord);
   if (!action || action.enabled?.() === false) return;
   e.preventDefault();
+  lastChord = chord;
   action.run();
+  lastChord = '';
 });
 
 // Losing the window is a good moment to make sure everything is on disk.
@@ -3677,14 +4280,22 @@ const cliHandlers: Record<string, CliHandler> = {
     action.run();
     return { ran: true };
   },
-  'export.png': async ({ id, path }: { id: string; path: string }) => {
+  'export.render': async ({ id, path, kind }: { id: string; path: string; kind: 'png' | 'pdf' | 'html' }) => {
     const n = noteById(id);
-    const body = exportBody(n);
-    const request: ExportRequest = { kind: 'png', title: titleOf(n), html: renderMarkdown(body), css: stylesText, edited: `Edited ${absoluteTime(n.updatedAt)}` };
+    const request: ExportRequest = { kind, ...(await renderedExport(n, kind === 'pdf' ? 'paper' : 'ink')) };
     await window.notesApi.exportNoteTo(path, request);
     return { path };
   },
-  'render.html': ({ body }: { body: string }) => ({ html: renderMarkdown(body) }),
+  'render.html': async ({ body }: { body: string }) => {
+    let html = renderMarkdown(body);
+    if (hasDiagrams(html)) {
+      const holder = document.createElement('div');
+      holder.innerHTML = html;
+      await renderDiagrams(holder);
+      html = holder.innerHTML;
+    }
+    return { html };
+  },
 };
 
 window.notesApi.onCliRequest(async (method, params) => {

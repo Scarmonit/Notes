@@ -20,7 +20,12 @@ A minimal, keyboard-first markdown notes app for Windows. One window, a sidebar 
 - Focus mode dims everything but the paragraph you are in; typewriter scrolling keeps that line in the middle of the page
 - Command palette on `Ctrl+Shift+K`: every command in the app, fuzzy-searchable
 - Import `.md` and `.txt` files by dropping them on the window or with `Ctrl+Shift+O`
-- Export any note as Markdown (with its images alongside), plain text, or a PNG rendered like the preview
+- Export any note as Markdown (with its images alongside), plain text, a self-contained HTML page (images and math fonts inside it), a PDF on paper-white A4, or a PNG rendered like the preview
+- Templates: tag any note `#template` and it is one. `Ctrl+Shift+N` starts a note from a template, `Ctrl+Shift+E` inserts one at the caret, and `{{title}}`, `{{date}}`, `{{time}}` and `{{date:DDD D MMM YYYY}}` are filled in (as [Obsidian's templates](https://obsidian.md/help/plugins/templates)); `Ctrl+;` inserts today's date
+- Scheduled tasks: a checklist line with `@2026-09-10` (or `@2026-09-10 14:30`) is due then. `Ctrl+Shift+U` lists what is overdue, due today, this week and later across every note, and while Notes runs — in the tray counts — a Windows notification arrives at the time, or at nine that morning; clicking it opens the note (as [Joplin's alarms](https://joplinapp.org/help/apps/notifications/), with [Logseq's scheduled dates](https://coderberry.com/blog/logseq_fix_scheduled_todos/) written in the line)
+- Search operators in the same box: `todo:` `done:` `due:today` `tag:wow` `pinned:` `untitled:` `created:>7d` `updated:<2026-01-01` `links:Plan` `orphan:` `sort:title-` `limit:5` and `/regex/`, on top of words, `-word`, `"a phrase"` and `#tag` (as [Obsidian's search](https://obsidian.md/help/plugins/search)); the command line reads the same grammar, so `notes list "due:week todo:"` is the same query
+- Math and diagrams in the preview and every export: `$x^2$` inline, `$$ … $$` on its own lines (KaTeX, bundled, with MathML beside it) and ```` ```mermaid ```` fences drawn by Mermaid, loaded only when a note has one (as [Notable](https://notable.app/))
+- Related notes under the backlinks — the notes sharing this one's tags, or two links away — and a graph of every note and `[[link]]` on `Ctrl+Shift+G`, drawn on a canvas with a small force layout; click a dot to go there, or narrow it to two hops around the open note (as [Zettlr's](https://www.zettlr.com/) related files and graph)
 - Stays in the tray and comes back on a shortcut of your choosing (Layout, `Ctrl+,`)
 - Adjustable line width, so the words fill as much of the window as you want (Layout, `Ctrl+,`)
 - Right-click a word the spellchecker underlines to correct it, or add it to the dictionary for good
@@ -53,7 +58,11 @@ The full list lives in the app on `Ctrl+/`, and every command is also reachable 
 | `Ctrl+Shift+H` | Insert a section divider |
 | `Ctrl+Shift+I` | Attach an image (or paste / drop one onto the editor) |
 | `Ctrl+Shift+O` | Import markdown or text files |
-| `Ctrl+Shift+S` | Export menu: `M` Markdown, `T` plain text, `P` PNG |
+| `Ctrl+Shift+S` | Export menu: `M` Markdown, `T` plain text, `H` HTML page, `D` PDF, `P` PNG |
+| `Ctrl+Shift+N` / `Ctrl+Shift+E` | New note from a template / insert a template at the caret |
+| `Ctrl+;` | Insert today's date (with Shift, the time as well) |
+| `Ctrl+Shift+U` | Scheduled tasks: every `@date` checklist line, overdue first |
+| `Ctrl+Shift+G` | Graph of the notes and their `[[links]]` |
 | `Ctrl+S` | Save now (autosave is always on) |
 | `Ctrl+Shift+D` | Delete note, press again within 3 s to confirm |
 | `Ctrl+Shift+Backspace` | Deleted notes: look at or put back anything deleted in the last month |
@@ -90,6 +99,7 @@ Exit codes: 0 ok, 1 failure, 2 usage, 3 not found or ambiguous, 4 the note is be
 | --- | --- |
 | `notes new [title] [text...]` (add) | start a note |
 | `notes list [words...]` (ls) | list notes, newest first, pinned on top |
+| `notes templates` | the templates: notes tagged #template, whose {{title}}, {{date}} and {{time}} are filled in by `new --template` |
 | `notes search <words...>` | find notes by their words, with the line that matched |
 | `notes show <note>` (cat) | print a note |
 | `notes edit [note]` | open a note in $EDITOR; saves only if the text changed |
@@ -109,6 +119,8 @@ Exit codes: 0 ok, 1 failure, 2 usage, 3 not found or ambiguous, 4 the note is be
 | `notes tag remove <note> <tags...>` (rm) | take #tag out of the note |
 | `notes links <note>` | the notes a note links to with [[...]] |
 | `notes backlinks <note>` | the notes that link to a note |
+| `notes related <note>` | the notes near a note: sharing its tags, or two links away (what the window lists under the backlinks) |
+| `notes graph` | the notes as a graph of [[links]]: edges as from/to lines, --json for nodes and edges, --dot for Graphviz |
 | `notes trash list` (ls) | what is in the trash, most recently deleted first |
 | `notes trash show <note>` | print a deleted note |
 | `notes trash restore <note...>` | put a deleted note back, history and all |
@@ -121,8 +133,9 @@ Exit codes: 0 ok, 1 failure, 2 usage, 3 not found or ambiguous, 4 the note is be
 | `notes attach <note> <files...>` | attach images to a note (PNG, JPEG, GIF, WebP, BMP; checked by their bytes) |
 | `notes attachments <note>` | the images a note holds, with their files |
 | `notes import <files...>` | make notes from markdown and text files (a leading # heading becomes the title) |
-| `notes export [note...]` | write a note out as Markdown (images alongside), plain text, or a PNG like the preview |
+| `notes export [note...]` | write a note out as Markdown (images alongside), plain text, a self-contained HTML page, a PDF, or a PNG like the preview |
 | `notes tasks <note>` | the checklist items in a note |
+| `notes due [when]` | every dated task across the notes, soonest first: the due sheet from a terminal |
 | `notes task <note> <which>` | tick, untick or toggle a checklist item; or turn a line into one |
 | `notes fence <note>` | put a code block around lines (or take one away when they are already fenced) |
 | `notes find <note> <query>` | find text in a note; each hit as line:col |

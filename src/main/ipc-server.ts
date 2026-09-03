@@ -56,6 +56,8 @@ export interface ServerDeps {
   applySettings(next: Settings): Promise<SettingsResult>;
   showWindow(): void;
   showCapture(): void;
+  /** Shows a Windows notification; clicking it opens the note, when one is named. */
+  notify(title: string, body: string, noteId?: string): boolean;
 }
 
 export interface IpcServer {
@@ -155,6 +157,10 @@ export async function startIpcServer(deps: ServerDeps): Promise<IpcServer> {
       case 'capture.show':
         deps.showCapture();
         return { shown: true };
+      case 'notify': {
+        const p = params as Params<'notify'>;
+        return { shown: deps.notify(p.title, p.body, p.noteId) };
+      }
       case 'watch.subscribe':
         watching.add(socket);
         return { subscribed: true };

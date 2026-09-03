@@ -1686,3 +1686,252 @@ body.capture {
   background: var(--blue);
   color: var(--ink);
 }
+
+/* --- 0.13: search operators ------------------------------------------- */
+
+/* A line under the search box while an operator is being typed: what the
+   operators are, or what the one just typed could not read. */
+.search-ops {
+  margin: 0;
+  padding: 4px 12px 6px;
+  color: var(--paper-faint);
+  line-height: 1.5;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-size: 11px;
+  border-bottom: 1px solid var(--line);
+}
+.search-ops b {
+  color: var(--paper-dim);
+  font-weight: 500;
+}
+.search-ops.is-error {
+  color: var(--margin);
+}
+
+/* --- 0.13: related notes ----------------------------------------------- */
+
+.related {
+  border-top: 0;
+  padding-top: 0;
+}
+.backlinks + .related {
+  padding-top: 2px;
+}
+.backlinks[hidden] + .related {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+/* --- 0.13: math and diagrams -------------------------------------------- */
+
+.markdown .math-block {
+  margin: 0 0 1em;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 4px 0;
+}
+.markdown .katex {
+  font-size: 1.05em;
+}
+.markdown .katex-display {
+  margin: 0.4em 0;
+}
+.math-error {
+  color: var(--margin);
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+/* An undrawn diagram is its source in a panel, the moment before mermaid replaces it. */
+.markdown pre.mermaid {
+  color: var(--paper-faint);
+  font-size: 12px;
+}
+.markdown .diagram {
+  margin: 0 0 1em;
+  padding: 14px 16px;
+  background: var(--raised);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+.markdown .diagram svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+.markdown .diagram-error .diagram-message {
+  color: var(--margin);
+  margin-bottom: 8px;
+}
+.markdown .diagram-error pre {
+  margin: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--paper-faint);
+  font-size: 12px;
+}
+
+/* --- 0.13: scheduled tasks sheet ---------------------------------------- */
+
+.due-card {
+  width: min(680px, calc(100vw - 40px));
+}
+.due-list {
+  max-height: min(480px, 60vh);
+  overflow-y: auto;
+  margin: 0 -8px;
+}
+.due-group {
+  margin: 14px 8px 6px;
+  font: 500 11px/1 var(--utility);
+  font-stretch: 87.5%;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+.due-list > .due-group:first-child {
+  margin-top: 0;
+}
+.due-row {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 8px;
+  border-radius: 5px;
+  text-align: left;
+  color: var(--paper);
+}
+.due-row:hover,
+.due-row:focus-visible {
+  background: var(--hover);
+  box-shadow: none;
+}
+.due-row input {
+  margin: 0;
+  accent-color: var(--blue);
+}
+.due-text {
+  font: 15px/1.35 var(--serif);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.due-row.is-done .due-text {
+  text-decoration: line-through;
+  color: var(--paper-faint);
+}
+.due-note {
+  color: var(--paper-faint);
+  margin-left: 8px;
+  font: 12px/1 var(--utility);
+}
+.due-when {
+  color: var(--paper-dim);
+  white-space: nowrap;
+}
+.due-row.is-overdue .due-when {
+  color: var(--margin);
+}
+.due-empty {
+  padding: 28px 8px;
+  text-align: center;
+  color: var(--paper-faint);
+  font: italic 14px/1.6 var(--serif);
+}
+
+/* --- 0.13: graph sheet -------------------------------------------------- */
+
+.graph-card {
+  width: min(960px, calc(100vw - 40px));
+  padding-bottom: 14px;
+}
+.graph-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+.graph-head h2 {
+  margin-bottom: 12px;
+}
+.graph-controls {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+.graph-controls .link-btn[aria-pressed='true'] {
+  color: var(--blue);
+}
+.graph-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 900 / 560;
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: default;
+}
+.graph-canvas.has-hover {
+  cursor: pointer;
+}
+
+/* --- 0.13: the paper look, for PDF ---------------------------------------
+   The same page, in the colours of a printed document: the export CSS reads
+   the tokens, so swapping them is the whole theme. */
+
+html.export.paper {
+  --ink: #ffffff;
+  --ink-deep: #f4f2ee;
+  --raised: #f3f1ec;
+  --hover: #ebe8e1;
+  --selected: #e4e0d7;
+  --line: #d9d5cc;
+  --paper: #1d2230;
+  --paper-dim: #5a6070;
+  --paper-faint: #8a8f9c;
+  --margin: #a8484e;
+  --margin-rule: rgba(168, 72, 78, 0.6);
+  --blue: #3d6fb4;
+  --blue-soft: rgba(61, 111, 180, 0.14);
+  --code-comment: #8a8f9c;
+  --code-keyword: #a33f47;
+  --code-string: #3f7a3a;
+  --code-number: #9a5d14;
+  --code-title: #2d5aa0;
+  --code-built: #1f7a8c;
+  --code-attr: #7a6612;
+}
+html.export.paper body,
+html.export.paper .export-card {
+  background: #ffffff;
+}
+html.export.paper .export-card {
+  width: auto;
+  padding: 0;
+}
+html.export.paper .export-margin {
+  flex: 0 0 110px;
+}
+html.export.paper .export-card .markdown {
+  font-size: 12pt;
+  line-height: 1.6;
+}
+html.export.paper .markdown pre,
+html.export.paper .markdown .diagram {
+  border: 1px solid var(--line);
+  break-inside: avoid;
+}
+html.export.paper .markdown h1,
+html.export.paper .markdown h2,
+html.export.paper .markdown h3 {
+  break-after: avoid;
+}
+html.export.paper .markdown img {
+  max-width: 100%;
+  break-inside: avoid;
+}

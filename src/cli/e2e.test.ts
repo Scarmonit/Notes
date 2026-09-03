@@ -83,3 +83,24 @@ describe('notes (end to end)', () => {
     expect(Date.now() - start).toBeLessThan(1500);
   });
 });
+
+describe('notes 0.13 (end to end)', () => {
+  it('writes an HTML export carrying the app stylesheet and the math fonts', async () => {
+    expect((await notes(['new', 'Formula', '--content', 'Mass: $E=mc^2$ #physics'])).exitCode).toBe(0);
+    const out = path.join(root, 'formula.html');
+    expect((await notes(['export', 'formula', '--html', '-o', out])).exitCode).toBe(0);
+    const html = await fs.readFile(out, 'utf8');
+    expect(html).toContain('class="katex"');
+    expect(html).toContain('data:font/woff2;base64');
+    expect(html).toContain('--ink:');
+    expect(html.length).toBeGreaterThan(100_000);
+  });
+
+  it('answers the search-box operators on the command line', async () => {
+    expect((await notes(['new', 'Errands', '--content', '- [ ] post office @2030-01-01'])).exitCode).toBe(0);
+    const r = await notes(['list', '--plain', 'due:any', 'todo:']);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain('Errands');
+    expect((await notes(['due', 'any', '--plain'])).stdout).toContain('post office');
+  });
+});

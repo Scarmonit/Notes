@@ -176,8 +176,12 @@ export interface Methods {
   run: { params: { id: string }; result: { ran: boolean } };
   open: { params: { id?: string; search?: string }; result: { opened: boolean } };
   'capture.show': { params: Record<string, never>; result: { shown: boolean } };
-  'export.png': { params: { id: string; path: string }; result: { path: string } };
+  /** Writes a rendered export — the preview on a page — to a path: png, pdf, or a standalone html file. */
+  'export.render': { params: { id: string; path: string; kind: 'png' | 'pdf' | 'html' }; result: { path: string } };
+  /** The preview's HTML for a body, math rendered and diagrams drawn. */
   'render.html': { params: { body: string }; result: { html: string } };
+  /** A Windows notification from the app, as a reminder shows; clicking it opens the note when one is named. */
+  notify: { params: { title: string; body: string; noteId?: string }; result: { shown: boolean } };
 
   /** Start or stop receiving `notes.changed` notifications on this connection. */
   'watch.subscribe': { params: Record<string, never>; result: { subscribed: boolean } };
@@ -209,6 +213,7 @@ export const MAIN_METHODS: ReadonlySet<MethodName> = new Set<MethodName>([
   'settings.get',
   'settings.set',
   'capture.show',
+  'notify',
   'watch.subscribe',
   'watch.unsubscribe',
 ]);

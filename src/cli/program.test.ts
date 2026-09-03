@@ -125,7 +125,7 @@ describe('notes (in-process)', () => {
   it('works checklist items, fences, find and replace', async () => {
     await run('new', 'Tasks', '--content', 'intro\n- [ ] one\n- [x] two\nend');
     expect(await run('tasks', 'tasks', '--plain')).toBe(0);
-    expect(lines()).toEqual(['1\t[ ]\tone\t2', '2\t[x]\ttwo\t3']);
+    expect(lines()).toEqual(['1\t[ ]\tone\t\t2', '2\t[x]\ttwo\t\t3']);
     expect(await run('task', 'tasks', '1', '--done')).toBe(0);
     expect(await run('tasks', 'tasks', '--todo', '--plain')).toBe(0);
     expect(lines()).toEqual([]);
@@ -193,5 +193,103 @@ describe('notes (in-process)', () => {
     expect(await run('history', '--help')).toBe(0);
     expect(stdout).toContain('restore');
     await expect(fs.readdir(pathsFor(root).notes)).rejects.toThrow();
+  });
+});
+
+describe('notes 0.13: templates, due tasks, operators, related, graph, html export', () => {
+  it('makes notes from templates, filling in the title and the date', async () => {
+    expect(await run('new', 'Meeting', '--content', '# {{title}}\n\nOn {{date}} at {{time:HH}}h\n\n#template #meeting')).toBe(0);
+    expect(await run('templates', '--plain')).toBe(0);
+    expect(lines()[0]).toContain('Meeting');
+    expect(await run('new', 'Standup', '--template', 'meet')).toBe(0);
+    expect(await run('show', 'standup', '--body')).toBe(0);
+    const today = new Date();
+    const iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    expect(stdout.trim()).toBe(`# Standup\n\nOn ${iso} at ${String(today.getHours()).padStart(2, '0')}h\n\n#meeting`);
+    expect(await run('new', '--template', 'nope')).toBe(3);
+    expect(stderr).toContain('No template "nope"');
+    expect(await run('append', 'standup', '--template', 'meeting', 'extra words')).toBe(0);
+    expect(await run('show', 'standup', '--body')).toBe(0);
+    expect(stdout).toContain('# Standup\n\nOn');
+    expect(stdout.trim().endsWith('extra words')).toBe(true);
+    expect(await run('list', '--plain', 'tag:template')).toBe(0);
+    expect(lines()).toHaveLength(1);
+  });
+
+  it('schedules tasks, lists what is due, and filters by due: and todo:', async () => {
+    await run('new', 'Chores', '--content', '- [ ] bins\n- [x] done thing\nplain line');
+    expect(await run('task', 'chores', '1', '--due', 'today')).toBe(0);
+    expect(stdout.trim()).toMatch(/^- \[ \] bins @\d{4}-\d{2}-\d{2}$/);
+    expect(await run('task', 'chores', 'line:3', '--due', 'tomorrow 14:30')).toBe(0);
+    expect(stdout.trim()).toMatch(/^- \[ \] plain line @\d{4}-\d{2}-\d{2} 14:30$/);
+    expect(await run('task', 'chores', '1', '--due', 'never')).toBe(2);
+    expect(await run('tasks', 'chores', '--due', '--plain')).toBe(0);
+    expect(lines()).toHaveLength(2);
+    expect(await run('due', '--plain')).toBe(0);
+    expect(lines()).toHaveLength(1);
+    expect(lines()[0]).toContain('bins');
+    expect(await run('due', 'week', '--plain')).toBe(0);
+    expect(lines()).toHaveLength(2);
+    expect(await run('due', 'someday')).toBe(2);
+    expect(await run('list', '--plain', 'due:today')).toBe(0);
+    expect(lines()).toHaveLength(1);
+    expect(lines()[0]).toContain('Chores');
+    expect(await run('list', '--plain', '--due', 'tomorrow')).toBe(0);
+    expect(lines()).toHaveLength(1);
+    expect(await run('list', '--plain', 'todo:')).toBe(0);
+    expect(lines()).toHaveLength(1);
+    expect(await run('list', '--plain', 'done:', 'sort:title')).toBe(0);
+    expect(lines()).toHaveLength(1);
+    expect(await run('list', '--plain', '/^chor/')).toBe(0);
+    expect(lines()).toHaveLength(1);
+    expect(await run('list', 'due:whenever')).toBe(2);
+    expect(await run('task', 'chores', '3', '--clear-due')).toBe(0);
+    expect(stdout.trim()).toBe('- [ ] plain line');
+    expect(await run('due', '--notify')).toBe(5);
+  });
+
+  it('lists related notes and the link graph', async () => {
+    await run('new', 'Plan', '--content', 'the plan #proj');
+    await run('new', 'Notes A', '--content', 'see [[Plan]] #proj');
+    await run('new', 'Notes B', '--content', 'see [[Plan]]');
+    await run('new', 'Lonely', '--content', 'no links');
+    expect(await run('related', 'notes a', '--plain')).toBe(0);
+    // Plan is linked directly, so it is already on the page and is not listed again.
+    expect(lines().map((l) => l.split('\t')[1])).toEqual(['Notes B']);
+    expect(await run('graph', '--plain')).toBe(0);
+    expect(lines().sort()).toEqual(['Notes A\tPlan', 'Notes B\tPlan']);
+    expect(await run('graph', '--json')).toBe(0);
+    const g = JSON.parse(stdout) as { nodes: Array<{ title: string; in: number }>; edges: unknown[] };
+    expect(g.edges).toHaveLength(2);
+    expect(g.nodes.find((n) => n.title === 'Plan')?.in).toBe(2);
+    expect(await run('graph', '--dot')).toBe(0);
+    expect(stdout).toContain('digraph notes');
+    expect(await run('graph', '--around', 'lonely', '--json')).toBe(0);
+    expect(JSON.parse(stdout).nodes).toHaveLength(1);
+  });
+
+  it('writes a self-contained HTML export with math, and refuses a PDF without the window', async () => {
+    await run('new', 'Math', '--content', 'Euler: $e^{i\pi}+1=0$\n\n$$\n\int_0^1 x\,dx\n$$\n\n```mermaid\ngraph TD; A-->B\n```');
+    const out = path.join(root, 'math.html');
+    expect(await run('export', 'math', '--html', '-o', out)).toBe(0);
+    const html = await fs.readFile(out, 'utf8');
+    expect(html).toContain('<title>Math</title>');
+    expect(html).toContain('class="katex"');
+    expect(html).toContain('<math');
+    // The stylesheet with its fonts only exists in the built bundle; e2e.test.ts checks it there.
+    expect(html).toContain('class="mermaid" data-diagram');
+    expect(await run('export', 'math', '--pdf', '-o', path.join(root, 'math.pdf'))).toBe(5);
+    expect(await run('render', 'math', '--plain')).toBe(0);
+    expect(stdout).toContain('katex');
+    expect(await run('export', 'math', '--txt', '-o', '-')).toBe(0);
+    expect(stdout).toContain('$e^{i\pi}+1=0$');
+  });
+
+  it('reads and writes the reminders setting', async () => {
+    expect(await run('settings', 'get', 'reminders')).toBe(0);
+    expect(stdout.trim()).toBe('true');
+    expect(await run('settings', 'set', 'reminders', 'off')).toBe(0);
+    expect(await run('settings', 'get', 'reminders')).toBe(0);
+    expect(stdout.trim()).toBe('false');
   });
 });

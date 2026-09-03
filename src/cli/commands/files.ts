@@ -7,8 +7,12 @@ import { EXIT } from '../../core/ipc-protocol';
 import { isTextFile, noteFromFile } from '../../renderer/importer';
 import { createNote, exportBody, titleOf, updateBody } from '../../renderer/notes';
 import { markdownToText } from '../../renderer/plaintext';
+import { absoluteTime } from '../../renderer/time';
 import { assetRefs, exportFileName } from '../../shared/assets';
-import type { Note } from '../../shared/types';
+import { exportPage } from '../../shared/export-page';
+import type { ExportKind, Note } from '../../shared/types';
+import stylesText from '../../renderer/styles.css?inline';
+import katexText from '../../renderer/generated/katex.css?inline';
 import { addFilterOptions, describe, filteredNotes, type Ctx, type FilterOpts } from '../context';
 import { save } from './notes';
 
@@ -120,28 +124,30 @@ export function register(program: Command, use: () => Ctx): void {
   addFilterOptions(
     program
       .command('export')
-      .description('write a note out as Markdown (images alongside), plain text, or a PNG like the preview')
+      .description('write a note out as Markdown (images alongside), plain text, a self-contained HTML page, a PDF, or a PNG like the preview')
       .argument('[note...]', 'ids, titles, or - for stdin; or a filter, to export several')
       .option('--md', 'Markdown (default)')
       .option('--txt', 'plain text')
+      .option('--html', 'one HTML file, styled like the preview, images and math inside it (diagrams need the window)')
+      .option('--pdf', 'a PDF on A4 paper (needs the window)')
       .option('--png', 'a PNG rendered like the preview (needs the window)')
       .option('-o, --out <path>', 'the file to write, or a folder when exporting several; - for stdout'),
-  ).action(async (selectors: string[], opts: FilterOpts & { md?: boolean; txt?: boolean; png?: boolean; out?: string }) => {
+  ).action(async (selectors: string[], opts: FilterOpts & { md?: boolean; txt?: boolean; html?: boolean; pdf?: boolean; png?: boolean; out?: string }) => {
     const c = ctx();
-    const kind = opts.png ? 'png' : opts.txt ? 'txt' : 'md';
-    const backend = await c.backend(kind === 'png');
+    const kind: ExportKind = opts.png ? 'png' : opts.pdf ? 'pdf' : opts.html ? 'html' : opts.txt ? 'txt' : 'md';
+    const backend = await c.backend(kind === 'png' || kind === 'pdf');
     const all = await backend.notes();
     let targets: Note[];
     if (selectors.length > 0) {
       targets = [];
       for (const s of selectors) targets.push(await c.note(s, all));
     } else {
-      const filtering = Object.values(opts).some((v) => v !== undefined && v !== false && typeof v !== 'string') || opts.tag !== undefined;
+      const filtering = Object.values(opts).some((v) => v !== undefined && v !== false && typeof v !== 'string') || opts.tag !== undefined || opts.due !== undefined;
       targets = filtering ? (await filteredNotes(c, opts)).kept : all;
     }
     if (targets.length === 0) throw new CliError('No notes to export', EXIT.notFound);
     const toStdout = opts.out === '-';
-    if (toStdout && kind === 'png') throw new CliError('A PNG cannot go to stdout; give a file with -o', EXIT.usage);
+    if (toStdout && (kind === 'png' || kind === 'pdf')) throw new CliError(`A ${kind.toUpperCase()} cannot go to stdout; give a file with -o`, EXIT.usage);
     if (toStdout && targets.length > 1) throw new CliError('Only one note can go to stdout', EXIT.usage);
     const folder = targets.length > 1 || (opts.out && (await fs.stat(opts.out).catch(() => null))?.isDirectory());
     const written: string[] = [];
@@ -149,18 +155,26 @@ export function register(program: Command, use: () => Ctx): void {
     for (const note of targets) {
       const body = exportBody(note);
       const target = toStdout ? '-' : folder ? path.join(opts.out ?? '.', exportFileName(titleOf(note), kind)) : (opts.out ?? exportFileName(titleOf(note), kind));
-      if (kind === 'png') {
-        await backend.exportPng(note.id, path.resolve(target));
+      if (kind === 'png' || kind === 'pdf') {
+        await backend.exportRendered(note.id, path.resolve(target), kind);
+      } else if (kind === 'html') {
+        if (backend.mode === 'app' && !toStdout) {
+          // The window draws the diagrams; everything else comes out the same either way.
+          await backend.exportRendered(note.id, path.resolve(target), 'html');
+        } else {
+          const html = await attachments.inlineAssets(await backend.renderHtml(body));
+          const page = exportPage({ title: titleOf(note), html, css: stylesText, mathCss: katexText, edited: `Edited ${absoluteTime(note.updatedAt)}`, look: 'ink' });
+          if (toStdout) c.out.write(page);
+          else await fs.writeFile(target, page, 'utf8');
+        }
       } else if (kind === 'txt') {
         const text = markdownToText(body);
         if (toStdout) c.out.write(text);
         else await fs.writeFile(target, text, 'utf8');
       } else if (toStdout) {
         c.out.write(body.endsWith('\n') ? body : `${body}\n`);
-      } else if (backend.mode === 'app') {
-        // The app's attachments folder is the same folder; copy from it directly.
-        await attachments.writeMarkdownExport(target, body);
       } else {
+        // In app mode the app's attachments folder is this same folder, so the copy is direct either way.
         await attachments.writeMarkdownExport(target, body);
       }
       if (!toStdout) written.push(path.resolve(target));

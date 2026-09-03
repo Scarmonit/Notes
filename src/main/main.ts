@@ -11,6 +11,7 @@ import { installContextMenu } from './context-menu';
 import { exportNote, exportTo } from './export';
 import { forgetHistory, getSnapshot, history, keepNow, listHistory, record } from './history-store';
 import { pickImports } from './import';
+import { createReminders, type Reminders } from './reminders';
 import { startIpcServer, type IpcServer } from './ipc-server';
 import {
   expireTrash,
@@ -162,6 +163,13 @@ function windowFor(event: Electron.IpcMainInvokeEvent): BrowserWindow {
 /** The notes window, once it exists. The capture box, the tray and the command line talk to it. */
 let mainWin: BrowserWindow | null = null;
 let ipcServer: IpcServer | null = null;
+let reminders: Reminders | null = null;
+
+/** Brings the window up at a note: from a reminder, or a notes:// link. */
+function openNoteInWindow(id: string): void {
+  if (mainWin) showWindow(mainWin);
+  void ipcServer?.ask('open', { id }).catch((err) => console.error('[notes] could not open the note', err));
+}
 
 /** Registers both system-wide chords; returns which of them could not be. */
 function applyHotkeys(): { hotkeyFailed: boolean; captureHotkeyFailed: boolean } {
@@ -178,6 +186,8 @@ function applyHotkeys(): { hotkeyFailed: boolean; captureHotkeyFailed: boolean }
 async function applySettings(next: Settings, fromWindow: boolean): Promise<Settings & { hotkeyFailed: boolean; captureHotkeyFailed: boolean }> {
   const stored = await saveSettings(next);
   const result = { ...stored, ...applyHotkeys() };
+  // Turning reminders on or off takes effect at once.
+  reminders?.update(await loadNotes().then((f) => f.notes));
   if (!fromWindow && mainWin && !mainWin.isDestroyed()) mainWin.webContents.send(IPC.settingsChanged, stored);
   return result;
 }
@@ -261,17 +271,21 @@ if (squirrelLaunch) {
     if (!housekept) {
       housekept = true;
       const win = windowFor(event);
+      reminders = createReminders({ userData: app.getPath('userData'), enabled: () => settings().reminders, openNote: openNoteInWindow });
       watchNotes((changes) => {
         if (!win.isDestroyed()) win.webContents.send(IPC.externalChange, changes);
+        reminders?.applyChanges(changes);
       });
       void expireTrash()
         .then((gone) => Promise.all(gone.map(forgetHistory)))
         .catch((err) => console.error('[notes] emptying the trash failed', err));
     }
+    reminders?.update(file.notes);
     return file;
   });
   ipcMain.handle(IPC.notesSave, async (_event, file: NotesFile) => {
     await saveNotes(file);
+    reminders?.update(file.notes);
     // Both run behind the save, never in front of it: neither the snapshot
     // ring nor the attachment sweep may delay or endanger the write itself.
     void record(file.notes, trashedIds());
@@ -343,6 +357,7 @@ if (squirrelLaunch) {
           if (mainWin) showWindow(mainWin);
         },
         showCapture,
+        notify: (title, body, noteId) => reminders?.show(title, body, noteId) ?? false,
       });
     } catch (err) {
       console.error('[notes] the command line cannot reach this instance', err);
@@ -356,6 +371,7 @@ if (squirrelLaunch) {
   app.on('will-quit', (event) => {
     globalShortcut.unregisterAll();
     stopWatching();
+    reminders?.stop();
     destroyCapture();
     destroyTray();
     if (ipcServer) {

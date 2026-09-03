@@ -2,13 +2,16 @@ import { app, BrowserWindow, dialog } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { exportFileName } from '../shared/assets';
-import type { ExportRequest } from '../shared/types';
+import { exportPage } from '../shared/export-page';
+import type { ExportRequest, RenderedExport } from '../shared/types';
 import { attachments } from './attachments';
 
 const FILTERS = {
   md: [{ name: 'Markdown', extensions: ['md'] }],
   txt: [{ name: 'Plain text', extensions: ['txt'] }],
   png: [{ name: 'PNG image', extensions: ['png'] }],
+  html: [{ name: 'Web page', extensions: ['html'] }],
+  pdf: [{ name: 'PDF document', extensions: ['pdf'] }],
 };
 
 /** Shows the Save dialog and writes the export. Resolves to the path, or null when cancelled. */
@@ -35,40 +38,59 @@ export async function exportTo(filePath: string, request: ExportRequest): Promis
     case 'png':
       await fs.writeFile(filePath, await renderPng(request));
       break;
+    case 'html':
+      // One self-contained file: the page the PNG is drawn from, with the
+      // pictures inlined, at whatever width the window that opens it has.
+      await fs.writeFile(filePath, await pageFor(request, 'ink'), 'utf8');
+      break;
+    case 'pdf':
+      await fs.writeFile(filePath, await renderPdf(request));
+      break;
   }
 }
 
 const PNG_WIDTH = 820;
 const PNG_SCALE = 2;
 
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] as string);
+/** The export page for a rendered note, pictures inlined. */
+async function pageFor(request: RenderedExport, look: 'ink' | 'paper', width?: number): Promise<string> {
+  const html = await attachments.inlineAssets(request.html);
+  return exportPage({ title: request.title, html, css: request.css, mathCss: request.mathCss, edited: request.edited, look, width });
+}
+
+/** A hidden window showing an export page, ready for capture or print. */
+async function openPage(doc: string, options: { width: number; offscreen: boolean }): Promise<{ win: BrowserWindow; done: () => Promise<void> }> {
+  const tmp = path.join(app.getPath('temp'), `notes-export-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.html`);
+  await fs.writeFile(tmp, doc, 'utf8');
+  const win = new BrowserWindow({
+    show: false,
+    width: options.width,
+    height: 600,
+    webPreferences: { offscreen: options.offscreen, sandbox: true, contextIsolation: true, nodeIntegration: false },
+  });
+  const done = async (): Promise<void> => {
+    win.destroy();
+    await fs.unlink(tmp).catch(() => undefined);
+  };
+  try {
+    await win.loadFile(tmp);
+    await win.webContents.executeJavaScript('Promise.all(Array.from(document.images, (i) => i.complete ? null : new Promise((r) => { i.onload = r; i.onerror = r; })))');
+    await win.webContents.executeJavaScript('document.fonts ? document.fonts.ready.then(() => true) : true');
+  } catch (err) {
+    await done();
+    throw err;
+  }
+  return { win, done };
 }
 
 /**
  * Draws the note the way the preview shows it, in a hidden offscreen window
  * using the renderer's own stylesheet, and captures it at 2x.
  */
-async function renderPng(request: Extract<ExportRequest, { kind: 'png' }>): Promise<Buffer> {
-  const doc =
-    `<!doctype html><html class="export"><head><meta charset="utf-8"><style>${request.css}</style></head>` +
-    `<body><div class="export-card"><aside class="export-margin"><span class="u">${escapeHtml(request.edited)}</span></aside>` +
-    `<article class="markdown">${request.html}</article></div></body></html>`;
-  const tmp = path.join(app.getPath('temp'), `notes-export-${Date.now()}.html`);
-  await fs.writeFile(tmp, doc, 'utf8');
-
-  const win = new BrowserWindow({
-    show: false,
-    width: PNG_WIDTH * PNG_SCALE,
-    height: 600,
-    webPreferences: { offscreen: true, sandbox: true, contextIsolation: true, nodeIntegration: false },
-  });
+async function renderPng(request: RenderedExport): Promise<Buffer> {
+  const { win, done } = await openPage(await pageFor(request, 'ink', PNG_WIDTH), { width: PNG_WIDTH * PNG_SCALE, offscreen: true });
   try {
-    await win.loadFile(tmp);
     win.webContents.setZoomFactor(PNG_SCALE);
-    await win.webContents.executeJavaScript(
-      'Promise.all(Array.from(document.images, (i) => i.complete ? null : new Promise((r) => { i.onload = r; i.onerror = r; })))'
-    );
     const cssHeight = (await win.webContents.executeJavaScript('document.documentElement.scrollHeight')) as number;
     win.setContentSize(PNG_WIDTH * PNG_SCALE, Math.max(200, Math.ceil(cssHeight * PNG_SCALE)));
     await new Promise<void>((resolve) => {
@@ -81,7 +103,24 @@ async function renderPng(request: Extract<ExportRequest, { kind: 'png' }>): Prom
     const image = await win.webContents.capturePage();
     return image.toPNG();
   } finally {
-    win.destroy();
-    await fs.unlink(tmp).catch(() => undefined);
+    await done();
+  }
+}
+
+/**
+ * The same page on paper: light, A4, with the margins a printed document
+ * has. Backgrounds are printed so code blocks and diagrams keep their panels.
+ */
+async function renderPdf(request: RenderedExport): Promise<Buffer> {
+  const { win, done } = await openPage(await pageFor(request, 'paper'), { width: 900, offscreen: false });
+  try {
+    return await win.webContents.printToPDF({
+      pageSize: 'A4',
+      printBackground: true,
+      margins: { top: 0.6, bottom: 0.6, left: 0.6, right: 0.6 },
+      preferCSSPageSize: false,
+    });
+  } finally {
+    await done();
   }
 }

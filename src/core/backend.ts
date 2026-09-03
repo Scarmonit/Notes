@@ -51,8 +51,11 @@ export interface Backend {
   run(id: string): Promise<boolean>;
   open(options: { id?: string; search?: string }): Promise<boolean>;
   captureShow(): Promise<boolean>;
-  exportPng(id: string, path: string): Promise<void>;
+  /** Writes the preview on a page: a png, a pdf, or a standalone html file. */
+  exportRendered(id: string, path: string, kind: 'png' | 'pdf' | 'html'): Promise<void>;
   renderHtml(body: string): Promise<string>;
+  /** Shows a Windows notification through the app, as a reminder would. */
+  notify(title: string, body: string, noteId?: string): Promise<boolean>;
 
   /** Streams changes until the signal fires. */
   watch(onChange: (changes: ExternalChanges) => void, signal: AbortSignal): Promise<void>;

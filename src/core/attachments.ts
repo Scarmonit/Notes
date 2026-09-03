@@ -35,7 +35,11 @@ export interface Attachments {
   sweepOrphans(file: NotesFile): Promise<void>;
   /** Writes a markdown export, with the images it mentions copied into a folder beside it. */
   writeMarkdownExport(filePath: string, body: string): Promise<void>;
+  /** Rendered HTML with every note-asset image inlined as a data URI, so one file carries the whole note. */
+  inlineAssets(html: string): Promise<string>;
 }
+
+const MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' };
 
 export function createAttachments(root: string): Attachments {
   const dir = pathsFor(root).attachments;
@@ -90,5 +94,16 @@ export function createAttachments(root: string): Attachments {
     await fs.writeFile(filePath, rewriteAssetLinks(body, (name) => `${href}/${name}`), 'utf8');
   }
 
-  return { dir, saveAttachment, sweepOrphans, writeMarkdownExport };
+  async function inlineAssets(html: string): Promise<string> {
+    const refs = assetRefs(html);
+    if (refs.length === 0) return html;
+    const data = new Map<string, string>();
+    for (const name of refs) {
+      const bytes = await fs.readFile(path.join(dir, name)).catch(() => null);
+      if (bytes) data.set(name, `data:${MIME[path.extname(name).slice(1).toLowerCase()] ?? 'application/octet-stream'};base64,${bytes.toString('base64')}`);
+    }
+    return rewriteAssetLinks(html, (name) => data.get(name) ?? assetUrl(name));
+  }
+
+  return { dir, saveAttachment, sweepOrphans, writeMarkdownExport, inlineAssets };
 }

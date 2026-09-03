@@ -30,13 +30,27 @@ export interface ImportedFile {
   text: string;
 }
 
-export type ExportKind = 'md' | 'txt' | 'png';
+export type ExportKind = 'md' | 'txt' | 'png' | 'html' | 'pdf';
+
+/** The three exports that are the preview laid on a page: the window renders, the main process writes. */
+export interface RenderedExport {
+  title: string;
+  /** The rendered, sanitised article, diagrams drawn. */
+  html: string;
+  /** The app's stylesheet, inlined. */
+  css: string;
+  /** KaTeX's stylesheet with its fonts inlined, when the note has math. */
+  mathCss?: string;
+  edited: string;
+}
 
 /** What the renderer hands the main process for each export format. */
 export type ExportRequest =
   | { kind: 'md'; title: string; body: string }
   | { kind: 'txt'; title: string; text: string }
-  | { kind: 'png'; title: string; html: string; css: string; edited: string };
+  | ({ kind: 'png' } & RenderedExport)
+  | ({ kind: 'html' } & RenderedExport)
+  | ({ kind: 'pdf' } & RenderedExport);
 
 /** What the trash lists: enough to choose by, without the whole body. */
 export interface TrashedNote {

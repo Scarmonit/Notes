@@ -12,9 +12,11 @@ export interface Settings {
   hotkey: string | null;
   /** A system-wide chord that opens the quick-note box, or null for none. */
   captureHotkey: string | null;
+  /** Windows notifications when a task's `@date` comes due, while Notes runs. */
+  reminders: boolean;
 }
 
-export const DEFAULT_SETTINGS: Settings = { closeToTray: false, hotkey: 'ctrl+alt+n', captureHotkey: 'ctrl+alt+j' };
+export const DEFAULT_SETTINGS: Settings = { closeToTray: false, hotkey: 'ctrl+alt+n', captureHotkey: 'ctrl+alt+j', reminders: true };
 
 /** A chord Electron can register system-wide, or null. */
 export function usableHotkey(chord: string | null | undefined): string | null {
@@ -41,6 +43,8 @@ export function parseSettings(text: string): Settings {
     closeToTray: doc.closeToTray === true,
     hotkey: chordField(doc.hotkey, DEFAULT_SETTINGS.hotkey),
     captureHotkey: chordField(doc.captureHotkey, DEFAULT_SETTINGS.captureHotkey),
+    // Missing means the default (on); only an explicit false turns them off.
+    reminders: doc.reminders !== false,
   };
 }
 
@@ -50,5 +54,6 @@ export function cleanSettings(next: Settings): Settings {
     closeToTray: next.closeToTray === true,
     hotkey: usableHotkey(next.hotkey),
     captureHotkey: usableHotkey(next.captureHotkey),
+    reminders: next.reminders !== false,
   };
 }

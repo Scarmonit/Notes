@@ -2,6 +2,8 @@ import type { Command } from 'commander';
 import { CliError } from '../../core/backend';
 import { appendParagraph } from '../../core/file-backend';
 import { EXIT } from '../../core/ipc-protocol';
+import { parseWords } from '../../core/query';
+import { expandTemplate, templateNamed, templatesOf } from '../../core/templates';
 import { createNote, snippetOf, tagsOf, titleOf, updateBody, updateTitle, wordCount } from '../../renderer/notes';
 import { taskProgress } from '../../renderer/tasks';
 import type { Note } from '../../shared/types';
@@ -48,6 +50,17 @@ export async function save(ctx: Ctx, note: Note, force?: boolean): Promise<Note>
   return (await ctx.backend()).put(note, { force });
 }
 
+/** The template a name means, expanded for a title; a clear failure when there is no such template. */
+export async function templateBody(ctx: Ctx, name: string, title: string): Promise<string> {
+  const notes = await (await ctx.backend()).notes();
+  const template = templateNamed(notes, name);
+  if (!template) {
+    const have = templatesOf(notes).map((n) => titleOf(n));
+    throw new CliError(have.length > 0 ? `No template "${name}"; there are: ${have.join(', ')}` : `No template "${name}": a template is a note tagged #template`, EXIT.notFound);
+  }
+  return expandTemplate(template, { title });
+}
+
 interface BodyOpts {
   content?: string;
   file?: string;
@@ -76,12 +89,20 @@ export function register(program: Command, use: () => Ctx): void {
       .argument('[text...]', 'the text; - reads stdin')
       .option('--tags <a,b>', 'tags to write on the last line, as #a #b')
       .option('--pin', 'pin the note')
+      .option('-T, --template <name>', 'start from a template (a note tagged #template); {{title}}, {{date}} and {{time}} are filled in')
       .option('-o, --open', 'open it in the window'),
-  ).action(async (title: string | undefined, words: string[], opts: BodyOpts & { tags?: string; pin?: boolean; open?: boolean }) => {
+  ).action(async (title: string | undefined, words: string[], opts: BodyOpts & { tags?: string; pin?: boolean; template?: string; open?: boolean }) => {
     const c = ctx();
     const dash = words.includes('-') || title === '-';
     const text = words.filter((w) => w !== '-').join(' ');
-    let body = (await gatherBody({ text, content: opts.content, file: opts.file, dash, edit: opts.edit, noInput: c.opts.input === false })) ?? '';
+    const explicitTitle = title && title !== '-' && title.trim() ? title.trim() : '';
+    // With a template the words are an addition, not the whole note, so no editor opens for their absence.
+    const given = await gatherBody({ text, content: opts.content, file: opts.file, dash, edit: opts.edit, noInput: c.opts.input === false || (opts.template !== undefined && !opts.edit) });
+    let body = given ?? '';
+    if (opts.template) {
+      const fromTemplate = await templateBody(c, opts.template, explicitTitle || 'Untitled');
+      body = body.trim() ? `${fromTemplate.trimEnd()}\n\n${body.trim()}` : fromTemplate;
+    }
     if (opts.tags) {
       const tags = opts.tags
         .split(',')
@@ -92,7 +113,7 @@ export function register(program: Command, use: () => Ctx): void {
       if (tags) body = body.trimEnd() ? `${body.trimEnd()}\n\n${tags}` : tags;
     }
     const note = createNote(Date.now(), body);
-    if (title && title !== '-' && title.trim()) note.title = title.trim();
+    if (explicitTitle) note.title = explicitTitle;
     if (opts.pin) note.pinned = true;
     const saved = await save(c, note);
     if (opts.open) await (await c.backend(true)).open({ id: saved.id });
@@ -100,7 +121,11 @@ export function register(program: Command, use: () => Ctx): void {
   });
 
   const list = addFilterOptions(
-    program.command('list').alias('ls').description('list notes, newest first, pinned on top').argument('[words...]', 'terms every note must contain; #tag, -word, "a phrase"'),
+    program
+      .command('list')
+      .alias('ls')
+      .description('list notes, newest first, pinned on top')
+      .argument('[words...]', 'terms every note must contain; #tag, -word, "a phrase", or the search box\'s operators: todo: due:today links:Plan /regex/ sort:title'),
   );
   list.action(async (words: string[], opts: FilterOpts) => {
     const c = ctx();
@@ -108,11 +133,26 @@ export function register(program: Command, use: () => Ctx): void {
     listRows(c, kept, all);
   });
 
-  addFilterOptions(program.command('search').description('find notes by their words, with the line that matched').argument('<words...>', 'terms; #tag, -word, "a phrase"')).action(
+  program
+    .command('templates')
+    .description('the templates: notes tagged #template, whose {{title}}, {{date}} and {{time}} are filled in by `new --template`')
+    .action(async () => {
+      const c = ctx();
+      const notes = await (await c.backend()).notes();
+      const rows = templatesOf(notes).map((n) => describe(n, notes));
+      c.out.rows(rows, [
+        { key: 'id', label: 'id', format: (v) => String(v).slice(0, 8), style: 'dim' },
+        { key: 'title', label: 'template', style: 'bold' },
+        { key: 'snippet', label: '', shrink: true, style: 'dim' },
+      ]);
+      if (rows.length === 0) c.out.message('No templates yet: tag a note #template to make it one');
+    });
+
+  addFilterOptions(program.command('search').description('find notes by their words, with the line that matched').argument('<words...>', 'terms; #tag, -word, "a phrase", or operators such as todo: and due:today')).action(
     async (words: string[], opts: FilterOpts) => {
       const c = ctx();
       const { all, kept } = await filteredNotes(c, opts, words);
-      const terms = words.filter((w) => !w.startsWith('#') && !w.startsWith('-')).map((w) => w.toLowerCase());
+      const terms = parseWords(words).terms;
       const rows = kept.map((n) => {
         const hit = matchLine(n, terms);
         return { ...describe(n, all), line: hit?.line ?? null, match: hit?.text ?? '' };
@@ -215,15 +255,21 @@ export function register(program: Command, use: () => Ctx): void {
       .option('--prepend', 'put the text at the top instead')
       .option('--heading <text>', 'put the text at the end of the section under this heading')
       .option('--divider', 'add a section divider (---) instead of, or before, the text')
-      .option('--inline', 'continue the last line rather than starting a paragraph'),
-  ).action(async (selector: string, words: string[], opts: BodyOpts & { prepend?: boolean; heading?: string; divider?: boolean; inline?: boolean }) => {
+      .option('--inline', 'continue the last line rather than starting a paragraph')
+      .option('-T, --template <name>', 'append a template (a note tagged #template), its {{date}} and {{time}} filled in'),
+  ).action(async (selector: string, words: string[], opts: BodyOpts & { prepend?: boolean; heading?: string; divider?: boolean; inline?: boolean; template?: string }) => {
     const c = ctx();
     const dash = words.includes('-');
     const text = words.filter((w) => w !== '-').join(' ');
-    let addition = await gatherBody({ text, content: opts.content, file: opts.file, dash, edit: opts.edit && !opts.divider, noInput: c.opts.input === false || opts.divider });
+    const quiet = opts.divider || opts.template !== undefined;
+    let addition = await gatherBody({ text, content: opts.content, file: opts.file, dash, edit: opts.edit && !quiet, noInput: c.opts.input === false || quiet });
     if (opts.divider) addition = addition ? `---\n\n${addition.trim()}` : '---';
-    if (addition === null || !addition.trim()) throw new CliError('Nothing to append: give text, --content, --file, --divider, or pipe it in', EXIT.usage);
     const note = await c.note(selector);
+    if (opts.template) {
+      const fromTemplate = await templateBody(c, opts.template, titleOf(note));
+      addition = addition?.trim() ? `${fromTemplate.trimEnd()}\n\n${addition.trim()}` : fromTemplate;
+    }
+    if (addition === null || !addition.trim()) throw new CliError('Nothing to append: give text, --content, --file, --divider, --template, or pipe it in', EXIT.usage);
     const body = insert(note.body, addition.trim(), opts);
     const saved = await save(c, updateBody([note], note.id, body)[0], opts.force);
     c.out.value(describe(saved), () => `Appended to "${titleOf(saved)}"`);

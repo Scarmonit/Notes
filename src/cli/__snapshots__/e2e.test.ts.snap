@@ -23,6 +23,7 @@ Options:
 Commands:
   new|add [options] [title] [text...]             start a note
   list|ls [options] [words...]                    list notes, newest first, pinned on top
+  templates                                       the templates: notes tagged #template, whose {{title}}, {{date}} and {{time}} are filled in by \`new --template\`
   search [options] <words...>                     find notes by their words, with the line that matched
   show|cat [options] <note>                       print a note
   edit [options] [note]                           open a note in $EDITOR; saves only if the text changed
@@ -41,20 +42,23 @@ Commands:
   tag                                             add or remove a #tag on a note
   links [options] <note>                          the notes a note links to with [[...]]
   backlinks <note>                                the notes that link to a note
+  related [options] <note>                        the notes near a note: sharing its tags, or two links away (what the window lists under the backlinks)
+  graph [options]                                 the notes as a graph of [[links]]: edges as from/to lines, --json for nodes and edges, --dot for Graphviz
   trash                                           deleted notes, which wait a month before they are gone
   history                                         the versions of a note kept as it was written
   attach [options] <note> <files...>              attach images to a note (PNG, JPEG, GIF, WebP, BMP; checked by their bytes)
   attachments <note>                              the images a note holds, with their files
   import [options] <files...>                     make notes from markdown and text files (a leading # heading becomes the title)
-  export [options] [note...]                      write a note out as Markdown (images alongside), plain text, or a PNG like the preview
+  export [options] [note...]                      write a note out as Markdown (images alongside), plain text, a self-contained HTML page, a PDF, or a PNG like the preview
   tasks [options] <note>                          the checklist items in a note
+  due [options] [when]                            every dated task across the notes, soonest first: the due sheet from a terminal
   task [options] <note> <which>                   tick, untick or toggle a checklist item; or turn a line into one
   fence [options] <note>                          put a code block around lines (or take one away when they are already fenced)
   find [options] <note> <query>                   find text in a note; each hit as line:col
   replace [options] <note> <query> <replacement>  replace text in a note (the first match, or every one with --all)
   outline [options] <note>                        the headings of a note
   render [options] <note>                         a note as HTML (as the preview shows it) or as readable plain text
-  settings                                        the settings the app keeps in settings.json: closeToTray, hotkey, captureHotkey
+  settings                                        the settings the app keeps in settings.json: closeToTray, hotkey, captureHotkey, reminders
   hotkeys                                         the two system-wide shortcuts: summon (the window) and capture (the quick-note box)
   ui                                              the window layout and view toggles (the window keeps these, so it must be running)
   commands                                        every command in the window, with its keys (from the app's own registry)

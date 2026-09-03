@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: note-asset:; font-src 'self'; connect-src 'self' ws: http://localhost:*;"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: note-asset:; font-src 'self' data:; connect-src 'self' ws: http://localhost:*;"
     />
     <title>Notes</title>
     <link rel="stylesheet" href="/src/renderer/styles.css" />
@@ -25,6 +25,8 @@
             />
             <kbd class="search-hint">Ctrl K</kbd>
           </div>
+          <!-- The search operators, shown while one is being typed. -->
+          <p id="search-ops" class="search-ops u no-drag" hidden></p>
           <button id="new" class="icon-btn no-drag" title="New note (Ctrl+N)" aria-label="New note">
             <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
               <path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
@@ -61,6 +63,8 @@
               <div id="export-menu" class="menu" role="menu" aria-label="Export as" hidden>
                 <button class="menu-item" role="menuitem" data-kind="md"><span>Markdown <span class="menu-ext">.md</span></span><kbd>M</kbd></button>
                 <button class="menu-item" role="menuitem" data-kind="txt"><span>Plain text <span class="menu-ext">.txt</span></span><kbd>T</kbd></button>
+                <button class="menu-item" role="menuitem" data-kind="html"><span>Web page <span class="menu-ext">.html</span></span><kbd>H</kbd></button>
+                <button class="menu-item" role="menuitem" data-kind="pdf"><span>Document <span class="menu-ext">.pdf</span></span><kbd>D</kbd></button>
                 <button class="menu-item" role="menuitem" data-kind="png"><span>Image <span class="menu-ext">.png</span></span><kbd>P</kbd></button>
               </div>
             </div>
@@ -127,6 +131,8 @@
               <!-- The notes that point at this one. Only there when there are any,
                    so it costs a note nothing to have none. -->
               <footer id="backlinks" class="backlinks" aria-label="Linked from" hidden></footer>
+              <!-- Notes near this one: sharing its tags, or two links away. -->
+              <footer id="related" class="backlinks related" aria-label="Related notes" hidden></footer>
               <div id="img-handle" class="img-handle" title="Drag to resize" hidden></div>
               <div id="img-size" class="img-size u" hidden></div>
               <div id="drop-line" class="drop-line" hidden></div>
@@ -175,7 +181,11 @@
             <dt><kbd>Shift</kbd> <kbd>Enter</kbd></dt><dd>Create a note titled with the search, even when there are matches</dd>
             <dt><kbd>#tag</kbd></dt><dd>Anywhere in a note; click a tag in the sidebar or search <kbd>#tag</kbd> to filter</dd>
             <dt><kbd>#tag/part</kbd></dt><dd>Nests one tag inside another; the parent finds everything filed under it</dd>
-            <dt><kbd>[[Note title]]</kbd></dt><dd>Links to another note — click it to go there, or to start it. Notes pointing here are listed under the words</dd>
+            <dt><kbd>[[Note title]]</kbd></dt><dd>Links to another note — click it to go there, or to start it. Notes pointing here, and related notes, are listed under the words</dd>
+            <dt><kbd>todo:</kbd> <kbd>due:today</kbd></dt><dd>In the search box: operators narrow the list — tag: todo: done: due: pinned: created:&gt;7d updated: links: orphan: sort:title limit: and /regex/</dd>
+            <dt><kbd>- [ ] task @2026-09-10</kbd></dt><dd>A date on a checklist line schedules it; add a time (<kbd>@2026-09-10 14:30</kbd>) and Notes reminds you then, or at nine that morning</dd>
+            <dt><kbd>#template</kbd> <kbd>{{date}}</kbd></dt><dd>A note tagged #template is a template; {{title}}, {{date}}, {{time}} and {{date:DDD D MMM}} are filled in when it is used</dd>
+            <dt><kbd>$x^2$</kbd> <kbd>```mermaid</kbd></dt><dd>Math between dollars ($$ on its own lines for a block) and mermaid fences render in the preview and every export</dd>
             <dt><kbd>**bold**</kbd> <kbd># Heading</kbd></dt><dd>Markdown takes its shape as you write it; the markers fade, and hide on every line but the one you are on</dd>
             <dt><kbd>---</kbd> <kbd>Enter</kbd></dt><dd>Turns into a section divider</dd>
             <dt><kbd>Click</kbd> a heading</dt><dd>In the outline beside the note, jumps there</dd>
@@ -276,6 +286,10 @@
             <button id="capture-hotkey-clear" class="link-btn u" type="button">Clear</button>
           </div>
           <p id="capture-hotkey-note" class="layout-note u"></p>
+          <label class="layout-row layout-check">
+            <input id="reminders-on" type="checkbox" />
+            <span class="u">Remind me of scheduled tasks — a Windows notification when a task's @date comes due, while Notes runs</span>
+          </label>
 
           <h3 class="layout-head">Files</h3>
           <div class="layout-row">
@@ -290,6 +304,48 @@
           </div>
           <p id="cli-note" class="layout-note u"></p>
           <p class="sheet-foot u">Press <kbd>Esc</kbd> to close</p>
+        </div>
+      </div>
+
+      <!-- A picker: the palette's shape, for choosing a template or anything else from a list. -->
+      <div id="pick-sheet" class="sheet palette-sheet" hidden role="dialog" aria-modal="true" aria-label="Choose">
+        <div class="palette-card">
+          <input
+            id="pick-input"
+            class="palette-input"
+            type="text"
+            placeholder="Choose"
+            autocomplete="off"
+            spellcheck="false"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="pick-list"
+            aria-autocomplete="list"
+            aria-label="Choose"
+          />
+          <div id="pick-list" class="palette-list" role="listbox" aria-label="Choices"></div>
+        </div>
+      </div>
+
+      <div id="due-sheet" class="sheet" hidden role="dialog" aria-modal="true" aria-label="Scheduled tasks">
+        <div class="sheet-card due-card" tabindex="-1">
+          <h2>Scheduled tasks</h2>
+          <div id="due-list" class="due-list" role="list"></div>
+          <p class="sheet-foot u">Write <kbd>@2026-09-10</kbd> on a checklist line to schedule it · <kbd>Enter</kbd> or a click opens the note · <kbd>Esc</kbd> closes</p>
+        </div>
+      </div>
+
+      <div id="graph-sheet" class="sheet" hidden role="dialog" aria-modal="true" aria-label="Note graph">
+        <div class="sheet-card graph-card" tabindex="-1">
+          <div class="graph-head">
+            <h2>Graph</h2>
+            <span class="graph-controls">
+              <button id="graph-scope" class="link-btn u" type="button" aria-pressed="false">Around this note</button>
+              <span id="graph-note" class="u"></span>
+            </span>
+          </div>
+          <canvas id="graph-canvas" class="graph-canvas" width="900" height="560" aria-label="Notes and the links between them"></canvas>
+          <p class="sheet-foot u">Each dot is a note, each line a <kbd>[[link]]</kbd> · click a note to open it · <kbd>Esc</kbd> closes</p>
         </div>
       </div>
     </div>

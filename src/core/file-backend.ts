@@ -1,4 +1,3 @@
-import { marked } from 'marked';
 import path from 'node:path';
 import { createNote, linkKey, titleOf, updateBody } from '../renderer/notes';
 import type { Snapshot, SnapshotSummary } from '../shared/history';
@@ -7,6 +6,7 @@ import type { ExternalChanges, Note, SettingsResult, TrashedNote } from '../shar
 import { createAttachments, type Attachments } from './attachments';
 import { CliError, NeedsAppError, type Backend } from './backend';
 import { createHistory, type History } from './history';
+import { renderHtmlOffline } from './render';
 import { EXIT, type CommandInfo, type NoteStatus, type PathsInfo, type UiState } from './ipc-protocol';
 import { pathsFor } from './paths';
 import { createSettings, type SettingsStore } from './settings';
@@ -155,8 +155,9 @@ export function createFileBackend(root: string, options: FileBackendOptions): Ba
     run: () => Promise.reject(new NeedsAppError('Running a window command')),
     open: () => Promise.reject(new NeedsAppError('Opening the window')),
     captureShow: () => Promise.reject(new NeedsAppError('The quick-note box')),
-    exportPng: () => Promise.reject(new NeedsAppError('Rendering a PNG')),
-    renderHtml: async (body) => marked.parse(body, { async: false, gfm: true, breaks: true }) as string,
+    exportRendered: (_id, _path, kind) => Promise.reject(new NeedsAppError(kind === 'png' ? 'Rendering a PNG' : kind === 'pdf' ? 'Rendering a PDF' : 'Drawing the diagrams of an HTML page')),
+    renderHtml: async (body) => renderHtmlOffline(body),
+    notify: () => Promise.reject(new NeedsAppError('A notification')),
 
     watch: async (onChange, signal) => {
       await all();

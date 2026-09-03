@@ -18,6 +18,8 @@ export interface Paths {
   legacy: string;
   /** Written by the running app: how to reach it. */
   ipc: string;
+  /** Which task reminders have been shown, so a restart does not show them again. */
+  reminded: string;
 }
 
 export function pathsFor(root: string): Paths {
@@ -30,6 +32,7 @@ export function pathsFor(root: string): Paths {
     settings: path.join(root, 'settings.json'),
     legacy: path.join(root, 'notes.json'),
     ipc: path.join(root, 'ipc.json'),
+    reminded: path.join(root, 'reminded.json'),
   };
 }
 

@@ -1,4 +1,7 @@
 import type { Command } from 'commander';
+import { CliError } from '../../core/backend';
+import { EXIT } from '../../core/ipc-protocol';
+import { graphOf, neighbourhood, relatedNotes, toDot } from '../../core/related';
 import { allTags, backlinksOf, linksIn, noteForLink, tagTree, tagsOf, titleOf, updateBody, type TagNode } from '../../renderer/notes';
 import type { Note } from '../../shared/types';
 import { describe, type Ctx } from '../context';
@@ -130,5 +133,57 @@ export function register(program: Command, use: () => Ctx): void {
         { key: 'id', label: 'id', format: (v) => String(v).slice(0, 8), style: 'dim' },
         { key: 'title', label: 'title', style: 'bold' },
       ]);
+    });
+
+  program
+    .command('related')
+    .description('the notes near a note: sharing its tags, or two links away (what the window lists under the backlinks)')
+    .argument('<note>', 'id, title, title prefix, filename, or - for stdin')
+    .option('-n, --limit <n>', 'at most n notes', '8')
+    .action(async (selector: string, opts: { limit: string }) => {
+      const c = ctx();
+      const notes = await (await c.backend()).notes();
+      const note = await c.note(selector, notes);
+      const limit = Number(opts.limit);
+      if (!Number.isInteger(limit) || limit < 0) throw new CliError(`--limit wants a whole number; got "${opts.limit}"`, EXIT.usage);
+      const rows = relatedNotes(notes, note.id, limit).map((r) => ({ ...describe(r.note, notes), score: r.score, reasons: r.reasons, why: r.reasons.join(', ') }));
+      c.out.rows(rows, [
+        { key: 'id', label: 'id', format: (v) => String(v).slice(0, 8), style: 'dim' },
+        { key: 'title', label: 'title', style: 'bold' },
+        { key: 'why', label: 'because', shrink: true, style: 'dim' },
+      ]);
+    });
+
+  program
+    .command('graph')
+    .description('the notes as a graph of [[links]]: edges as from/to lines, --json for nodes and edges, --dot for Graphviz')
+    .option('--json', 'nodes (id, title, links in and out, tags) and edges')
+    .option('--dot', 'Graphviz dot, for `notes graph --dot | dot -Tsvg > notes.svg`')
+    .option('--around <note>', 'only the part within --hops links of this note')
+    .option('--hops <n>', 'how far from --around to go', '2')
+    .action(async (opts: { json?: boolean; dot?: boolean; around?: string; hops: string }) => {
+      const c = ctx();
+      const notes = await (await c.backend()).notes();
+      let graph = graphOf(notes);
+      if (opts.around) {
+        const hops = Number(opts.hops);
+        if (!Number.isInteger(hops) || hops < 0) throw new CliError(`--hops wants a whole number; got "${opts.hops}"`, EXIT.usage);
+        graph = neighbourhood(graph, (await c.note(opts.around, notes)).id, hops);
+      }
+      if (opts.dot) {
+        c.out.write(toDot(graph));
+        return;
+      }
+      if (opts.json || c.out.mode === 'json') {
+        c.out.write(JSON.stringify(graph, null, 2));
+        return;
+      }
+      const title = new Map(graph.nodes.map((n) => [n.id, n.title]));
+      const rows = graph.edges.map((e) => ({ from: title.get(e.from) ?? e.from, to: title.get(e.to) ?? e.to, fromId: e.from, toId: e.to }));
+      c.out.rows(rows, [
+        { key: 'from', label: 'from', style: 'bold' },
+        { key: 'to', label: 'to' },
+      ]);
+      if (c.out.mode === 'pretty') c.out.message(`${graph.nodes.length} notes, ${graph.edges.length} links`);
     });
 }

@@ -7,6 +7,7 @@ describe('parseSettings', () => {
       closeToTray: true,
       hotkey: 'ctrl+shift+space',
       captureHotkey: 'ctrl+alt+q',
+      reminders: true,
     });
   });
 
@@ -30,6 +31,12 @@ describe('parseSettings', () => {
     expect(parseSettings('null')).toEqual(DEFAULT_SETTINGS);
   });
 
+  it('turns reminders off only on an explicit false', () => {
+    expect(parseSettings('{}').reminders).toBe(true);
+    expect(parseSettings('{"reminders":false}').reminders).toBe(false);
+    expect(parseSettings('{"reminders":"no"}').reminders).toBe(true);
+  });
+
   it('only counts a literal true as close-to-tray', () => {
     expect(parseSettings('{"closeToTray":"yes"}').closeToTray).toBe(false);
   });
@@ -38,6 +45,6 @@ describe('parseSettings', () => {
 describe('cleanSettings', () => {
   it('keeps only the known fields and drops chords that cannot be registered', () => {
     const dirty = { closeToTray: true, hotkey: 'x', captureHotkey: 'ctrl+alt+space', stray: 1 } as never;
-    expect(cleanSettings(dirty)).toEqual({ closeToTray: true, hotkey: null, captureHotkey: 'ctrl+alt+space' });
+    expect(cleanSettings(dirty)).toEqual({ closeToTray: true, hotkey: null, captureHotkey: 'ctrl+alt+space', reminders: true });
   });
 });

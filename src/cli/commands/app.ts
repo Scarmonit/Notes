@@ -7,11 +7,11 @@ import { type Ctx } from '../context';
 
 /** Settings, hotkeys, the window's layout, and the window's own commands. */
 
-const SETTING_KEYS = ['closeToTray', 'hotkey', 'captureHotkey'] as const;
+const SETTING_KEYS = ['closeToTray', 'hotkey', 'captureHotkey', 'reminders'] as const;
 
 /** A setting's value from the words someone typed. */
 export function parseSettingValue(key: string, text: string): boolean | string | null {
-  if (key === 'closeToTray') {
+  if (key === 'closeToTray' || key === 'reminders') {
     if (/^(true|on|yes|1)$/i.test(text)) return true;
     if (/^(false|off|no|0)$/i.test(text)) return false;
     throw new CliError(`${key} wants true or false`, EXIT.usage);
@@ -38,7 +38,7 @@ const chordText = (chord: string | null): string => (chord ? keyLabel(chord).joi
 export function register(program: Command, use: () => Ctx): void {
   const ctx = use;
 
-  const settings = program.command('settings').description('the settings the app keeps in settings.json: closeToTray, hotkey, captureHotkey');
+  const settings = program.command('settings').description('the settings the app keeps in settings.json: closeToTray, hotkey, captureHotkey, reminders');
   settings
     .command('get', { isDefault: true })
     .description('show the settings, or one of them')

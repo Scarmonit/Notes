@@ -3,7 +3,8 @@ import type { Command } from 'commander';
 import { CliError, type Backend } from '../core/backend';
 import { EXIT } from '../core/ipc-protocol';
 import { defaultUserData, userDataDirArg } from '../core/paths';
-import { applyFilter, EMPTY_FILTER, parseSort, parseTerms, parseWhen, SORT_KEYS, type Filter } from '../core/query';
+import { parseDueWindow } from '../core/due';
+import { applyFilter, parseSort, parseWhen, parseWords, SORT_KEYS, type Filter } from '../core/query';
 import { resolveNote, resolveTrashed, type Resolution } from '../core/resolve';
 import { linksIn, snippetOf, tagsOf, titleOf, wordCount } from '../renderer/notes';
 import { taskProgress } from '../renderer/tasks';
@@ -217,6 +218,9 @@ export interface FilterOpts {
   linkedFrom?: string;
   orphan?: boolean;
   hasTasks?: boolean;
+  todo?: boolean;
+  done?: boolean;
+  due?: string;
   sort?: string;
   reverse?: boolean;
   limit?: string;
@@ -239,6 +243,9 @@ export function addFilterOptions(cmd: Command): Command {
     .option('--linked-from <note>', 'notes this note links to')
     .option('--orphan', 'notes with no links in either direction')
     .option('--has-tasks', 'notes with a checklist')
+    .option('--todo', 'notes with an unticked task')
+    .option('--done', 'notes with a ticked task')
+    .option('--due <when>', 'notes with a task due by then: today, tomorrow, week, 7d, overdue, any, or a date')
     .option('--sort <key>', `order: ${SORT_KEYS.join(', ')}; add - to reverse (title-)`)
     .option('-r, --reverse', 'reverse the order')
     .option('-n, --limit <n>', 'at most n notes');
@@ -251,10 +258,23 @@ function when(text: string | undefined, flag: string): number | undefined {
   return t;
 }
 
-/** The filter the options and the bare words describe. */
+/**
+ * The filter the options and the bare words describe. The words may carry
+ * the search box's operators — `todo:`, `due:today`, `links:Plan` — so a
+ * query that works in the window works here unchanged.
+ */
 export async function filterFrom(ctx: Ctx, opts: FilterOpts, words: readonly string[] = [], notes?: Note[]): Promise<Filter> {
-  const filter: Filter = { ...EMPTY_FILTER, ...parseTerms(words) };
+  const { errors, ...parsed } = parseWords(words);
+  if (errors.length > 0) throw new CliError(errors[0], EXIT.usage);
+  const filter: Filter = parsed;
   for (const tag of opts.tag ?? []) filter.tags.push(tag.replace(/^#/, '').toLowerCase());
+  if (opts.todo) filter.hasTodo = true;
+  if (opts.done) filter.hasDone = true;
+  if (opts.due !== undefined) {
+    const w = parseDueWindow(opts.due);
+    if (!w) throw new CliError(`--due wants today, tomorrow, week, 7d, overdue, any or a date; got "${opts.due}"`, EXIT.usage);
+    filter.due = w;
+  }
   if (opts.pinned !== undefined) filter.pinned = opts.pinned;
   if (opts.untitled) filter.untitled = true;
   filter.createdAfter = when(opts.createdAfter, '--created-after');
