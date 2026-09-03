@@ -13,6 +13,8 @@ const config: ForgeConfig = {
     // Extension omitted on purpose: packager appends .ico on Windows.
     // Regenerate with `npm run icon`.
     icon: 'assets/icon',
+    // The tray needs the icon as a real file on disk, which asar is not.
+    extraResource: ['assets/icon.ico'],
     asar: true,
   },
   rebuildConfig: {},

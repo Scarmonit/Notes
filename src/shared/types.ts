@@ -1,3 +1,5 @@
+import type { Settings } from './settings';
+
 export interface Note {
   id: string;
   /** Raw markdown. The title is derived from the first non-empty line. */
@@ -14,6 +16,12 @@ export interface Note {
 export interface NotesFile {
   version: 1;
   notes: Note[];
+}
+
+/** One markdown or text file chosen for import, read as text. */
+export interface ImportedFile {
+  name: string;
+  text: string;
 }
 
 export type ExportKind = 'md' | 'txt' | 'png';
@@ -37,8 +45,20 @@ export interface NotesApi {
   attach(bytes: Uint8Array, name: string): Promise<string>;
   /** Opens a file picker for images; resolves to the URLs of the ones chosen. */
   pickAttachments(): Promise<string[]>;
+  /** Opens a file picker for markdown and text files; resolves to their contents. */
+  pickImports(): Promise<ImportedFile[]>;
   /** Shows a Save dialog and writes the export; resolves to the path, or null if cancelled. */
   exportNote(request: ExportRequest): Promise<string | null>;
+  /** The tray and hotkey settings the main process is acting on. */
+  getSettings(): Promise<Settings>;
+  /**
+   * Stores new settings and applies them. Resolves to what was stored, with
+   * `hotkeyFailed` set when the chord could not be registered system-wide
+   * (usually because another application already owns it).
+   */
+  setSettings(next: Settings): Promise<Settings & { hotkeyFailed: boolean }>;
+  /** Called when the tray's "New note" item is chosen. */
+  onNewNote(fn: () => void): void;
 }
 
 declare global {

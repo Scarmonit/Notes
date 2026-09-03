@@ -110,37 +110,48 @@
         </section>
       </main>
 
+      <div id="palette" class="sheet palette-sheet" hidden role="dialog" aria-modal="true" aria-label="Commands">
+        <div class="palette-card">
+          <input
+            id="palette-input"
+            class="palette-input"
+            type="text"
+            placeholder="Type a command"
+            autocomplete="off"
+            spellcheck="false"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="palette-list"
+            aria-autocomplete="list"
+            aria-label="Type a command"
+          />
+          <div id="palette-list" class="palette-list" role="listbox" aria-label="Commands"></div>
+        </div>
+      </div>
+
       <div id="help-sheet" class="sheet" hidden role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
         <div class="sheet-card" tabindex="-1">
           <h2>Keyboard shortcuts</h2>
+          <!-- Every command row below is generated from the action registry, so the
+               sheet and the keys that actually work cannot drift apart. -->
+          <div id="key-groups"></div>
+          <h3 class="keys-head">Moving around</h3>
           <dl class="keys">
-            <dt><kbd>Ctrl</kbd> <kbd>N</kbd></dt><dd>New note</dd>
-            <dt><kbd>Ctrl</kbd> <kbd>K</kbd> / <kbd>Ctrl</kbd> <kbd>F</kbd></dt><dd>Find a note</dd>
             <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move through notes, in the list or while searching</dd>
             <dt><kbd>Enter</kbd></dt><dd>Open the note, or create one titled with the search when nothing matches</dd>
             <dt><kbd>Shift</kbd> <kbd>Enter</kbd></dt><dd>Create a note titled with the search, even when there are matches</dd>
-            <dt><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>P</kbd></dt><dd>Pin or unpin the note to the top of the list</dd>
             <dt><kbd>#tag</kbd></dt><dd>Anywhere in a note; click a tag in the sidebar or search <kbd>#tag</kbd> to filter</dd>
-            <dt><kbd>Ctrl</kbd> <kbd>↑</kbd> / <kbd>Ctrl</kbd> <kbd>↓</kbd></dt><dd>Previous or next note from anywhere</dd>
-            <dt><kbd>Ctrl</kbd> <kbd>T</kbd></dt><dd>Edit the note's title</dd>
-            <dt><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>H</kbd></dt><dd>Insert a section divider (or type <kbd>---</kbd> and press Enter)</dd>
-            <dt><kbd>Ctrl</kbd> <kbd>E</kbd></dt><dd>Toggle markdown preview</dd>
-            <dt><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>I</kbd></dt><dd>Attach an image (or paste / drop one)</dd>
+            <dt><kbd>---</kbd> <kbd>Enter</kbd></dt><dd>Turns into a section divider</dd>
             <dt><kbd>Click</kbd> an image</dt><dd>Select it, then drag the corner handle to resize; double-click for the original size</dd>
             <dt><kbd>Alt</kbd> <kbd>↑</kbd> / <kbd>Alt</kbd> <kbd>↓</kbd></dt><dd>Move the selected image up or down a line (or drag it)</dd>
-            <dt><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>S</kbd></dt><dd>Export as Markdown, plain text or image</dd>
-            <dt><kbd>Ctrl</kbd> <kbd>S</kbd></dt><dd>Save now (autosave is always on)</dd>
-            <dt><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>D</kbd></dt><dd>Delete note, press again to confirm</dd>
-            <dt><kbd>Ctrl</kbd> <kbd>\</kbd></dt><dd>Toggle sidebar</dd>
+            <dt><kbd>Drop</kbd> a file</dt><dd>Images attach; .md and .txt files come in as notes</dd>
             <dt><kbd>Esc</kbd></dt><dd>Back to the list, clear the search, or cancel</dd>
-            <dt><kbd>Ctrl</kbd> <kbd>,</kbd></dt><dd>Layout: margin width, or hide the margin</dd>
-            <dt><kbd>Ctrl</kbd> <kbd>/</kbd></dt><dd>This sheet</dd>
           </dl>
           <p class="sheet-foot u">Press <kbd>Esc</kbd> to close</p>
         </div>
       </div>
 
-      <div id="layout-sheet" class="sheet" hidden role="dialog" aria-modal="true" aria-label="Layout">
+      <div id="layout-sheet" class="sheet" hidden role="dialog" aria-modal="true" aria-label="Layout and window">
         <div class="sheet-card layout-card" tabindex="-1">
           <h2>Layout</h2>
           <label class="layout-row">
@@ -152,6 +163,26 @@
             <input id="margin-show" type="checkbox" />
             <span class="u">Show the margin (edit time and word count)</span>
           </label>
+          <label class="layout-row layout-check">
+            <input id="focus-mode" type="checkbox" />
+            <span class="u">Focus mode — dim everything but the paragraph you are in</span>
+          </label>
+          <label class="layout-row layout-check">
+            <input id="typewriter" type="checkbox" />
+            <span class="u">Typewriter scrolling — keep the line you are writing in the middle</span>
+          </label>
+
+          <h3 class="layout-head">Window</h3>
+          <label class="layout-row layout-check">
+            <input id="close-tray" type="checkbox" />
+            <span class="u">Closing the window keeps Notes running in the tray</span>
+          </label>
+          <div class="layout-row">
+            <span class="u">Summon Notes</span>
+            <button id="hotkey" class="hotkey-btn" type="button" aria-label="Global shortcut, click to change"></button>
+            <button id="hotkey-clear" class="link-btn u" type="button">Clear</button>
+          </div>
+          <p id="hotkey-note" class="layout-note u"></p>
           <p class="sheet-foot u">Press <kbd>Esc</kbd> to close</p>
         </div>
       </div>

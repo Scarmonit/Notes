@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   MIN_IMAGE_WIDTH,
   chipWidth,
+  paragraphBounds,
   isRule,
   lineIndexAt,
   lineSpans,
@@ -279,5 +280,27 @@ describe('textBefore', () => {
     expect(textBefore(div, { node: text, offset: 8 })).toBe('one\ntwo\n');
     expect(textBefore(div, { node: text, offset: 5 })).toBe('one\nt');
     expect(textBefore(div, { node: div, offset: 0 })).toBe('');
+  });
+});
+
+describe('paragraphBounds', () => {
+  const lines = ['one', 'two', '', 'three', 'four', 'five'];
+
+  it('reaches to the blank lines on either side', () => {
+    expect(paragraphBounds(lines, 4)).toEqual({ first: 3, last: 5 });
+    expect(paragraphBounds(lines, 0)).toEqual({ first: 0, last: 1 });
+  });
+
+  it('gives a blank line to itself, so the dimming holds still between blocks', () => {
+    expect(paragraphBounds(lines, 2)).toEqual({ first: 2, last: 2 });
+  });
+
+  it('treats a whitespace-only line as blank', () => {
+    expect(paragraphBounds(['a', '   ', 'b'], 0)).toEqual({ first: 0, last: 0 });
+  });
+
+  it('holds a line index that is off the end', () => {
+    expect(paragraphBounds(lines, 99)).toEqual({ first: 3, last: 5 });
+    expect(paragraphBounds([], 0)).toEqual({ first: 0, last: 0 });
   });
 });

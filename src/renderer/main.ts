@@ -1,6 +1,11 @@
 import { assetNameFromUrl } from '../shared/assets';
-import type { ExportKind, ExportRequest, Note, NotesFile } from '../shared/types';
+import { chordOf, isCommandChord, keyLabel } from '../shared/keys';
+import { DEFAULT_SETTINGS, type Settings } from '../shared/settings';
+import type { ExportKind, ExportRequest, ImportedFile, Note, NotesFile } from '../shared/types';
+import { keyMap, matchActions, type Action, type Match } from './actions';
+import { isTextFile, noteFromFile } from './importer';
 import { renderMarkdown } from './markdown';
+import { cycleTaskLine, toggleTaskAt } from './tasks';
 import {
   allTags,
   createNote,
@@ -24,15 +29,19 @@ import {
   isChip,
   isRule,
   lineIndexAt,
+  lineIndexIn,
   lineSpans,
   markEmpty,
   moveImageBy,
   moveImageToLine,
+  paragraphBounds,
+  readEditor,
   renderEditor as renderEditorDom,
   makeRule,
   serializeEditor,
   setChipWidth,
   textBefore,
+  type LineSpan,
 } from './richeditor';
 import stylesText from './styles.css?inline';
 import { absoluteTime, relativeTime } from './time';
@@ -57,6 +66,16 @@ const el = {
   marginW: $<HTMLInputElement>('margin-w'),
   marginWOut: $<HTMLOutputElement>('margin-w-out'),
   marginShow: $<HTMLInputElement>('margin-show'),
+  focusMode: $<HTMLInputElement>('focus-mode'),
+  typewriter: $<HTMLInputElement>('typewriter'),
+  closeTray: $<HTMLInputElement>('close-tray'),
+  hotkeyBtn: $<HTMLButtonElement>('hotkey'),
+  hotkeyClear: $<HTMLButtonElement>('hotkey-clear'),
+  hotkeyNote: $('hotkey-note'),
+  palette: $('palette'),
+  paletteInput: $<HTMLInputElement>('palette-input'),
+  paletteList: $('palette-list'),
+  keyGroups: $('key-groups'),
   title: $<HTMLInputElement>('title'),
   toggleSidebar: $<HTMLButtonElement>('toggle-sidebar'),
   edited: $('edited'),
@@ -89,6 +108,10 @@ interface UiState {
   /** Width of the marginalia column in px. */
   marginW: number;
   marginHidden: boolean;
+  /** Dim everything except the paragraph the caret is in. */
+  focusMode: boolean;
+  /** Keep the line being written near the middle of the editor. */
+  typewriter: boolean;
 }
 
 const MARGIN_DEFAULT = 176;
@@ -98,7 +121,15 @@ const MARGIN_MAX = 280;
 const UI_KEY = 'notes.ui';
 
 function loadUi(): UiState {
-  const fallback: UiState = { selectedId: null, preview: false, sidebarHidden: false, marginW: MARGIN_DEFAULT, marginHidden: false };
+  const fallback: UiState = {
+    selectedId: null,
+    preview: false,
+    sidebarHidden: false,
+    marginW: MARGIN_DEFAULT,
+    marginHidden: false,
+    focusMode: false,
+    typewriter: false,
+  };
   try {
     const raw = localStorage.getItem(UI_KEY);
     const state = raw ? { ...fallback, ...(JSON.parse(raw) as Partial<UiState>) } : fallback;
@@ -118,6 +149,13 @@ function saveUi(): void {
 }
 
 const ui = loadUi();
+
+/**
+ * Tray and hotkey settings. These live with the main process, which acts on
+ * them while the window is hidden or closing; this is the renderer's copy for
+ * drawing the settings rows.
+ */
+let settings: Settings = { ...DEFAULT_SETTINGS };
 
 // --- data -------------------------------------------------------------------
 
@@ -156,7 +194,7 @@ async function flush(): Promise<void> {
   dirty = false;
   try {
     await window.notesApi.save(toFile());
-    showStatus('Saved', 1200);
+    showAutosave();
   } catch (err) {
     dirty = true;
     console.error('[notes] save failed', err);
@@ -164,17 +202,33 @@ async function flush(): Promise<void> {
   }
 }
 
+/** When the message on the status line has had its say. */
+let statusUntil = 0;
+
 /** Header status line. `ms` 0 keeps it until the next message. */
 function showStatus(text: string, ms: number): void {
   el.status.textContent = text;
   el.status.classList.add('show');
   if (statusTimer !== null) clearTimeout(statusTimer);
+  statusUntil = ms > 0 ? Date.now() + ms : Infinity;
   statusTimer = ms > 0 ? window.setTimeout(() => el.status.classList.remove('show'), ms) : null;
+}
+
+/**
+ * Autosave's own "Saved" waits its turn. Saving follows nearly every action,
+ * and it should not wipe out the line that says what the action did — an
+ * import or an attachment has more to report than the save that follows it.
+ * Ctrl+S says "Saved" for itself, so the deliberate save is still answered.
+ */
+function showAutosave(): void {
+  if (Date.now() < statusUntil) return;
+  showStatus('Saved', 1200);
 }
 
 function clearStatus(): void {
   if (statusTimer !== null) clearTimeout(statusTimer);
   statusTimer = null;
+  statusUntil = 0;
   el.status.classList.remove('show');
 }
 
@@ -338,11 +392,30 @@ function renderEditor(): void {
   el.editor.hidden = ui.preview;
   el.preview.hidden = !ui.preview;
   if (ui.preview) {
+    // The preview keeps its place when a checkbox is ticked, since ticking one
+    // re-renders the whole article.
+    const scroll = el.preview.scrollTop;
     el.preview.innerHTML = n.body.trim()
       ? renderMarkdown(n.body)
       : '<p class="preview-empty">Nothing to preview yet.</p>';
+    liveTaskBoxes();
+    el.preview.scrollTop = scroll;
   }
   syncChipUi();
+  syncWriting();
+}
+
+/**
+ * Markdown renders task lists as disabled checkboxes. Here they are the way to
+ * tick things off, so they are enabled and numbered: the nth box in the
+ * preview is the nth task line in the body.
+ */
+function liveTaskBoxes(): void {
+  el.preview.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((box, i) => {
+    box.disabled = false;
+    box.dataset.task = String(i);
+    box.setAttribute('aria-label', box.checked ? 'Done' : 'Not done');
+  });
 }
 
 function applySidebar(): void {
@@ -356,6 +429,123 @@ function applyLayout(): void {
   el.marginWOut.value = `${ui.marginW} px`;
   el.marginShow.checked = !ui.marginHidden;
   positionHandle(selectedChip());
+}
+
+// --- focus mode and typewriter scrolling ------------------------------------
+
+/** The name the dim highlight is registered under; matched by ::highlight() in the CSS. */
+const DIM = 'note-dim';
+
+const highlights = (): HighlightRegistry | null =>
+  typeof CSS !== 'undefined' && 'highlights' in CSS ? CSS.highlights : null;
+
+function rangeOver(from: LineSpan, to: LineSpan): Range {
+  const range = document.createRange();
+  range.setStart(from.start.node, from.start.offset);
+  range.setEnd(to.end.node, to.end.offset);
+  return range;
+}
+
+/**
+ * Dims every line outside the paragraph the caret sits in. The text is left
+ * alone: the dimming is a CSS custom highlight over ranges, so no wrapper
+ * elements go into the editor and nothing about the note changes.
+ */
+function applyFocus(): void {
+  const reg = highlights();
+  const off = !ui.focusMode || ui.preview || el.editorWrap.hidden;
+  const pos = off ? null : caretPos();
+  // Without a caret there is no current paragraph, so nothing is dimmed.
+  const { text, lines } = off || !pos ? { text: '', lines: [] } : readEditor(el.editor);
+  if (!pos || lines.length === 0) {
+    reg?.delete(DIM);
+    dimBlocks(null);
+    return;
+  }
+  const { first, last } = paragraphBounds(text.split('\n'), lineIndexIn(lines, pos));
+  const ranges: Range[] = [];
+  if (first > 0) ranges.push(rangeOver(lines[0], lines[first - 1]));
+  if (last < lines.length - 1) ranges.push(rangeOver(lines[last + 1], lines[lines.length - 1]));
+  if (reg) {
+    if (ranges.length === 0) reg.delete(DIM);
+    else reg.set(DIM, new Highlight(...ranges));
+  }
+  dimBlocks({ lines, first, last });
+}
+
+/**
+ * A custom highlight only reaches text, so pictures and rules would stay
+ * bright while the words around them faded. They are faded with a class
+ * instead — which the serializer does not look at, so the note is unchanged.
+ */
+function dimBlocks(scope: { lines: LineSpan[]; first: number; last: number } | null): void {
+  for (const block of el.editor.querySelectorAll<HTMLElement>('.inline-img, .inline-rule')) {
+    let dim = false;
+    if (scope) {
+      const parent = block.parentNode;
+      const at = parent ? lineIndexIn(scope.lines, { node: parent, offset: childIndex(block) }) : -1;
+      dim = at >= 0 && (at < scope.first || at > scope.last);
+    }
+    block.classList.toggle('is-dim', dim);
+  }
+}
+
+/** Where the caret is on screen, or null when it has no position of its own. */
+function caretRect(): DOMRect | null {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return null;
+  const range = sel.getRangeAt(0);
+  if (!el.editor.contains(range.startContainer)) return null;
+  const rect = range.getBoundingClientRect();
+  if (rect.height > 0) return rect;
+  // A collapsed caret on an empty line measures zero; the line it sits on does not.
+  const line = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement;
+  const fallback = line?.getBoundingClientRect();
+  return fallback && fallback.height > 0 ? fallback : null;
+}
+
+/** Where in the editor the line being written should sit. */
+const TYPEWRITER_AT = 0.45;
+
+function applyTypewriter(): void {
+  if (!ui.typewriter || ui.preview || el.editorWrap.hidden) return;
+  const rect = caretRect();
+  if (!rect) return;
+  const box = el.editor.getBoundingClientRect();
+  const delta = rect.top - (box.top + box.height * TYPEWRITER_AT);
+  if (Math.abs(delta) > 1) el.editor.scrollTop += delta;
+}
+
+// Both react to the caret, which moves on nearly every keystroke; one frame's
+// worth of coalescing keeps the DOM walk off the typing path.
+let writingFrame = 0;
+function syncWriting(): void {
+  if (writingFrame) return;
+  writingFrame = requestAnimationFrame(() => {
+    writingFrame = 0;
+    applyFocus();
+    applyTypewriter();
+  });
+}
+
+function applyWriting(): void {
+  el.focusMode.checked = ui.focusMode;
+  el.typewriter.checked = ui.typewriter;
+  syncWriting();
+}
+
+function toggleFocusMode(): void {
+  ui.focusMode = !ui.focusMode;
+  saveUi();
+  applyWriting();
+  showStatus(ui.focusMode ? 'Focus mode on' : 'Focus mode off', 1500);
+}
+
+function toggleTypewriter(): void {
+  ui.typewriter = !ui.typewriter;
+  saveUi();
+  applyWriting();
+  showStatus(ui.typewriter ? 'Typewriter scrolling on' : 'Typewriter scrolling off', 1500);
 }
 
 // --- actions ----------------------------------------------------------------
@@ -560,6 +750,17 @@ function altFor(fileName: string): string {
 
 const isImage = (f: File): boolean => f.type.startsWith('image/');
 
+/** Files dropped on the window: pictures go into the note, notes become notes. */
+async function takeFiles(files: File[]): Promise<void> {
+  const texts = files.filter((f) => !isImage(f) && isTextFile(f.name));
+  const images = files.filter(isImage);
+  if (texts.length > 0) {
+    await importFiles(await Promise.all(texts.map(async (f) => ({ name: f.name, text: await f.text() }))));
+  }
+  if (images.length > 0) await attachFiles(images);
+  if (texts.length === 0 && images.length === 0) showStatus('Only images and .md or .txt files can be dropped in', 3500);
+}
+
 async function attachFiles(files: File[]): Promise<void> {
   const images = files.filter(isImage);
   if (images.length === 0) {
@@ -581,6 +782,38 @@ async function attachFiles(files: File[]): Promise<void> {
     }
   }
   showStatus(attached === 1 ? 'Image attached' : `${attached} images attached`, 2500);
+}
+
+/**
+ * Every imported file becomes one note, newest first, and the first of them is
+ * opened so the import is visibly there rather than merely reported.
+ */
+async function importFiles(files: ImportedFile[]): Promise<void> {
+  const made: Note[] = [];
+  for (const file of files) {
+    const { title, body } = noteFromFile(file.name, file.text);
+    const note = createNote();
+    note.body = body;
+    if (title) note.title = title;
+    made.push(note);
+  }
+  if (made.length === 0) return;
+  notes = [...made, ...notes];
+  scheduleSave();
+  query = '';
+  el.search.value = '';
+  tagFilter = null;
+  select(made[0].id);
+  showStatus(made.length === 1 ? `Imported “${titleOf(made[0])}”` : `Imported ${made.length} notes`, 3000);
+}
+
+async function pickImports(): Promise<void> {
+  try {
+    await importFiles(await window.notesApi.pickImports());
+  } catch (err) {
+    console.error('[notes] import failed', err);
+    showStatus('Could not read those files', 4000);
+  }
 }
 
 async function pickImages(): Promise<void> {
@@ -647,7 +880,7 @@ document.addEventListener('drop', (e) => {
     return;
   }
   const files = Array.from(e.dataTransfer?.files ?? []);
-  if (files.length > 0) void attachFiles(files);
+  if (files.length > 0) void takeFiles(files);
 });
 
 // --- images: select, resize, move -------------------------------------------
@@ -823,6 +1056,63 @@ function convertDashesOnEnter(): boolean {
   return true;
 }
 
+// --- checklists -------------------------------------------------------------
+
+/** Replaces the body of the open note and puts the editor back in step with it. */
+function setBody(body: string): void {
+  const n = selected();
+  if (!n || n.body === body) return;
+  notes = updateBody(notes, n.id, body);
+  scheduleSave();
+  // The editor only re-renders on a note switch, so tell it this counts as one.
+  editorNoteId = null;
+  renderList();
+  renderEditor();
+}
+
+// Ticking a box in the preview writes the change back into the markdown.
+el.preview.addEventListener('click', (e) => {
+  const box = e.target;
+  if (!(box instanceof HTMLInputElement) || box.type !== 'checkbox' || box.dataset.task === undefined) return;
+  const n = selected();
+  if (!n) return;
+  setBody(toggleTaskAt(n.body, Number(box.dataset.task)));
+});
+
+/**
+ * Turns the line the caret is on into a checklist item, ticks it, or takes the
+ * checkbox away again. The whole body is rewritten and re-rendered rather than
+ * the line patched in place, because a line can hold a picture or a rule.
+ */
+function toggleTaskHere(): void {
+  ensureEditable();
+  const pos = caretPos();
+  if (!pos) return;
+  const { text, lines } = readEditor(el.editor);
+  const line = lineIndexIn(lines, pos);
+  const next = cycleTaskLine(text, line);
+  if (next === text) return;
+  setBody(next);
+  // The re-render throws away the old caret. It comes back at the end of the
+  // line, which is where the next word of a checklist item goes anyway.
+  caretToLineEnd(line);
+}
+
+/** Puts the caret at the end of a line, after the editor has been re-rendered. */
+function caretToLineEnd(line: number): void {
+  el.editor.focus();
+  const spans = lineSpans(el.editor);
+  const span = spans[Math.min(line, spans.length - 1)];
+  if (!span) return;
+  const range = document.createRange();
+  range.setStart(span.end.node, span.end.offset);
+  range.collapse(true);
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+  syncWriting();
+}
+
 // Double-click puts an image back at its natural size.
 el.editor.addEventListener('dblclick', (e) => {
   if (!isChip(e.target)) return;
@@ -832,9 +1122,15 @@ el.editor.addEventListener('dblclick', (e) => {
   selectChip(e.target);
 });
 
-document.addEventListener('selectionchange', syncChipUi);
+document.addEventListener('selectionchange', () => {
+  syncChipUi();
+  syncWriting();
+});
 el.editor.addEventListener('scroll', () => positionHandle(selectedChip()));
-window.addEventListener('resize', () => positionHandle(selectedChip()));
+window.addEventListener('resize', () => {
+  positionHandle(selectedChip());
+  syncWriting();
+});
 
 /** Re-renders the editor from a moved body and leaves the moved image selected. */
 function applyMove(moved: { body: string; index: number }): void {
@@ -1011,7 +1307,10 @@ document.addEventListener('pointerdown', (e) => {
 
 // --- editor input -----------------------------------------------------------
 
-el.editor.addEventListener('input', commitEditor);
+el.editor.addEventListener('input', () => {
+  commitEditor();
+  syncWriting();
+});
 
 // Enter inserts a plain line break rather than a new paragraph block, so the
 // content stays a flat run of text, breaks and image chips.
@@ -1111,10 +1410,99 @@ el.marginShow.addEventListener('change', () => {
   saveUi();
   applyLayout();
 });
+el.focusMode.addEventListener('change', () => {
+  if (el.focusMode.checked !== ui.focusMode) toggleFocusMode();
+});
+el.typewriter.addEventListener('change', () => {
+  if (el.typewriter.checked !== ui.typewriter) toggleTypewriter();
+});
 el.layoutBtn.addEventListener('click', () => toggleLayout(true));
 el.layoutSheet.addEventListener('click', (e) => {
   if (e.target === el.layoutSheet) toggleLayout(false);
 });
+
+// --- tray and the summon hotkey ---------------------------------------------
+
+/** True while the hotkey button is listening for the chord to record. */
+let recording = false;
+
+function renderSettings(note = ''): void {
+  el.closeTray.checked = settings.closeToTray;
+  el.hotkeyBtn.classList.toggle('recording', recording);
+  el.hotkeyBtn.replaceChildren();
+  if (recording) {
+    el.hotkeyBtn.append('Press a combination…');
+  } else if (settings.hotkey) {
+    for (const part of keyLabel(settings.hotkey)) {
+      const k = document.createElement('kbd');
+      k.textContent = part;
+      el.hotkeyBtn.append(k);
+    }
+  } else {
+    el.hotkeyBtn.append('None');
+  }
+  el.hotkeyClear.hidden = !settings.hotkey || recording;
+  el.hotkeyNote.textContent = note;
+}
+
+/** Hands the settings to the main process, which is the one that acts on them. */
+async function saveSettings(next: Settings): Promise<void> {
+  const previous = settings;
+  settings = next;
+  renderSettings();
+  try {
+    const stored = await window.notesApi.setSettings(next);
+    settings = { closeToTray: stored.closeToTray, hotkey: stored.hotkey };
+    renderSettings(stored.hotkeyFailed ? 'Another program already uses that combination.' : '');
+  } catch (err) {
+    console.error('[notes] could not save settings', err);
+    settings = previous;
+    renderSettings('Could not save that setting.');
+  }
+}
+
+el.closeTray.addEventListener('change', () => {
+  void saveSettings({ ...settings, closeToTray: el.closeTray.checked });
+});
+
+function stopRecording(): void {
+  if (!recording) return;
+  recording = false;
+  renderSettings();
+}
+
+el.hotkeyBtn.addEventListener('click', () => {
+  recording = !recording;
+  renderSettings(recording ? 'Esc cancels, Backspace clears.' : '');
+});
+
+// The chord is read here, before the app's own keyboard map sees it, so
+// recording Ctrl+Shift+P does not also pin the note.
+el.hotkeyBtn.addEventListener('keydown', (e) => {
+  if (!recording) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.key === 'Escape') {
+    stopRecording();
+    return;
+  }
+  if (e.key === 'Backspace' || e.key === 'Delete') {
+    recording = false;
+    void saveSettings({ ...settings, hotkey: null });
+    return;
+  }
+  const chord = chordOf(e);
+  if (!chord) return;
+  if (!isCommandChord(chord)) {
+    renderSettings('Hold Ctrl or Alt as part of the combination.');
+    return;
+  }
+  recording = false;
+  void saveSettings({ ...settings, hotkey: chord });
+});
+
+el.hotkeyBtn.addEventListener('blur', stopRecording);
+el.hotkeyClear.addEventListener('click', () => void saveSettings({ ...settings, hotkey: null }));
 
 // --- search -----------------------------------------------------------------
 
@@ -1186,6 +1574,348 @@ el.helpSheet.addEventListener('click', (e) => {
   if (e.target === el.helpSheet) toggleHelp(false);
 });
 
+// --- the command registry ---------------------------------------------------
+
+/**
+ * Every command in one list. The keyboard map, the shortcuts sheet and the
+ * command palette are all built from it below, so a command cannot gain a key
+ * without appearing in the sheet, and nothing in the sheet can be a key that
+ * no longer runs.
+ */
+const hasNote = (): boolean => selected() !== null;
+
+const ACTIONS: Action[] = [
+  { id: 'new', label: 'New note', group: 'Notes', chord: 'ctrl+n', run: () => newNote() },
+  {
+    id: 'find',
+    label: 'Find a note',
+    group: 'Notes',
+    chord: 'ctrl+k',
+    also: ['ctrl+f'],
+    terms: 'search filter',
+    run: () => {
+      if (ui.sidebarHidden) toggleSidebar();
+      el.search.focus();
+      el.search.select();
+    },
+  },
+  { id: 'prev', label: 'Previous note', group: 'Notes', chord: 'ctrl+arrowup', run: () => step(-1) },
+  { id: 'next', label: 'Next note', group: 'Notes', chord: 'ctrl+arrowdown', run: () => step(1) },
+  { id: 'title', label: 'Rename this note', group: 'Notes', chord: 'ctrl+t', terms: 'title', run: focusTitle },
+  {
+    id: 'pin',
+    label: 'Pin or unpin this note',
+    hint: 'Pinned notes sort above the rest, whatever their edit time',
+    group: 'Notes',
+    chord: 'ctrl+shift+p',
+    enabled: hasNote,
+    on: () => selected()?.pinned === true,
+    run: togglePinSelected,
+  },
+  {
+    id: 'delete',
+    label: 'Delete this note',
+    hint: 'Press again within three seconds to confirm',
+    group: 'Notes',
+    chord: 'ctrl+shift+d',
+    enabled: hasNote,
+    run: armDelete,
+  },
+  {
+    id: 'import',
+    label: 'Import markdown or text files…',
+    hint: 'One note per file; dropping files on the window does the same',
+    group: 'Notes',
+    chord: 'ctrl+shift+o',
+    terms: 'open md txt',
+    run: () => void pickImports(),
+  },
+  {
+    id: 'export',
+    label: 'Export this note…',
+    hint: 'As Markdown, plain text or an image',
+    group: 'Notes',
+    chord: 'ctrl+shift+s',
+    enabled: hasNote,
+    terms: 'save as md txt png',
+    run: () => {
+      if (el.exportMenu.hidden) openExportMenu();
+      else closeExportMenu(true);
+    },
+  },
+  {
+    id: 'save',
+    label: 'Save now',
+    hint: 'Autosave is always on; this only makes it immediate',
+    group: 'Notes',
+    chord: 'ctrl+s',
+    run: () =>
+      void flush().then(() => {
+        if (!dirty) showStatus('Saved', 1200);
+      }),
+  },
+
+  {
+    id: 'attach',
+    label: 'Attach an image…',
+    hint: 'Pasting or dropping a picture does the same',
+    group: 'Writing',
+    chord: 'ctrl+shift+i',
+    terms: 'picture photo insert',
+    run: () => void pickImages(),
+  },
+  {
+    id: 'divider',
+    label: 'Insert a section divider',
+    hint: 'Or type --- on its own line and press Enter',
+    group: 'Writing',
+    chord: 'ctrl+shift+h',
+    terms: 'rule horizontal line break',
+    run: insertDivider,
+  },
+  {
+    id: 'task',
+    label: 'Checklist item on this line',
+    hint: 'Cycles the line: plain text, then to do, then done',
+    group: 'Writing',
+    chord: 'ctrl+shift+x',
+    terms: 'todo checkbox tick',
+    run: toggleTaskHere,
+  },
+
+  {
+    id: 'preview',
+    label: 'Markdown preview',
+    group: 'View',
+    chord: 'ctrl+e',
+    enabled: hasNote,
+    on: () => ui.preview,
+    run: togglePreview,
+  },
+  {
+    id: 'focus',
+    label: 'Focus mode',
+    hint: 'Dims everything but the paragraph you are in',
+    group: 'View',
+    chord: 'ctrl+shift+f',
+    terms: 'dim distraction free',
+    on: () => ui.focusMode,
+    run: toggleFocusMode,
+  },
+  {
+    id: 'typewriter',
+    label: 'Typewriter scrolling',
+    hint: 'Keeps the line you are writing in the middle of the page',
+    group: 'View',
+    chord: 'ctrl+shift+t',
+    terms: 'centre center scroll',
+    on: () => ui.typewriter,
+    run: toggleTypewriter,
+  },
+
+  { id: 'sidebar', label: 'Toggle the sidebar', group: 'Window', chord: 'ctrl+\\', run: toggleSidebar },
+  {
+    id: 'layout',
+    label: 'Layout and window settings',
+    hint: 'Margin, focus, the tray and the summon shortcut',
+    group: 'Window',
+    chord: 'ctrl+,',
+    terms: 'preferences options tray hotkey margin',
+    run: () => toggleLayout(),
+  },
+  {
+    id: 'palette',
+    label: 'Command palette',
+    group: 'Window',
+    chord: 'ctrl+shift+k',
+    also: ['ctrl+p'],
+    terms: 'commands run',
+    run: () => togglePalette(true),
+  },
+  { id: 'help', label: 'Keyboard shortcuts', group: 'Window', chord: 'ctrl+/', terms: 'keys help', run: () => toggleHelp() },
+];
+
+const CHORDS = keyMap(ACTIONS);
+
+/** One <kbd> per part of a chord. */
+function chordKeys(chord: string): DocumentFragment {
+  const frag = document.createDocumentFragment();
+  for (const part of keyLabel(chord)) {
+    const k = document.createElement('kbd');
+    k.textContent = part;
+    frag.append(k);
+  }
+  return frag;
+}
+
+// --- the shortcuts sheet, written from the registry -------------------------
+
+const GROUPS: Action['group'][] = ['Notes', 'Writing', 'View', 'Window'];
+
+function renderKeyGroups(): void {
+  el.keyGroups.replaceChildren();
+  for (const group of GROUPS) {
+    const rows = ACTIONS.filter((a) => a.group === group && a.chord);
+    if (rows.length === 0) continue;
+    const head = document.createElement('h3');
+    head.className = 'keys-head';
+    head.textContent = group;
+    const list = document.createElement('dl');
+    list.className = 'keys';
+    for (const action of rows) {
+      const dt = document.createElement('dt');
+      dt.append(chordKeys(action.chord as string));
+      for (const other of action.also ?? []) {
+        dt.append(' / ', chordKeys(other));
+      }
+      const dd = document.createElement('dd');
+      dd.textContent = action.hint ?? action.label;
+      list.append(dt, dd);
+    }
+    el.keyGroups.append(head, list);
+  }
+}
+
+// --- the command palette, also written from the registry --------------------
+
+let matches: Match[] = [];
+let cursor = 0;
+
+function togglePalette(force?: boolean): void {
+  const open = force ?? el.palette.hidden;
+  if (open === !el.palette.hidden) return;
+  el.palette.hidden = !open;
+  if (!open) {
+    focusEditor();
+    return;
+  }
+  el.paletteInput.value = '';
+  refreshPalette();
+  el.paletteInput.focus();
+}
+
+function refreshPalette(): void {
+  matches = matchActions(ACTIONS, el.paletteInput.value);
+  cursor = 0;
+  drawPalette();
+}
+
+/** The label with the characters the query matched picked out. */
+function labelWithHits(match: Match): DocumentFragment {
+  const frag = document.createDocumentFragment();
+  const { label } = match.action;
+  let at = 0;
+  for (const hit of match.hits) {
+    if (hit > at) frag.append(label.slice(at, hit));
+    const b = document.createElement('b');
+    b.textContent = label[hit];
+    frag.append(b);
+    at = hit + 1;
+  }
+  frag.append(label.slice(at));
+  return frag;
+}
+
+function drawPalette(): void {
+  el.paletteList.replaceChildren();
+  if (matches.length === 0) {
+    const none = document.createElement('div');
+    none.className = 'palette-none u';
+    none.textContent = 'No command matches that.';
+    el.paletteList.append(none);
+    return;
+  }
+  matches.forEach((match, i) => {
+    const row = document.createElement('div');
+    row.className = `palette-row${i === cursor ? ' at' : ''}`;
+    row.id = `palette-row-${i}`;
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', String(i === cursor));
+
+    const name = document.createElement('span');
+    name.className = 'palette-name';
+    name.append(labelWithHits(match));
+    if (match.action.on?.()) {
+      const dot = document.createElement('span');
+      dot.className = 'palette-on';
+      dot.title = 'On';
+      name.append(dot);
+    }
+
+    const group = document.createElement('span');
+    group.className = 'palette-group u';
+    group.textContent = match.action.group;
+
+    const keys = document.createElement('span');
+    keys.className = 'palette-keys';
+    if (match.action.chord) keys.append(chordKeys(match.action.chord));
+
+    row.append(name, group, keys);
+    row.addEventListener('mousemove', () => moveCursor(i, false));
+    row.addEventListener('click', () => runMatch(i));
+    el.paletteList.append(row);
+  });
+  syncCursor();
+}
+
+function moveCursor(to: number, scroll = true): void {
+  if (matches.length === 0 || to === cursor) return;
+  cursor = Math.max(0, Math.min(matches.length - 1, to));
+  el.paletteList.querySelectorAll('.palette-row').forEach((row, i) => {
+    row.classList.toggle('at', i === cursor);
+    row.setAttribute('aria-selected', String(i === cursor));
+  });
+  syncCursor(scroll);
+}
+
+function syncCursor(scroll = true): void {
+  const row = el.paletteList.children[cursor];
+  el.paletteInput.setAttribute('aria-activedescendant', row instanceof HTMLElement ? row.id : '');
+  if (scroll) row?.scrollIntoView({ block: 'nearest' });
+}
+
+function runMatch(index: number): void {
+  const action = matches[index]?.action;
+  if (!action) return;
+  // Closed first, so a command that moves focus is not fighting the palette for it.
+  el.palette.hidden = true;
+  action.run();
+}
+
+el.paletteInput.addEventListener('input', refreshPalette);
+
+el.paletteInput.addEventListener('keydown', (e) => {
+  switch (e.key) {
+    case 'ArrowDown':
+      e.preventDefault();
+      moveCursor(cursor + 1);
+      break;
+    case 'ArrowUp':
+      e.preventDefault();
+      moveCursor(cursor - 1);
+      break;
+    case 'Home':
+      e.preventDefault();
+      moveCursor(0);
+      break;
+    case 'End':
+      e.preventDefault();
+      moveCursor(matches.length - 1);
+      break;
+    case 'Enter':
+      e.preventDefault();
+      runMatch(cursor);
+      break;
+    case 'Tab':
+      e.preventDefault();
+      break;
+  }
+});
+
+el.palette.addEventListener('click', (e) => {
+  if (e.target === el.palette) togglePalette(false);
+});
+
 // --- global keys ------------------------------------------------------------
 
 function onEscape(): void {
@@ -1194,7 +1924,9 @@ function onEscape(): void {
     caretAfter(chip);
     return;
   }
-  if (!el.exportMenu.hidden) {
+  if (!el.palette.hidden) {
+    togglePalette(false);
+  } else if (!el.exportMenu.hidden) {
     closeExportMenu(true);
   } else if (!el.layoutSheet.hidden) {
     toggleLayout(false);
@@ -1219,83 +1951,16 @@ function onEscape(): void {
 }
 
 document.addEventListener('keydown', (e) => {
-  const mod = e.ctrlKey || e.metaKey;
-  const key = e.key.toLowerCase();
-
-  if (mod && e.shiftKey && !e.altKey) {
-    switch (key) {
-      case 'd':
-        e.preventDefault();
-        armDelete();
-        return;
-      case 's':
-        e.preventDefault();
-        if (el.exportMenu.hidden) openExportMenu();
-        else closeExportMenu(true);
-        return;
-      case 'i':
-        e.preventDefault();
-        void pickImages();
-        return;
-      case 'p':
-        e.preventDefault();
-        togglePinSelected();
-        return;
-      case 'h':
-        e.preventDefault();
-        insertDivider();
-        return;
-    }
+  if (e.key === 'Escape') {
+    onEscape();
+    return;
   }
-
-  if (mod && !e.shiftKey && !e.altKey) {
-    switch (key) {
-      case 'n':
-        e.preventDefault();
-        newNote();
-        return;
-      case 'k':
-      case 'f':
-        e.preventDefault();
-        if (ui.sidebarHidden) toggleSidebar();
-        el.search.focus();
-        el.search.select();
-        return;
-      case 'e':
-        e.preventDefault();
-        togglePreview();
-        return;
-      case 't':
-        e.preventDefault();
-        focusTitle();
-        return;
-      case ',':
-        e.preventDefault();
-        toggleLayout();
-        return;
-      case 's':
-        e.preventDefault();
-        void flush().then(() => {
-          if (!dirty) showStatus('Saved', 1200);
-        });
-        return;
-      case '\\':
-        e.preventDefault();
-        toggleSidebar();
-        return;
-      case '/':
-        e.preventDefault();
-        toggleHelp();
-        return;
-      case 'arrowup':
-      case 'arrowdown':
-        e.preventDefault();
-        step(key === 'arrowdown' ? 1 : -1);
-        return;
-    }
-  }
-
-  if (e.key === 'Escape') onEscape();
+  const chord = chordOf(e);
+  if (!isCommandChord(chord)) return;
+  const action = CHORDS.get(chord);
+  if (!action || action.enabled?.() === false) return;
+  e.preventDefault();
+  action.run();
 });
 
 // Losing the window is a good moment to make sure everything is on disk.
@@ -1315,12 +1980,22 @@ async function init(): Promise<void> {
   notes = file.notes;
   if (ui.selectedId && !notes.some((n) => n.id === ui.selectedId)) ui.selectedId = null;
   if (!ui.selectedId) ui.selectedId = sortByEdited(notes)[0]?.id ?? null;
+  renderKeyGroups();
   applySidebar();
   applyLayout();
+  applyWriting();
   renderList();
   renderEditor();
   if (selected()) focusEditor();
   else el.search.focus();
+  // The tray's New note item, and the settings the main process is acting on.
+  window.notesApi.onNewNote(() => newNote());
+  try {
+    settings = await window.notesApi.getSettings();
+  } catch (err) {
+    console.error('[notes] could not read settings', err);
+  }
+  renderSettings();
 }
 
 void init();

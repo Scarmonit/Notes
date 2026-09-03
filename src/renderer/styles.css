@@ -486,6 +486,15 @@ kbd {
   white-space: pre-wrap;
   overflow-wrap: break-word;
 }
+/* Focus mode fades every line outside the current paragraph. It is a custom
+   highlight over ranges, not wrapper elements, so nothing enters the editor's
+   DOM and the markdown underneath is untouched. */
+::highlight(note-dim) {
+  color: var(--paper-faint);
+}
+.editor .is-dim {
+  opacity: 0.35;
+}
 .editor.is-empty::before {
   content: attr(data-placeholder);
   color: var(--paper-faint);
@@ -734,6 +743,10 @@ kbd {
   margin: 0 0.5em 0 -1.4em;
   accent-color: var(--blue);
 }
+/* In the preview these are live: ticking one writes back into the markdown. */
+.markdown li > input[type='checkbox']:not(:disabled) {
+  cursor: pointer;
+}
 .markdown hr {
   border: 0;
   border-top: 1px solid var(--line);
@@ -798,6 +811,41 @@ kbd {
   accent-color: var(--blue);
   margin: 0;
 }
+.layout-head {
+  margin: 22px 0 2px;
+  font: 500 11px/1 var(--utility);
+  font-stretch: 87.5%;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+.layout-note {
+  margin: -6px 0 0;
+  min-height: 15px;
+  color: var(--margin);
+}
+
+/* The recorder for the system-wide shortcut: a button that listens. */
+.hotkey-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  padding: 5px 10px;
+  min-height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--ink-deep);
+  color: var(--paper-dim);
+  font: 12px/1 var(--utility);
+}
+.hotkey-btn:hover {
+  border-color: var(--paper-faint);
+}
+.hotkey-btn.recording {
+  border-color: var(--blue);
+  color: var(--blue);
+}
 
 /* --- shortcut sheet ----------------------------------------------------- */
 
@@ -843,10 +891,110 @@ kbd {
   font-size: 13px;
 }
 
+.keys-head {
+  margin: 20px 0 10px;
+  font: 500 11px/1 var(--utility);
+  font-stretch: 87.5%;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+#key-groups > .keys-head:first-child {
+  margin-top: 0;
+}
+
 .sheet-foot {
   margin: 20px 0 0;
   text-align: center;
   color: var(--paper-faint);
+}
+
+/* --- command palette ---------------------------------------------------- */
+
+/* Near the top of the window, where a palette is looked for, not centred. */
+.palette-sheet {
+  align-items: flex-start;
+  padding-top: 12vh;
+}
+
+.palette-card {
+  display: flex;
+  flex-direction: column;
+  width: min(520px, calc(100vw - 40px));
+  max-height: 62vh;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.palette-input {
+  padding: 14px 18px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--paper);
+  font: 15px/1.2 var(--utility);
+  outline: none;
+}
+.palette-input::placeholder {
+  color: var(--paper-faint);
+}
+.palette-input:focus-visible {
+  box-shadow: none;
+}
+
+.palette-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.palette-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.palette-row.at {
+  background: var(--selected);
+}
+.palette-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  color: var(--paper);
+}
+.palette-name b {
+  color: var(--blue);
+  font-weight: 600;
+}
+/* A lit dot marks a toggle that is currently on. */
+.palette-on {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--blue);
+  flex: 0 0 auto;
+}
+.palette-group {
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+.palette-keys {
+  display: flex;
+  gap: 3px;
+  flex: 0 0 auto;
+}
+.palette-none {
+  padding: 14px 12px;
+  text-align: center;
 }
 
 /* --- scrollbars --------------------------------------------------------- */

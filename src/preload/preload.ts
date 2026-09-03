@@ -10,7 +10,13 @@ const api: NotesApi = {
   },
   attach: (bytes, name) => ipcRenderer.invoke(IPC.attach, bytes, name),
   pickAttachments: () => ipcRenderer.invoke(IPC.pickAttachments),
+  pickImports: () => ipcRenderer.invoke(IPC.pickImports),
   exportNote: (request) => ipcRenderer.invoke(IPC.exportNote, request),
+  getSettings: () => ipcRenderer.invoke(IPC.settingsGet),
+  setSettings: (next) => ipcRenderer.invoke(IPC.settingsSet, next),
+  onNewNote: (fn) => {
+    ipcRenderer.on(IPC.newNote, () => fn());
+  },
 };
 
 contextBridge.exposeInMainWorld('notesApi', api);

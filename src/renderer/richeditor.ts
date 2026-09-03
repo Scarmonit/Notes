@@ -181,7 +181,7 @@ export interface LineSpan {
   end: DomPos;
 }
 
-interface Analysis {
+export interface Analysis {
   /** The markdown body, exactly as serializeEditor returns it. */
   text: string;
   /** One span per line of `text`. */
@@ -269,6 +269,16 @@ export function serializeEditor(root: HTMLElement): string {
   return analyze(root).text;
 }
 
+/**
+ * The body and its line map from a single walk. Callers that need both — the
+ * focus dimmer, the checkbox shortcut — should use this rather than calling
+ * serializeEditor and lineSpans, which would walk the DOM twice on every
+ * caret move.
+ */
+export function readEditor(root: HTMLElement): Analysis {
+  return analyze(root);
+}
+
 /** The markdown from the start of the editor up to a DOM position, trailing newlines kept. */
 export function textBefore(root: HTMLElement, pos: DomPos): string {
   const range = document.createRange();
@@ -286,7 +296,11 @@ export function lineSpans(root: HTMLElement): LineSpan[] {
 
 /** Which markdown line a DOM position falls on. */
 export function lineIndexAt(root: HTMLElement, pos: DomPos): number {
-  const spans = lineSpans(root);
+  return lineIndexIn(lineSpans(root), pos);
+}
+
+/** The same, when the line spans are already in hand. */
+export function lineIndexIn(spans: LineSpan[], pos: DomPos): number {
   let index = 0;
   for (let i = 1; i < spans.length; i++) {
     const r = document.createRange();
@@ -296,6 +310,23 @@ export function lineIndexAt(root: HTMLElement, pos: DomPos): number {
     else break;
   }
   return index;
+}
+
+/**
+ * The block of lines the caret's line belongs to: everything up to the blank
+ * lines on either side, which is what a writer means by "this paragraph".
+ * A blank line is its own paragraph, so the dimming does not jump around while
+ * pressing Enter between blocks.
+ */
+export function paragraphBounds(lines: string[], line: number): { first: number; last: number } {
+  const at = Math.max(0, Math.min(lines.length - 1, line));
+  if (lines.length === 0) return { first: 0, last: 0 };
+  if ((lines[at] ?? '').trim() === '') return { first: at, last: at };
+  let first = at;
+  let last = at;
+  while (first > 0 && lines[first - 1].trim() !== '') first--;
+  while (last < lines.length - 1 && lines[last + 1].trim() !== '') last++;
+  return { first, last };
 }
 
 /** Toggles the empty flag that drives the placeholder. */

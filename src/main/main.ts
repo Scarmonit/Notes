@@ -1,12 +1,16 @@
-import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, Menu, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { IPC } from '../shared/channels';
 import type { ExportRequest, NotesFile } from '../shared/types';
+import type { Settings } from '../shared/settings';
 import { installAssetProtocol, pickAttachments, registerAssetScheme, saveAttachment, sweepOrphans } from './attachments';
 import { exportNote } from './export';
+import { pickImports } from './import';
 import { loadNotes, saveNotes } from './notes-store';
+import { loadSettings, saveSettings, settings } from './settings';
+import { applyHotkey, createTray, destroyTray, showWindow, toggleWindow } from './tray';
 
 // Squirrel runs the exe with install/update flags; those launches must exit.
 if (started) app.quit();
@@ -24,6 +28,12 @@ function devIcon(): string | undefined {
 function isExternal(url: string): boolean {
   return /^https?:\/\//i.test(url);
 }
+
+// Closing the window can mean "hide to the tray", so a real quit has to say so.
+let quitting = false;
+app.on('before-quit', () => {
+  quitting = true;
+});
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -69,6 +79,14 @@ function createWindow(): BrowserWindow {
   // goes away. Autosave is debounced, so the last 300 ms of typing lives here.
   let flushed = false;
   win.on('close', (event) => {
+    // Hiding to the tray leaves the renderer alive, so its own autosave keeps
+    // working; only ask for the last few hundred milliseconds and stay open.
+    if (settings().closeToTray && !quitting) {
+      event.preventDefault();
+      requestFlush(win);
+      win.hide();
+      return;
+    }
     if (flushed) return;
     event.preventDefault();
     let done = false;
@@ -97,6 +115,14 @@ function createWindow(): BrowserWindow {
   return win;
 }
 
+/** Asks the renderer for anything unsaved without waiting on the answer. */
+function requestFlush(win: BrowserWindow): void {
+  ipcMain.once(IPC.flushReply, (_event, file: NotesFile | null) => {
+    if (file) void saveNotes(file).catch((err) => console.error('[notes] flush to tray failed', err));
+  });
+  win.webContents.send(IPC.flushRequest);
+}
+
 function windowFor(event: Electron.IpcMainInvokeEvent): BrowserWindow {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win) throw new Error('no window for request');
@@ -113,9 +139,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('second-instance', () => {
     const win = BrowserWindow.getAllWindows()[0];
-    if (!win) return;
-    if (win.isMinimized()) win.restore();
-    win.focus();
+    if (win) showWindow(win);
   });
 
   ipcMain.handle(IPC.notesLoad, () => loadNotes());
@@ -125,11 +149,30 @@ if (!app.requestSingleInstanceLock()) {
   });
   ipcMain.handle(IPC.attach, (_event, bytes: Uint8Array, name: string) => saveAttachment(bytes, name));
   ipcMain.handle(IPC.pickAttachments, (event) => pickAttachments(windowFor(event)));
+  ipcMain.handle(IPC.pickImports, (event) => pickImports(windowFor(event)));
   ipcMain.handle(IPC.exportNote, (event, request: ExportRequest) => exportNote(windowFor(event), request));
-
-  void app.whenReady().then(() => {
-    installAssetProtocol();
-    createWindow();
+  ipcMain.handle(IPC.settingsGet, () => settings());
+  ipcMain.handle(IPC.settingsSet, async (event, next: Settings) => {
+    const stored = await saveSettings(next);
+    const win = windowFor(event);
+    const ok = applyHotkey(stored.hotkey, () => toggleWindow(win));
+    return { ...stored, hotkeyFailed: stored.hotkey !== null && !ok };
   });
+
+  void app.whenReady().then(async () => {
+    installAssetProtocol();
+    await loadSettings();
+    const win = createWindow();
+    createTray(win, () => {
+      showWindow(win);
+      win.webContents.send(IPC.newNote);
+    });
+    applyHotkey(settings().hotkey, () => toggleWindow(win));
+  });
+
   app.on('window-all-closed', () => app.quit());
+  app.on('will-quit', () => {
+    globalShortcut.unregisterAll();
+    destroyTray();
+  });
 }

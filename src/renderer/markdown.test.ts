@@ -16,6 +16,15 @@ describe('renderMarkdown', () => {
     expect(html).toContain('<table>');
   });
 
+  it('keeps a task list checkbox tickable: the box, and which ones are ticked', () => {
+    // The preview turns these into live checkboxes, so sanitizing must not drop
+    // the input or lose which of them are already done.
+    const boxes = renderMarkdown('- [x] done\n- [ ] todo').match(/<input[^>]*>/g) ?? [];
+    expect(boxes).toHaveLength(2);
+    expect(boxes[0]).toContain('checked');
+    expect(boxes[1]).not.toContain('checked');
+  });
+
   it('treats single newlines as line breaks', () => {
     expect(renderMarkdown('line one\nline two')).toContain('<br>');
   });
