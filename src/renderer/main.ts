@@ -64,6 +64,10 @@ import {
 } from './richeditor';
 import stylesText from './styles.css?inline';
 import { absoluteTime, relativeTime } from './time';
+import { applyPlan, groupOf, redoGroup, undoGroup, type RefactorHost } from './apply-refactor';
+import { caretUsable, emptyJourney, forget, goBack, goForward, hashOf, leave, parseRecent, pruneRecent, visited, type Journey, type Place, type Visit } from './journey';
+import { createRefactorUi, type PickOptions } from './refactor-ui';
+import type { Plan } from '../core/refactor';
 import type { SnapshotSummary } from '../shared/history';
 import type { ExternalChanges, RenderedExport, TrashedNote } from '../shared/types';
 // 0.13: templates, scheduled tasks, search operators, math and diagrams, related notes and the graph.
@@ -199,6 +203,8 @@ interface UiState {
   outline: boolean;
   /** Markdown drawn as what it means while it is typed. */
   liveFormat: boolean;
+  /** The notes last opened, newest first, for the Recent notes picker. */
+  recent: Visit[];
 }
 
 const MARGIN_DEFAULT = 176;
@@ -226,12 +232,14 @@ function loadUi(): UiState {
     typewriter: false,
     outline: true,
     liveFormat: true,
+    recent: [],
   };
   try {
     const raw = localStorage.getItem(UI_KEY);
     const state = raw ? { ...fallback, ...(JSON.parse(raw) as Partial<UiState>) } : fallback;
     state.marginW = clamp(state.marginW, MARGIN_MIN, MARGIN_MAX, MARGIN_DEFAULT);
     state.textW = clamp(state.textW, TEXT_MIN, TEXT_MAX, TEXT_DEFAULT);
+    state.recent = parseRecent(state.recent);
     return state;
   } catch {
     return fallback;
@@ -401,7 +409,11 @@ function setTagFilter(tag: string | null): void {
   tagFilter = tag;
   const vis = visibleNotes();
   // Keep the current note when it still shows; otherwise land on the first.
-  if (vis.length > 0 && !vis.some((n) => n.id === ui.selectedId)) select(vis[0].id);
+  if (vis.length > 0 && !vis.some((n) => n.id === ui.selectedId)) {
+    incidental = true;
+    select(vis[0].id);
+    incidental = false;
+  }
   else renderList();
 }
 
@@ -443,7 +455,7 @@ function renderList(): void {
   const now = Date.now();
   for (const n of vis) {
     const isSelected = n.id === ui.selectedId;
-    const title = titleOf(n);
+    const title = shownTitle(n);
     const item = document.createElement('div');
     item.className = `item${isSelected ? ' selected' : ''}${title === 'Untitled' ? ' untitled' : ''}`;
     item.dataset.id = n.id;
@@ -497,7 +509,7 @@ function renderMeta(): void {
   el.edited.title = `Last edited ${absoluteTime(n.updatedAt)}`;
   const count = wordCount(n.body);
   el.words.textContent = `${count} ${count === 1 ? 'word' : 'words'}`;
-  document.title = `${titleOf(n)} – Notes`;
+  document.title = `${shownTitle(n)} – Notes`;
 }
 
 function renderEditor(): void {
@@ -919,7 +931,18 @@ function select(id: string | null): void {
     if (!el.findBar.hidden) closeFind(false);
     // A command waiting on `notes open --wait` learns the note left the screen.
     if (ui.selectedId) window.notesApi.noteClosed(ui.selectedId);
+    // Where this note is being left from, for Back — unless Back itself is
+    // doing the leaving, or this note was only where the search had landed
+    // on the way: the reader's departure is from the note before that.
+    if (!travelling && !arrivedIncidentally) {
+      const here = placeHere();
+      if (here) journey = leave(journey, here);
+    }
+    pendingTitle = null;
+    if (id && !incidental) ui.recent = visited(ui.recent, id, Date.now());
   }
+  // Choosing the note the search had landed on makes the arrival deliberate.
+  arrivedIncidentally = incidental;
   ui.selectedId = id;
   saveUi();
   renderList();
@@ -1502,6 +1525,8 @@ function applyBody(body: string): void {
 interface EditState {
   text: string;
   caret: number;
+  /** Set on a step that is one of a Plan's across several notes: undo takes the whole Plan back. */
+  group?: string;
 }
 
 interface EditLog {
@@ -1611,6 +1636,12 @@ function undoEdit(): void {
   const n = selected();
   if (!n) return;
   const log = editLogFor(n.id);
+  // A step that was a change across notes goes back across all of them.
+  const group = groupOf(log.undo[log.undo.length - 1]);
+  if (group) {
+    void runGroup(group, 'undo');
+    return;
+  }
   const before = log.undo.pop();
   if (!before) return;
   log.redo.push({ text: n.body, caret: caretOffsetOrStart() });
@@ -1622,6 +1653,11 @@ function redoEdit(): void {
   const n = selected();
   if (!n) return;
   const log = editLogFor(n.id);
+  const group = groupOf(log.redo[log.redo.length - 1]);
+  if (group) {
+    void runGroup(group, 'redo');
+    return;
+  }
   const after = log.redo.pop();
   if (!after) return;
   log.undo.push({ text: n.body, caret: caretOffsetOrStart() });
@@ -2050,14 +2086,72 @@ el.editor.addEventListener('keydown', (e) => {
 
 // --- title ------------------------------------------------------------------
 
-el.title.addEventListener('input', () => {
+/**
+ * What the title box shows while it has the focus. The note keeps its title
+ * until Enter or blur commits the new one, so that a rename can be planned
+ * — the links in other notes updated with it — against the title as it was.
+ */
+let pendingTitle: string | null = null;
+let titleAtFocus: { id: string; title: string | undefined } | null = null;
+
+el.title.addEventListener('focus', () => {
   const n = selected();
-  if (!n) return;
-  notes = updateTitle(notes, n.id, el.title.value);
-  scheduleSave();
+  titleAtFocus = n ? { id: n.id, title: n.title } : null;
+});
+el.title.addEventListener('input', () => {
+  if (!selected()) return;
+  pendingTitle = el.title.value;
   renderList();
   renderMeta();
 });
+
+/** The title as the list and the window bar show it: the one being typed, if any. */
+function shownTitle(n: Note): string {
+  return pendingTitle !== null && n.id === ui.selectedId ? titleOf({ body: n.body, title: pendingTitle }) : titleOf(n);
+}
+
+/** True while a rename waits on its question, so the blur that the question causes does not start another. */
+let committingTitle = false;
+
+/** Puts the title in the box onto the note; when links pointed at the old one, offers to update them. */
+async function commitTitle(): Promise<void> {
+  if (committingTitle) return;
+  const n = selected();
+  const pending = pendingTitle;
+  const was = titleAtFocus;
+  if (!n || pending === null || !was || was.id !== n.id) {
+    pendingTitle = null;
+    renderList();
+    renderMeta();
+    return;
+  }
+  const next = pending.trim();
+  if (next === (n.title ?? '').trim()) {
+    pendingTitle = null;
+    renderList();
+    renderMeta();
+    return;
+  }
+  if (!next) {
+    pendingTitle = null;
+    notes = updateTitle(notes, n.id, '');
+    scheduleSave();
+    renderList();
+    renderMeta();
+    return;
+  }
+  // The typed title stays on show while the question about the links is open.
+  committingTitle = true;
+  try {
+    const how = await refactorUi.commitRename(n.id, was.title, next);
+    if (how === 'none' || how === 'failed') el.title.value = selected()?.title ?? '';
+  } finally {
+    committingTitle = false;
+    pendingTitle = null;
+  }
+  renderList();
+  renderMeta();
+}
 
 /** The note started from a template whose {{title}} is waiting for the title to be typed. */
 let titleFill: string | null = null;
@@ -2076,22 +2170,27 @@ function fillTitlePlaceholder(): void {
   scheduleSave();
 }
 
-el.title.addEventListener('blur', fillTitlePlaceholder);
+el.title.addEventListener('blur', () => void commitTitle().then(fillTitlePlaceholder));
 el.title.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' || e.key === 'ArrowDown') {
     e.preventDefault();
-    fillTitlePlaceholder();
-    if (ui.preview) {
-      el.preview.focus();
-      return;
-    }
-    el.editor.focus();
-    const range = document.createRange();
-    range.selectNodeContents(docOf(el.editor));
-    range.collapse(true);
-    const sel = window.getSelection();
-    sel?.removeAllRanges();
-    sel?.addRange(range);
+    // The title is committed first — a rename that asks about links holds the
+    // focus meanwhile — and then the editor gets it, at the start of the text.
+    void commitTitle()
+      .then(fillTitlePlaceholder)
+      .then(() => {
+        if (ui.preview) {
+          el.preview.focus();
+          return;
+        }
+        el.editor.focus();
+        const range = document.createRange();
+        range.selectNodeContents(docOf(el.editor));
+        range.collapse(true);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+      });
   }
 });
 
@@ -2454,7 +2553,9 @@ el.search.addEventListener('input', () => {
   const vis = visibleNotes();
   // Keep the current note when it still matches; otherwise land on the best hit.
   if (vis.length > 0 && !vis.some((n) => n.id === ui.selectedId)) {
+    incidental = true;
     select(vis[0].id);
+    incidental = false;
   } else {
     renderList();
   }
@@ -3198,6 +3299,8 @@ window.notesApi.onExternalChange(applyExternal);
 interface PickItem {
   label: string;
   hint?: string;
+  /** Shown for what it says, but not choosable. */
+  disabled?: boolean;
   run: () => void;
 }
 
@@ -3205,10 +3308,12 @@ let pickItems: PickItem[] = [];
 let pickShown: PickItem[] = [];
 let pickAt = 0;
 let pickReturn: (() => void) | null = null;
+let pickOptions: PickOptions = {};
 
 /** Opens the picker over some choices. `onClose` runs when it goes away without a choice. */
-function openPicker(placeholder: string, items: PickItem[], onClose?: () => void): void {
+function openPicker(placeholder: string, items: PickItem[], onClose?: () => void, options: PickOptions = {}): void {
   pickItems = items;
+  pickOptions = options;
   pickReturn = onClose ?? null;
   el.pickInput.placeholder = placeholder;
   el.pickInput.setAttribute('aria-label', placeholder);
@@ -3216,6 +3321,10 @@ function openPicker(placeholder: string, items: PickItem[], onClose?: () => void
   keepCaret();
   el.pickSheet.hidden = false;
   refreshPicker();
+  if (options.at !== undefined && pickShown[options.at] && !pickShown[options.at].disabled) {
+    pickAt = options.at;
+    drawPicker();
+  }
   el.pickInput.focus();
 }
 
@@ -3231,9 +3340,29 @@ function closePicker(chosen = false): void {
 }
 
 function refreshPicker(): void {
-  const q = el.pickInput.value.trim().toLowerCase();
+  const raw = el.pickInput.value.trim();
+  const q = raw.toLowerCase();
   pickShown = pickItems.filter((it) => !q || it.label.toLowerCase().includes(q) || (it.hint ?? '').toLowerCase().includes(q));
-  pickAt = 0;
+  // What was typed can be a choice of its own — a heading to make — when no row is exactly that.
+  if (q && pickOptions.typed && !pickItems.some((it) => it.label.trim().toLowerCase() === q)) {
+    const extra = pickOptions.typed(raw);
+    if (extra) pickShown = [...pickShown, extra];
+  }
+  pickAt = Math.max(0, pickShown.findIndex((it) => !it.disabled));
+  drawPicker();
+}
+
+/** Moves the highlight, skipping rows that cannot be chosen. */
+function stepPick(delta: 1 | -1): void {
+  if (pickShown.length === 0) return;
+  let i = pickAt;
+  for (let k = 0; k < pickShown.length; k++) {
+    i = (i + delta + pickShown.length) % pickShown.length;
+    if (!pickShown[i].disabled) {
+      pickAt = i;
+      break;
+    }
+  }
   drawPicker();
 }
 
@@ -3248,9 +3377,10 @@ function drawPicker(): void {
   }
   pickShown.forEach((it, i) => {
     const row = document.createElement('div');
-    row.className = `palette-row${i === pickAt ? ' at' : ''}`;
+    row.className = `palette-row${i === pickAt ? ' at' : ''}${it.disabled ? ' disabled' : ''}`;
     row.setAttribute('role', 'option');
     row.setAttribute('aria-selected', String(i === pickAt));
+    if (it.disabled) row.setAttribute('aria-disabled', 'true');
     const name = document.createElement('span');
     name.className = 'palette-name';
     name.textContent = it.label;
@@ -3263,7 +3393,7 @@ function drawPicker(): void {
       row.append(hint);
     }
     row.addEventListener('mousemove', () => {
-      if (pickAt !== i) {
+      if (pickAt !== i && !it.disabled) {
         pickAt = i;
         drawPicker();
       }
@@ -3276,7 +3406,7 @@ function drawPicker(): void {
 
 function runPick(i: number): void {
   const it = pickShown[i];
-  if (!it) return;
+  if (!it || it.disabled) return;
   closePicker(true);
   it.run();
 }
@@ -3287,9 +3417,7 @@ el.pickInput.addEventListener('keydown', (e) => {
     case 'ArrowDown':
     case 'ArrowUp': {
       e.preventDefault();
-      if (pickShown.length === 0) break;
-      pickAt = (pickAt + (e.key === 'ArrowDown' ? 1 : pickShown.length - 1)) % pickShown.length;
-      drawPicker();
+      stepPick(e.key === 'ArrowDown' ? 1 : -1);
       break;
     }
     case 'Enter':
@@ -3625,6 +3753,176 @@ el.graphSheet.addEventListener('click', (e) => {
  * without appearing in the sheet, and nothing in the sheet can be a key that
  * no longer runs.
  */
+// --- moving between notes, and moving text between them ------------------------
+
+/** The back/forward stack: where the reader has been, and where Back went from. */
+let journey: Journey = emptyJourney();
+/** True while Back or Forward is the one changing the note, so the step is not recorded again. */
+let travelling = false;
+/** True while the search box or a tag filter lands on its first hit: not a step the reader took. */
+let incidental = false;
+/** Whether the open note was reached that way, so leaving it is not a departure either. */
+let arrivedIncidentally = false;
+
+/** Where the reader is right now, for the stack. */
+function placeHere(): Place | null {
+  const n = selected();
+  if (!n) return null;
+  const inEditor = editorNoteId === n.id && document.activeElement === el.editor;
+  const caret = inEditor ? caretOffsetOrStart() : caretBefore?.id === n.id ? caretBefore.at : 0;
+  return { id: n.id, caret, scroll: el.editor.scrollTop, hash: hashOf(n.body) };
+}
+
+/** Back (-1) or Forward (1): the note, its scroll, and its caret if the text is as it was. */
+function travel(dir: -1 | 1): void {
+  const here = placeHere() ?? { id: '', caret: 0, scroll: 0, hash: 0 };
+  let step = dir < 0 ? goBack(journey, here) : goForward(journey, here);
+  // A note deleted meanwhile is nowhere to go; skip past it.
+  while (step && !notes.some((n) => n.id === step?.to.id)) {
+    journey = forget(step.journey, step.to.id);
+    step = dir < 0 ? goBack(journey, here) : goForward(journey, here);
+  }
+  if (!step) return;
+  journey = step.journey;
+  const to = step.to;
+  travelling = true;
+  try {
+    if (query || tagFilter) clearFilters();
+    if (ui.preview) ui.preview = false;
+    select(to.id);
+  } finally {
+    travelling = false;
+  }
+  const n = selected();
+  if (!n) return;
+  if (caretUsable(to, n.body)) placeCaretAt(to.caret);
+  else focusEditor();
+  el.editor.scrollTop = to.scroll;
+}
+
+/** The last notes opened, most recent first, to jump to one of them. */
+function pickRecent(): void {
+  ui.recent = pruneRecent(ui.recent, (id) => notes.some((n) => n.id === id));
+  saveUi();
+  const items: PickItem[] = ui.recent
+    .filter((v) => v.id !== ui.selectedId)
+    .map((v) => {
+      const n = notes.find((x) => x.id === v.id);
+      return {
+        label: n ? titleOf(n) : '',
+        hint: relativeTime(v.at),
+        run: () => {
+          if (query || tagFilter) clearFilters();
+          if (ui.preview) ui.preview = false;
+          select(v.id);
+          focusEditor();
+        },
+      };
+    });
+  openPicker('Which recent note?', items);
+}
+
+// The thumb buttons go back and forward, as they do in a browser. One event,
+// so a button cannot fire twice.
+document.addEventListener('mouseup', (e) => {
+  if (e.button !== 3 && e.button !== 4) return;
+  e.preventDefault();
+  const action = ACTIONS.find((a) => a.id === (e.button === 3 ? 'back' : 'forward'));
+  if (action && action.enabled?.() !== false) action.run();
+});
+
+/** The lines the editor's selection covers, or the caret's line, counted from 0. */
+function editorLines(): { first: number; last: number } | null {
+  const n = selected();
+  if (!n || ui.preview) return null;
+  const sel = window.getSelection();
+  const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+  if (range && editorNoteId === n.id && el.editor.contains(range.commonAncestorContainer)) {
+    const { lines } = readEditor(el.editor);
+    const first = lineIndexIn(lines, { node: range.startContainer, offset: range.startOffset });
+    const last = range.collapsed ? first : lineIndexIn(lines, { node: range.endContainer, offset: range.endOffset });
+    return { first: Math.min(first, last), last: Math.max(first, last) };
+  }
+  // From the palette: the caret was kept when the palette took the focus.
+  if (caretBefore && caretBefore.id === n.id) {
+    const line = n.body.slice(0, caretBefore.at).split('\n').length - 1;
+    return { first: line, last: line };
+  }
+  return null;
+}
+
+/** How a Plan changes the notes here: one mutation per note, the editor redrawn if it is on screen. */
+const refactorHost: RefactorHost = {
+  notes: () => notes,
+  update: (id, state) => {
+    const i = notes.findIndex((n) => n.id === id);
+    if (i < 0) return;
+    const { title: _old, ...rest } = notes[i];
+    const next: Note = state.title !== undefined ? { ...rest, title: state.title, body: state.body, updatedAt: Date.now() } : { ...rest, body: state.body, updatedAt: Date.now() };
+    notes = notes.map((n) => (n.id === id ? next : n));
+    if (ui.selectedId === id) {
+      editorNoteId = null;
+      el.title.value = next.title ?? '';
+    }
+  },
+  trash: (id) => {
+    notes = removeNote(notes, id);
+  },
+  restore: async (id) => {
+    const note = await window.notesApi.trashRestore(id);
+    if (note) notes = [note, ...notes.filter((n) => n.id !== note.id)];
+    return note;
+  },
+  log: editLogFor,
+  caret: (id) => (ui.selectedId === id && document.activeElement === el.editor ? caretOffsetOrStart() : caretBefore?.id === id ? caretBefore.at : 0),
+};
+
+/** After a Plan ran, was undone or redone: the screen and the files catch up. */
+function afterPlan(plan: Plan): void {
+  if (plan.select && notes.some((n) => n.id === plan.select) && ui.selectedId !== plan.select) select(plan.select);
+  if (ui.selectedId && !notes.some((n) => n.id === ui.selectedId)) select(sortByEdited(notes)[0]?.id ?? null);
+  scheduleSave();
+  renderList();
+  renderEditor();
+}
+
+/** Applies a Plan from the window's own commands, keeping the caret where it was in the open note. */
+async function applyPlanHere(plan: Plan): Promise<{ ok: true } | { ok: false; message: string }> {
+  const id = ui.selectedId;
+  const caret = id && plan.writes.some((w) => w.id === id) ? refactorHost.caret(id) : null;
+  const r = await applyPlan(plan, refactorHost);
+  if (!r.ok) return { ok: false, message: r.message };
+  afterPlan(plan);
+  const n = selected();
+  if (caret !== null && n && n.id === id) caretBefore = { id, at: Math.min(caret, n.body.length) };
+  return { ok: true };
+}
+
+/** Undo or redo of a step that was a Plan: every note it touched, together. */
+async function runGroup(group: string, dir: 'undo' | 'redo'): Promise<void> {
+  const caret = ui.selectedId ? refactorHost.caret(ui.selectedId) : 0;
+  const r = await (dir === 'undo' ? undoGroup(group, refactorHost) : redoGroup(group, refactorHost));
+  if (!r.ok) {
+    showStatus(r.message, 4000);
+    return;
+  }
+  afterPlan(r.plan);
+  const n = selected();
+  if (n) placeCaretAt(Math.min(caret, n.body.length));
+  showStatus(dir === 'undo' ? `Undone: ${r.plan.sentence.replace(/^Undo: /, '')}` : `Redone: ${r.plan.sentence}`, 3000);
+}
+
+const refactorUi = createRefactorUi({
+  notes: () => notes,
+  selected,
+  selection: editorLines,
+  pick: (placeholder, items, options, onClose) => openPicker(placeholder, items, onClose, options),
+  apply: applyPlanHere,
+  status: showStatus,
+  focusEditor,
+  root: document.body,
+});
+
 const hasNote = (): boolean => selected() !== null;
 
 const ACTIONS: Action[] = [
@@ -3660,7 +3958,61 @@ const ACTIONS: Action[] = [
   },
   { id: 'prev', label: 'Previous note', group: 'Notes', chord: 'ctrl+arrowup', run: () => step(-1) },
   { id: 'next', label: 'Next note', group: 'Notes', chord: 'ctrl+arrowdown', run: () => step(1) },
-  { id: 'title', label: 'Rename this note', group: 'Notes', chord: 'ctrl+t', terms: 'title', run: focusTitle },
+  {
+    id: 'title',
+    label: 'Rename this note',
+    hint: 'When other notes link to it by name, the links can follow',
+    group: 'Notes',
+    chord: 'ctrl+t',
+    terms: 'title',
+    run: focusTitle,
+  },
+  {
+    id: 'back',
+    label: 'Back',
+    hint: 'The note you came from, caret and scroll restored; the thumb button does the same',
+    group: 'Notes',
+    chord: 'alt+arrowleft',
+    terms: 'previous history',
+    enabled: () => journey.back.length > 0,
+    run: () => travel(-1),
+  },
+  {
+    id: 'forward',
+    label: 'Forward',
+    group: 'Notes',
+    chord: 'alt+arrowright',
+    terms: 'history',
+    enabled: () => journey.forward.length > 0,
+    run: () => travel(1),
+  },
+  {
+    id: 'recent',
+    label: 'Recent notes…',
+    hint: 'The last twenty notes you had open',
+    group: 'Notes',
+    chord: 'ctrl+shift+b',
+    terms: 'history visited last',
+    run: pickRecent,
+  },
+  {
+    id: 'tag-rename',
+    label: 'Rename a tag everywhere…',
+    hint: 'Every #tag, and every #tag/nested under it, in every note',
+    group: 'Notes',
+    terms: 'tag rename retag',
+    enabled: () => notes.length > 0,
+    run: () => refactorUi.renameTag(),
+  },
+  {
+    id: 'merge-into',
+    label: 'Merge this note into another…',
+    hint: 'Its text goes under a heading there, links follow, and this note goes to Deleted notes',
+    group: 'Notes',
+    terms: 'merge combine duplicate join',
+    enabled: hasNote,
+    run: () => refactorUi.mergeInto(),
+  },
   {
     id: 'pin',
     label: 'Pin or unpin this note',
@@ -3759,6 +4111,25 @@ const ACTIONS: Action[] = [
     chord: 'ctrl+shift+x',
     terms: 'todo checkbox tick',
     run: toggleTaskHere,
+  },
+  {
+    id: 'move-lines',
+    label: 'Move lines to another note…',
+    hint: 'The selected lines, or the line the caret is on, under a heading there',
+    group: 'Writing',
+    chord: 'ctrl+shift+v',
+    terms: 'refile file send transfer',
+    enabled: hasNote,
+    run: () => refactorUi.moveLines(),
+  },
+  {
+    id: 'move-section',
+    label: 'Move this section to another note…',
+    hint: 'The heading the caret is under and everything beneath it, levels untouched',
+    group: 'Writing',
+    terms: 'refile heading section',
+    enabled: hasNote,
+    run: () => refactorUi.moveSection(),
   },
   {
     id: 'undo',
@@ -4114,6 +4485,10 @@ el.palette.addEventListener('click', (e) => {
 // --- global keys ------------------------------------------------------------
 
 function onEscape(): void {
+  if (refactorUi.isOpen()) {
+    refactorUi.dismiss();
+    return;
+  }
   const chip = selectedChip();
   // A chip stays selected while a sheet is open; Esc then means the sheet.
   if (chip && document.activeElement === el.editor) {
@@ -4341,7 +4716,23 @@ const cliHandlers: Record<string, CliHandler> = {
     }
     return { opened: true };
   },
-  'ui.get': () => ({ ...ui }),
+  'refactor.apply': async ({ plan, force }: { plan: Plan; force?: boolean }) => {
+    const touched = [...plan.writes.map((w) => w.id), ...plan.trash.map((t) => t.id)];
+    for (const id of touched) refuseIfTyping(id, force);
+    if (plan.restore.length > 0) throw new CliRefusal('Putting a note back as part of a change is for the window alone', CLI_APP_ERROR);
+    const caret = document.activeElement === el.editor ? caretOffsetOrStart() : null;
+    const r = await applyPlan(plan, refactorHost);
+    if (!r.ok) throw new CliRefusal(r.message, r.code === 'stale' ? 1 : CLI_APP_ERROR);
+    afterPlan(plan);
+    const n = selected();
+    if (caret !== null && n) placeCaretAt(Math.min(caret, n.body.length));
+    await flush();
+    return { applied: touched };
+  },
+  'ui.get': () => {
+    const { recent: _recent, ...rest } = ui;
+    return rest;
+  },
   'ui.set': ({ key, value }: { key: string; value: boolean | number | string | null }) => {
     if (key in UI_TOGGLES) {
       if (typeof value !== 'boolean') throw new CliRefusal(`${key} is on or off`, 2);

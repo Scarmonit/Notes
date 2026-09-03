@@ -2003,3 +2003,75 @@ html.export.paper .markdown img {
   max-width: 100%;
   break-inside: avoid;
 }
+
+/* --- confirming a change across notes, and the one-line prompt -------------- */
+
+.confirm-card,
+.prompt-card {
+  width: min(520px, calc(100vw - 40px));
+}
+/* The sentence is the whole point of the sheet: the note's own face, one size up. */
+.confirm-text {
+  margin: 0 0 14px;
+  font: 400 17px/1.45 var(--serif);
+  color: var(--paper);
+}
+.confirm-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+}
+.confirm-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--line);
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.confirm-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 5px 0;
+}
+.confirm-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--paper);
+}
+.confirm-changes {
+  flex: 0 0 auto;
+  color: var(--paper-faint);
+}
+
+.prompt-label {
+  display: block;
+  margin: 0 0 10px;
+  font: 400 15px/1.4 var(--serif);
+  color: var(--paper);
+}
+.prompt-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--ink);
+  color: var(--paper);
+  font: 400 15px/1.4 var(--serif);
+  outline: none;
+}
+.prompt-input:focus-visible {
+  border-color: var(--blue);
+  box-shadow: none;
+}
+
+/* A picker row that is shown for what it says but cannot be chosen. */
+.palette-row.disabled {
+  cursor: default;
+  opacity: 0.45;
+}

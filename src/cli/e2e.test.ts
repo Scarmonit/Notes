@@ -104,3 +104,33 @@ describe('notes 0.13 (end to end)', () => {
     expect((await notes(['due', 'any', '--plain'])).stdout).toContain('post office');
   });
 });
+
+describe('notes 0.15 (end to end)', () => {
+  it('refiles a line from a real process, dry run first, then for real', async () => {
+    expect((await notes(['new', 'Refile inbox', '--content', 'keep\r\n\r\n- [ ] move me'])).exitCode).toBe(0);
+    expect((await notes(['new', 'Refile target', '--content', '# T\r\n\r\n## Ideas\r\n\r\n- had one'])).exitCode).toBe(0);
+    const dry = await notes(['refile', 'refile inbox', 'refile target', '--match', 'move me', '--under', 'ideas', '--dry-run', '--json']);
+    expect(dry.exitCode).toBe(0);
+    const plan = JSON.parse(dry.stdout) as { writes: Array<{ after: { body: string } }>; touched: unknown[] };
+    expect(plan.writes[1].after.body).toBe('# T\n\n## Ideas\n\n- had one\n\n- [ ] move me');
+    expect((await notes(['show', 'refile inbox', '--body'])).stdout).toBe('keep\n\n- [ ] move me');
+    const real = await notes(['refile', 'refile inbox', 'refile target', '--match', 'move me', '--under', 'ideas']);
+    expect(real.exitCode).toBe(0);
+    expect(real.stdout.trim()).toBe("Moved 1 line from 'Refile inbox' to 'Refile target' under 'Ideas'");
+    expect((await notes(['show', 'refile inbox', '--body'])).stdout).toBe('keep');
+    expect((await notes(['show', 'refile target', '--body'])).stdout).toBe('# T\n\n## Ideas\n\n- had one\n\n- [ ] move me');
+  });
+
+  it('prints a plain dry-run table when piped, and merges with exit codes', async () => {
+    expect((await notes(['new', 'Merge me', '--content', 'gone soon'])).exitCode).toBe(0);
+    expect((await notes(['new', 'Merge keeper', '--content', 'stays'])).exitCode).toBe(0);
+    const dry = await notes(['merge', 'merge me', 'merge keeper', '--dry-run']);
+    expect(dry.exitCode).toBe(0);
+    const rows = dry.stdout.split('\n').map((l) => l.split('\t'));
+    expect(rows.map((r) => r[2])).toEqual(['text added', 'trashed']);
+    expect((await notes(['merge', 'merge me', 'merge me'])).exitCode).toBe(2);
+    expect((await notes(['merge', 'merge me', 'merge keeper'])).exitCode).toBe(0);
+    expect((await notes(['show', 'merge keeper', '--body'])).stdout).toBe('stays\n\n## Merge me\n\ngone soon');
+    expect((await notes(['show', 'merge me'])).exitCode).toBe(3);
+  });
+});

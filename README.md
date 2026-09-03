@@ -26,6 +26,9 @@ A minimal, keyboard-first markdown notes app for Windows. One window, a sidebar 
 - Search operators in the same box: `todo:` `done:` `due:today` `tag:wow` `pinned:` `untitled:` `created:>7d` `updated:<2026-01-01` `links:Plan` `orphan:` `sort:title-` `limit:5` and `/regex/`, on top of words, `-word`, `"a phrase"` and `#tag` (as [Obsidian's search](https://obsidian.md/help/plugins/search)); the command line reads the same grammar, so `notes list "due:week todo:"` is the same query
 - Math and diagrams in the preview and every export: `$x^2$` inline, `$$ … $$` on its own lines (KaTeX, bundled, with MathML beside it) and ```` ```mermaid ```` fences drawn by Mermaid, loaded only when a note has one (as [Notable](https://notable.app/))
 - Related notes under the backlinks — the notes sharing this one's tags, or two links away — and a graph of every note and `[[link]]` on `Ctrl+Shift+G`, drawn on a canvas with a small force layout; click a dot to go there, or narrow it to two hops around the open note (as [Zettlr's](https://www.zettlr.com/) related files and graph)
+- Move lines to another note: `Ctrl+Shift+V` takes the selected lines, or the line the caret is on, and asks which note and which heading (or the top, the end, or a heading it makes on the spot); the text arrives exactly as it was, Enter, Enter repeats the last destination, and `Ctrl+Z` in either note takes the whole move back. "Move this section" does the same for a heading and everything under it, levels untouched
+- Rename a note and its links follow: when other notes point at it with `[[Old name]]`, the rename asks whether to update them, and `Ctrl+Z` undoes the lot. "Rename a tag everywhere" rewrites `#old` and every `#old/nested` across the notebook, and "Merge this note into another" appends it under a heading of its title, points the links at the survivor and puts it in Deleted notes. Each shows what it will touch before it does
+- Back and forward through the notes you followed links from, `Alt+←` / `Alt+→` (or the mouse's thumb buttons), caret and scroll restored while the text is as it was; `Ctrl+Shift+B` lists the last twenty notes you had open
 - Stays in the tray and comes back on a shortcut of your choosing (Layout, `Ctrl+,`)
 - Adjustable line width, so the words fill as much of the window as you want (Layout, `Ctrl+,`)
 - Right-click a word the spellchecker underlines to correct it, or add it to the dictionary for good
@@ -63,6 +66,9 @@ The full list lives in the app on `Ctrl+/`, and every command is also reachable 
 | `Ctrl+;` | Insert today's date (with Shift, the time as well) |
 | `Ctrl+Shift+U` | Scheduled tasks: every `@date` checklist line, overdue first |
 | `Ctrl+Shift+G` | Graph of the notes and their `[[links]]` |
+| `Ctrl+Shift+V` | Move the selected lines (or this line) to another note, under a heading |
+| `Alt+←` / `Alt+→` | Back / forward through the notes you came from |
+| `Ctrl+Shift+B` | Recent notes |
 | `Ctrl+S` | Save now (autosave is always on) |
 | `Ctrl+Shift+D` | Delete note, press again within 3 s to confirm |
 | `Ctrl+Shift+Backspace` | Deleted notes: look at or put back anything deleted in the last month |
@@ -88,6 +94,10 @@ notes edit shopping                      # $EDITOR (notepad if unset)
 notes export shopping --png -o shopping.png
 notes trash restore 3f2a
 notes open shopping                      # the window, at the note
+notes refile inbox project --match "sqlite backup" --under Ideas
+notes rename "Old plan" "Roadmap"        # every [[Old plan]] follows
+notes tag rename wow games --dry-run     # shows what would change, changes nothing
+notes merge "Plan (copy)" Plan
 ```
 
 A note can be named by its id (or a unique prefix), its exact title, a unique title prefix, its filename, or the words of its title; an ambiguous name lists the candidates and exits 3, or offers a picker at a terminal. `-` in place of a note name reads it from stdin, so `notes list --plain | fzf | notes show -` works. Every command that takes a set of notes shares one filter grammar: bare words (all must match), `-word`, `"a phrase"`, `#tag` (nested tags count), `--tag`, `--pinned`, `--created-after 7d`, `--updated-before 2026-01-01`, `--links-to`, `--linked-from`, `--orphan`, `--has-tasks`, `--sort title-`, `--limit`. Output is a readable table at a terminal, tab-separated when piped, and JSON with `--json` (narrow it with `--fields id,title`). Text for `new`, `append` and `replace-body` comes from the arguments, `--content`, `--file`, stdin, or `$EDITOR`.
@@ -107,7 +117,7 @@ Exit codes: 0 ok, 1 failure, 2 usage, 3 not found or ambiguous, 4 the note is be
 | `notes replace-body <note> [text...]` | replace the whole text of a note |
 | `notes inbox [text...]` | file a quick note in the Inbox note (made if missing), as the quick-note box does |
 | `notes capture` | show the quick-note box (needs the window) |
-| `notes rename <note> [title]` | give a note an explicit title, or clear it so the first line is the title |
+| `notes rename <note> [title]` | give a note an explicit title (pointing every [[link]] at it), or clear it so the first line is the title |
 | `notes pin <note...>` | pin a note to the top of the list |
 | `notes unpin <note...>` | unpin a note |
 | `notes delete [note...]` (rm) | move notes to the trash (they wait a month there) |
@@ -117,10 +127,14 @@ Exit codes: 0 ok, 1 failure, 2 usage, 3 not found or ambiguous, 4 the note is be
 | `notes tags` | every tag in use, with how many notes carry it |
 | `notes tag add <note> <tags...>` | write #tag at the end of the note |
 | `notes tag remove <note> <tags...>` (rm) | take #tag out of the note |
+| `notes tag rename <old> <new>` | rename a tag in every note that carries it, nested tags included |
 | `notes links <note>` | the notes a note links to with [[...]] |
 | `notes backlinks <note>` | the notes that link to a note |
 | `notes related <note>` | the notes near a note: sharing its tags, or two links away (what the window lists under the backlinks) |
 | `notes graph` | the notes as a graph of [[links]]: edges as from/to lines, --json for nodes and edges, --dot for Graphviz |
+| `notes refile <from> <to>` | move lines from one note into another, under a heading if you say which |
+| `notes section move <from> <heading> <to>` | move a section (its heading through the next heading of the same level) into another note |
+| `notes merge <source> <into>` | append one note to another, point its links at the survivor, and move it to the trash |
 | `notes trash list` (ls) | what is in the trash, most recently deleted first |
 | `notes trash show <note>` | print a deleted note |
 | `notes trash restore <note...>` | put a deleted note back, history and all |

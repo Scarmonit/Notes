@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 import { CliError } from '../../core/backend';
-import { appendParagraph } from '../../core/file-backend';
 import { EXIT } from '../../core/ipc-protocol';
+import { insert, planRename } from '../../core/refactor';
 import { parseWords } from '../../core/query';
 import { expandTemplate, templateNamed, templatesOf } from '../../core/templates';
 import { createNote, snippetOf, tagsOf, titleOf, updateBody, updateTitle, wordCount } from '../../renderer/notes';
@@ -11,6 +11,7 @@ import { AppBackend } from '../client';
 import { addFilterOptions, describe, filteredNotes, hasFilterOpts, type Ctx, type FilterOpts } from '../context';
 import { editText } from '../editor';
 import { gatherBody, normalise } from '../body';
+import { settlePlan, type PlanOpts } from './refactor';
 import { iso, oneLine, relative, type Column } from '../output';
 
 /** The everyday verbs: making, finding, reading and changing notes. */
@@ -313,18 +314,24 @@ export function register(program: Command, use: () => Ctx): void {
 
   program
     .command('rename')
-    .description('give a note an explicit title, or clear it so the first line is the title')
+    .description('give a note an explicit title (pointing every [[link]] at it), or clear it so the first line is the title')
     .argument('<note>', 'id, title, title prefix, filename, or - for stdin')
     .argument('[title]', 'the new title')
     .option('--clear', 'remove the explicit title')
+    .option('--no-links', 'leave the [[links]] to the old title as they are')
+    .option('--dry-run', 'show what would change, and change nothing')
     .option('--force', 'rename even while the note is being typed in the window')
-    .action(async (selector: string, title: string | undefined, opts: { clear?: boolean; force?: boolean }) => {
+    .action(async (selector: string, title: string | undefined, opts: { clear?: boolean; links?: boolean } & PlanOpts) => {
       const c = ctx();
-      const note = await c.note(selector);
+      const notes = await (await c.backend()).notes();
+      const note = await c.note(selector, notes);
       if (!opts.clear && !title?.trim()) throw new CliError('Give the new title, or --clear', EXIT.usage);
-      const next = updateTitle([note], note.id, opts.clear ? '' : (title ?? ''))[0];
-      const saved = await save(c, next, opts.force);
-      c.out.value(describe(saved), () => `Renamed to "${titleOf(saved)}"`);
+      if (opts.clear) {
+        const saved = await save(c, updateTitle([note], note.id, '')[0], opts.force);
+        c.out.value(describe(saved), () => `Renamed to "${titleOf(saved)}"`);
+        return;
+      }
+      await settlePlan(c, planRename(notes, { id: note.id, title: title ?? '', links: opts.links !== false }), opts);
     });
 
   for (const [name, pinned] of [
@@ -442,21 +449,6 @@ export function register(program: Command, use: () => Ctx): void {
 }
 
 /** Where an addition goes in a body: the end, the top, or the end of a heading's section. */
-export function insert(body: string, addition: string, opts: { prepend?: boolean; heading?: string; inline?: boolean }): string {
-  if (opts.heading) {
-    const lines = body.split('\n');
-    const want = opts.heading.trim().toLowerCase();
-    const at = lines.findIndex((l) => /^#{1,6}\s+/.test(l) && l.replace(/^#{1,6}\s+/, '').trim().toLowerCase() === want);
-    if (at < 0) return appendParagraph(body, `## ${opts.heading.trim()}\n\n${addition}`);
-    let end = at + 1;
-    while (end < lines.length && !/^#{1,6}\s+/.test(lines[end])) end++;
-    const section = lines.slice(at, end).join('\n');
-    const merged = opts.inline ? `${section.trimEnd()} ${addition}` : appendParagraph(section, addition);
-    return [...lines.slice(0, at), ...merged.split('\n'), ...(end < lines.length ? ['', ...lines.slice(end)] : [])].join('\n').replace(/\n{3,}/g, '\n\n');
-  }
-  if (opts.prepend) return body.trim() ? `${addition}\n\n${body.replace(/^\n+/, '')}` : addition;
-  if (opts.inline) return body.trimEnd() ? `${body.trimEnd()} ${addition}` : addition;
-  return appendParagraph(body, addition);
-}
+export { insert };
 
 export const summary = (note: Note): string => `${titleOf(note)} — ${snippetOf(note, 60)}`;

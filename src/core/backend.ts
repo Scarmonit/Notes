@@ -2,6 +2,7 @@ import type { Snapshot, SnapshotSummary } from '../shared/history';
 import type { Settings } from '../shared/settings';
 import type { ExternalChanges, Note, SettingsResult, TrashedNote } from '../shared/types';
 import { EXIT, type CommandInfo, type ExitCode, type NoteStatus, type PathsInfo, type UiState } from './ipc-protocol';
+import type { Plan } from './refactor';
 
 /**
  * What a command needs from the notes, whichever side holds them. When the
@@ -27,6 +28,14 @@ export interface Backend {
   remove(id: string, options?: { force?: boolean }): Promise<boolean>;
   /** Files a quick note in the Inbox, the capture box's way. Resolves to the Inbox note's id. */
   inbox(text: string): Promise<string>;
+  /**
+   * Applies a refactoring Plan: every note it names checked against the Plan
+   * first (a stale Plan is refused whole, and `force` cannot override that),
+   * then each written once and the trashed ones trashed last. Resolves to the
+   * ids that were changed. Throws `busy` while a touched note is being typed
+   * in the window, unless forced.
+   */
+  applyPlan(plan: Plan, options?: { force?: boolean }): Promise<{ applied: string[] }>;
 
   trashList(): Promise<TrashedNote[]>;
   trashGet(id: string): Promise<Note | null>;

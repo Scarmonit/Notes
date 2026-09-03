@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Snapshot, SnapshotSummary } from '../shared/history';
 import type { Settings } from '../shared/settings';
+import type { Plan } from './refactor';
 import type { ExternalChanges, Note, SettingsResult, TrashedNote } from '../shared/types';
 
 /**
@@ -153,6 +154,14 @@ export interface Methods {
   'note.remove': { params: { id: string; force?: boolean }; result: { removed: boolean } };
   /** Appends a quick note to the Inbox, exactly as the capture box does. */
   inbox: { params: { text: string }; result: { id: string } };
+  /**
+   * Applies a refactoring Plan (a refile, a rename with its links, a tag
+   * rename, a merge) as the window would from its own commands: refused with
+   * `busy` while a touched note is being typed in unless forced, refused as
+   * stale when any touched note no longer matches the Plan, and undoable in
+   * the window as one step.
+   */
+  'refactor.apply': { params: { plan: Plan; force?: boolean }; result: { applied: string[] } };
 
   'trash.list': { params: Record<string, never>; result: TrashedNote[] };
   'trash.get': { params: { id: string }; result: Note | null };

@@ -213,6 +213,7 @@ export class AppBackend implements Backend {
   put = (note: Note, options?: { force?: boolean }) => this.call('note.put', { note, force: options?.force });
   remove = (id: string, options?: { force?: boolean }) => this.call('note.remove', { id, force: options?.force }).then((r) => r.removed);
   inbox = (text: string) => this.call('inbox', { text }).then((r) => r.id);
+  applyPlan = (plan: Parameters<Backend['applyPlan']>[0], options?: { force?: boolean }) => this.call('refactor.apply', { plan, force: options?.force });
   trashList = () => this.call('trash.list', {});
   trashGet = (id: string) => this.call('trash.get', { id });
   trashRestore = (id: string) => this.call('trash.restore', { id });

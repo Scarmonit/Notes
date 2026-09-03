@@ -9,6 +9,7 @@ import { createHistory, type History } from './history';
 import { renderHtmlOffline } from './render';
 import { EXIT, type CommandInfo, type NoteStatus, type PathsInfo, type UiState } from './ipc-protocol';
 import { pathsFor } from './paths';
+import { applyPlanTo, checkPlan } from './refactor';
 import { createSettings, type SettingsStore } from './settings';
 import { createStore, type Store } from './store';
 
@@ -103,6 +104,26 @@ export function createFileBackend(root: string, options: FileBackendOptions): Ba
       next = updateBody(next, inbox.id, appendParagraph(inbox.body, text));
       await commit(next);
       return inbox.id;
+    },
+
+    applyPlan: async (plan) => {
+      const notes = await all();
+      const check = checkPlan(plan, notes);
+      if (!check.ok) throw new CliError(check.message, EXIT.failure);
+      if (plan.restore.length > 0) throw new NeedsAppError('Putting a note back as part of a change');
+      const touched = [...plan.writes.map((w) => w.id), ...plan.trash.map((t) => t.id)];
+      try {
+        await commit(applyPlanTo(plan, notes));
+      } catch (err) {
+        // The store writes one file at a time: say which ones made it.
+        loaded = null;
+        const now = await all();
+        const written = plan.writes.filter((w) => now.find((n) => n.id === w.id)?.body === w.after.body).map((w) => w.id);
+        const trashed = plan.trash.filter((t) => !now.some((n) => n.id === t.id)).map((t) => t.id);
+        const done = [...written, ...trashed];
+        throw new CliError(`${(err as Error).message}; ${done.length === 0 ? 'nothing was written' : `written so far: ${done.join(', ')}`}`, EXIT.failure);
+      }
+      return { applied: touched };
     },
 
     trashList: (): Promise<TrashedNote[]> => store.listTrash(),

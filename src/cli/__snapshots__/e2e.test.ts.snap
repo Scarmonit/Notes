@@ -31,7 +31,7 @@ Commands:
   replace-body [options] <note> [text...]         replace the whole text of a note
   inbox [text...]                                 file a quick note in the Inbox note (made if missing), as the quick-note box does
   capture                                         show the quick-note box (needs the window)
-  rename [options] <note> [title]                 give a note an explicit title, or clear it so the first line is the title
+  rename [options] <note> [title]                 give a note an explicit title (pointing every [[link]] at it), or clear it so the first line is the title
   pin <note...>                                   pin a note to the top of the list
   unpin <note...>                                 unpin a note
   delete|rm [options] [note...]                   move notes to the trash (they wait a month there)
@@ -39,11 +39,14 @@ Commands:
   show-window                                     bring the Notes window to the front (starts it if needed)
   stats [note]                                    words, characters, tasks and links, for one note or all of them
   tags [options]                                  every tag in use, with how many notes carry it
-  tag                                             add or remove a #tag on a note
+  tag                                             add, remove or rename a #tag
   links [options] <note>                          the notes a note links to with [[...]]
   backlinks <note>                                the notes that link to a note
   related [options] <note>                        the notes near a note: sharing its tags, or two links away (what the window lists under the backlinks)
   graph [options]                                 the notes as a graph of [[links]]: edges as from/to lines, --json for nodes and edges, --dot for Graphviz
+  refile [options] <from> <to>                    move lines from one note into another, under a heading if you say which
+  section                                         a heading and everything under it, as one piece
+  merge [options] <source> <into>                 append one note to another, point its links at the survivor, and move it to the trash
   trash                                           deleted notes, which wait a month before they are gone
   history                                         the versions of a note kept as it was written
   attach [options] <note> <files...>              attach images to a note (PNG, JPEG, GIF, WebP, BMP; checked by their bytes)

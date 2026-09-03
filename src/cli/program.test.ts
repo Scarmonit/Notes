@@ -324,3 +324,100 @@ describe('0.13.1 regressions', () => {
     expect(stdout).toContain('.env cheatsheet');
   });
 });
+
+describe('0.15: refile, section move, rename with links, tag rename, merge', () => {
+  it('refiles a matched line under a heading, making the heading when it is missing', async () => {
+    await run('new', 'Inbox', '--content', 'call the bank\n\n- [ ] compare SQLite backup options\n- [ ] ask Sam about packaging');
+    await run('new', 'Project', '--content', '# Project\n\n## Ideas\n\n- old idea\n\n## Done\n\n- shipped');
+    expect(await run('refile', 'inbox', 'project', '--match', 'sqlite backup', '--under', 'Ideas')).toBe(0);
+    expect(stdout.trim()).toBe("Moved 1 line from 'Inbox' to 'Project' under 'Ideas'");
+    expect(await run('show', 'project', '--body')).toBe(0);
+    expect(stdout.trim()).toBe('# Project\n\n## Ideas\n\n- old idea\n\n- [ ] compare SQLite backup options\n\n## Done\n\n- shipped');
+    expect(await run('show', 'inbox', '--body')).toBe(0);
+    expect(stdout.trim()).toBe('call the bank\n\n- [ ] ask Sam about packaging');
+    expect(await run('refile', 'inbox', 'project', '--lines', '3', '--under', 'Questions')).toBe(0);
+    expect(await run('show', 'project', '--body')).toBe(0);
+    expect(stdout.trim()).toMatch(/\n\n## Questions\n\n- \[ \] ask Sam about packaging$/);
+    expect(await run('refile', 'inbox', 'project', '--match', 'nothing like this')).toBe(3);
+    expect(await run('refile', 'inbox', 'project')).toBe(2);
+    expect(await run('refile', 'inbox', 'project', '--lines', '99')).toBe(2);
+  });
+
+  it('shows a dry run as a table, or the whole Plan as JSON, and writes nothing', async () => {
+    await run('new', 'Inbox', '--content', 'one\n\ntwo');
+    await run('new', 'Target', '--content', '# T');
+    expect(await run('refile', 'inbox', 'target', '--lines', '1', '--top', '--dry-run')).toBe(0);
+    expect(stdout).toContain('Inbox');
+    expect(stdout).toContain('lines removed');
+    expect(await run('refile', 'inbox', 'target', '--lines', '1', '--top', '--dry-run', '--json')).toBe(0);
+    const plan = JSON.parse(stdout) as { kind: string; writes: Array<{ id: string; before: { body: string }; after: { body: string } }>; sentence: string };
+    expect(plan.kind).toBe('refile');
+    expect(plan.writes.map((w) => [w.before.body, w.after.body])).toEqual([
+      ['one\n\ntwo', 'two'],
+      ['# T', 'one\n\n# T'],
+    ]);
+    expect(plan.sentence).toBe("Move 1 line from 'Inbox' to the top of 'Target'");
+    expect(await run('show', 'inbox', '--body')).toBe(0);
+    expect(stdout.trim()).toBe('one\n\ntwo');
+  });
+
+  it('moves a section with its subsections, levels untouched', async () => {
+    await run('new', 'Journal', '--content', 'intro\n\n# Monday\n\nrain\n\n## Later\n\nsun\n\n# Tuesday\n\nwind');
+    await run('new', 'Weather', '--content', '# Weather');
+    expect(await run('section', 'move', 'journal', 'monday', 'weather')).toBe(0);
+    expect(stdout.trim()).toBe("Moved the section 'Monday' from 'Journal' to the end of 'Weather'");
+    expect(await run('show', 'weather', '--body')).toBe(0);
+    expect(stdout.trim()).toBe('# Weather\n\n# Monday\n\nrain\n\n## Later\n\nsun');
+    expect(await run('show', 'journal', '--body')).toBe(0);
+    expect(stdout.trim()).toBe('intro\n\n# Tuesday\n\nwind');
+    expect(await run('section', 'move', 'journal', 'nope', 'weather')).toBe(3);
+  });
+
+  it('renames a note and every link to it, unless told not to', async () => {
+    await run('new', 'Plan', '--content', 'the plan, see [[plan]] myself');
+    await run('new', 'Other', '--content', 'see [[Plan|the plan]] and [[Plane]]');
+    expect(await run('rename', 'plan', 'Roadmap', '--dry-run')).toBe(0);
+    expect(stderr).toContain("Rename 'Plan' to 'Roadmap' and update 2 links in 2 notes");
+    expect(stdout).toContain('links rewritten');
+    expect(await run('rename', 'plan', 'Roadmap')).toBe(0);
+    expect(stdout.trim()).toBe("Renamed 'Plan' to 'Roadmap' and updated 2 links in 2 notes");
+    expect(await run('show', 'other', '--body')).toBe(0);
+    expect(stdout.trim()).toBe('see [[Roadmap|the plan]] and [[Plane]]');
+    expect(await run('show', 'roadmap', '--body')).toBe(0);
+    expect(stdout.trim()).toBe('the plan, see [[Roadmap]] myself');
+    expect(await run('rename', 'roadmap', 'Plan B', '--no-links')).toBe(0);
+    expect(await run('show', 'other', '--body')).toBe(0);
+    expect(stdout.trim()).toBe('see [[Roadmap|the plan]] and [[Plane]]');
+    expect(await run('rename', 'plan b', 'Plan B')).toBe(2);
+    expect(await run('rename', 'plan b', '--clear')).toBe(0);
+  });
+
+  it('renames a tag everywhere, nested tags included, whole tokens only', async () => {
+    await run('new', 'A', '--content', 'x #wow and #wow/commands');
+    await run('new', 'B', '--content', '#wowza stays, http://a/#wow stays');
+    expect(await run('tag', 'rename', 'wow', 'games')).toBe(0);
+    expect(stdout.trim()).toBe('Renamed #wow to #games in 1 note (2 tags)');
+    expect(await run('show', 'a', '--body')).toBe(0);
+    expect(stdout.trim()).toBe('x #games and #games/commands');
+    expect(await run('show', 'b', '--body')).toBe(0);
+    expect(stdout.trim()).toBe('#wowza stays, http://a/#wow stays');
+    expect(await run('tag', 'rename', 'games', 'two words')).toBe(2);
+    expect(await run('tag', 'rename', 'nobody', 'x')).toBe(2);
+  });
+
+  it('merges a note into another: text appended under its title, links retargeted, source trashed', async () => {
+    await run('new', 'Dup', '--content', 'the duplicate');
+    await run('new', 'Plan', '--content', 'keep');
+    await run('new', 'Other', '--content', 'see [[Dup]]');
+    expect(await run('merge', 'dup', 'plan')).toBe(0);
+    expect(stdout.trim()).toBe("Merged 'Dup' into 'Plan', updating 1 link in 1 note, and moved 'Dup' to the trash");
+    expect(await run('show', 'plan', '--body')).toBe(0);
+    expect(stdout.trim()).toBe('keep\n\n## Dup\n\nthe duplicate');
+    expect(await run('show', 'other', '--body')).toBe(0);
+    expect(stdout.trim()).toBe('see [[Plan]]');
+    expect(await run('show', 'dup')).toBe(3);
+    expect(await run('trash', 'list', '--plain')).toBe(0);
+    expect(stdout).toContain('Dup');
+    expect(await run('merge', 'plan', 'plan')).toBe(2);
+  });
+});
