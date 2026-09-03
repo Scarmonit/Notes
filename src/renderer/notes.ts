@@ -19,6 +19,7 @@ function lines(body: string): string[] {
 function plain(line: string): string {
   return line
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(LINK, '$1')
     .replace(/<img\b[^<>]*\balt\s*=\s*"([^"]*)"[^<>]*>/gi, '$1')
     .replace(/<img\b[^<>]*>/gi, '')
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
@@ -75,8 +76,24 @@ export function togglePin(notes: Note[], id: string): Note[] {
 }
 
 // A tag is #word at the start of a line or after whitespace, starting with a
-// letter so "#1" and "#123" stay plain text, and never "# Heading".
-const TAG = /(?:^|(?<=\s))#(\p{L}[\p{L}\p{N}_-]*)/gu;
+// letter so "#1" and "#123" stay plain text, and never "# Heading". A tag can
+// be nested with slashes — #wow/commands — and each part must be there, so a
+// trailing slash is simply not part of the tag.
+const TAG = /(?:^|(?<=\s))#(\p{L}[\p{L}\p{N}_-]*(?:\/[\p{L}\p{N}_-]+)*)/gu;
+
+/** Where one tag sits under another: #wow/commands lives under #wow. */
+export const TAG_SEP = '/';
+
+/** A tag and the tags it is nested inside, outermost first: wow, wow/commands. */
+export function tagPath(tag: string): string[] {
+  const parts = tag.split(TAG_SEP);
+  return parts.map((_, i) => parts.slice(0, i + 1).join(TAG_SEP));
+}
+
+/** True when `tag` is `under`, or nested inside it. */
+export function tagMatches(tag: string, under: string): boolean {
+  return tag === under || tag.startsWith(`${under}${TAG_SEP}`);
+}
 
 /** The tags written in a note, lower-cased, unique, in order of appearance. */
 export function tagsOf(body: string): string[] {
@@ -97,6 +114,89 @@ export function allTags(notes: Note[]): Array<{ tag: string; count: number }> {
     .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
 }
 
+export interface TagNode {
+  /** The whole tag: wow/commands. */
+  tag: string;
+  /** Just this level of it: commands. */
+  label: string;
+  /** Notes carrying this tag or anything nested inside it. */
+  count: number;
+  children: TagNode[];
+}
+
+/**
+ * The tags as a tree. A note tagged #wow/commands counts towards #wow as well,
+ * because that is what filing something under a heading means — otherwise the
+ * parent would read as empty while everything sat inside it.
+ */
+export function tagTree(notes: Note[]): TagNode[] {
+  const counts = new Map<string, number>();
+  const written = new Set<string>();
+  for (const n of notes) {
+    const reached = new Set<string>();
+    for (const tag of tagsOf(n.body)) {
+      written.add(tag);
+      // Every level of the path, but each counted once per note.
+      for (const step of tagPath(tag)) reached.add(step);
+    }
+    for (const step of reached) counts.set(step, (counts.get(step) ?? 0) + 1);
+  }
+  const nodes = new Map<string, TagNode>();
+  for (const tag of counts.keys()) {
+    const parts = tag.split(TAG_SEP);
+    nodes.set(tag, { tag, label: parts[parts.length - 1], count: counts.get(tag) ?? 0, children: [] });
+  }
+  const roots: TagNode[] = [];
+  for (const [tag, node] of nodes) {
+    const parent = tag.includes(TAG_SEP) ? nodes.get(tag.slice(0, tag.lastIndexOf(TAG_SEP))) : undefined;
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+  }
+  const order = (a: TagNode, b: TagNode): number => b.count - a.count || a.tag.localeCompare(b.tag);
+  const sortDeep = (list: TagNode[]): TagNode[] => {
+    list.sort(order);
+    for (const node of list) sortDeep(node.children);
+    return list;
+  };
+  return sortDeep(roots);
+}
+
+// A wikilink: [[Another note]], the title of the note it points at. Shared
+// with richeditor.ts, which needs it inside its one pass over the body, and
+// markdown.ts, which renders it in the preview.
+export const LINK_PATTERN = '\\[\\[([^\\[\\]\\n]+)\\]\\]';
+const LINK = new RegExp(LINK_PATTERN, 'g');
+
+/** How a link's target is compared: by title, ignoring case and stray spaces. */
+export const linkKey = (target: string): string => target.trim().toLowerCase();
+
+/** The titles a note links to, in order of appearance, without repeats. */
+export function linksIn(body: string): string[] {
+  const out: string[] = [];
+  for (const m of body.matchAll(LINK)) {
+    const target = m[1].trim();
+    if (target && !out.some((t) => linkKey(t) === linkKey(target))) out.push(target);
+  }
+  return out;
+}
+
+/** The markdown for a link to a note title. */
+export const linkMarkdown = (target: string): string => `[[${target.trim()}]]`;
+
+/** The note a link points at: the one whose title it names, or nothing. */
+export function noteForLink(notes: Note[], target: string): Note | null {
+  const want = linkKey(target);
+  return notes.find((n) => linkKey(titleOf(n)) === want) ?? null;
+}
+
+/** The notes that link to this one, in the list's own order. */
+export function backlinksOf(notes: Note[], id: string): Note[] {
+  const note = notes.find((n) => n.id === id);
+  if (!note) return [];
+  const title = linkKey(titleOf(note));
+  return notes.filter((n) => n.id !== id && linksIn(n.body).some((t) => linkKey(t) === title));
+}
+
 /**
  * Every whitespace-separated term must appear somewhere in the note,
  * case-insensitively. A term written as #name matches only notes tagged with
@@ -107,7 +207,9 @@ export function searchNotes(notes: Note[], query: string, tag: string | null = n
   if (terms.length === 0 && !tag) return notes;
   return notes.filter((n) => {
     const tags = tagsOf(n.body);
-    if (tag && !tags.includes(tag)) return false;
+    // A parent tag stands for everything filed under it, so #wow finds
+    // #wow/commands as well.
+    if (tag && !tags.some((t) => tagMatches(t, tag))) return false;
     const hay = `${n.title ?? ''}\n${n.body}`.toLowerCase();
     return terms.every((t) => (t.length > 1 && t.startsWith('#') ? tags.some((x) => x.startsWith(t.slice(1))) : hay.includes(t)));
   });

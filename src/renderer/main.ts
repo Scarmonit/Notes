@@ -3,23 +3,28 @@ import { chordOf, isCommandChord, keyLabel } from '../shared/keys';
 import { DEFAULT_SETTINGS, type Settings } from '../shared/settings';
 import type { ExportKind, ExportRequest, ImportedFile, Note, NotesFile } from '../shared/types';
 import { keyMap, matchActions, type Action, type Match } from './actions';
+import { toggleFence } from './fences';
 import { isTextFile, noteFromFile } from './importer';
 import { renderMarkdown } from './markdown';
 import { cycleTaskLine, toggleTaskAt } from './tasks';
 import {
-  allTags,
+  backlinksOf,
   createNote,
   exportBody,
   neighborOf,
+  noteForLink,
   removeNote,
   searchNotes,
   snippetOf,
   sortByEdited,
+  tagMatches,
+  tagTree,
   titleOf,
   togglePin,
   updateBody,
   updateTitle,
   wordCount,
+  type TagNode,
 } from './notes';
 import { markdownToText } from './plaintext';
 import {
@@ -27,7 +32,9 @@ import {
   chipsOf,
   imageChipHtml,
   isChip,
+  isLink,
   isRule,
+  linkTargetOf,
   lineIndexAt,
   lineIndexIn,
   lineSpans,
@@ -37,6 +44,7 @@ import {
   paragraphBounds,
   readEditor,
   renderEditor as renderEditorDom,
+  makeLink,
   makeRule,
   serializeEditor,
   setChipWidth,
@@ -45,6 +53,7 @@ import {
 } from './richeditor';
 import stylesText from './styles.css?inline';
 import { absoluteTime, relativeTime } from './time';
+import type { SnapshotSummary } from '../shared/history';
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const node = document.getElementById(id);
@@ -94,6 +103,12 @@ const el = {
   editorWrap: $('editor-wrap'),
   editor: $<HTMLDivElement>('editor'),
   preview: $('preview'),
+  backlinks: $('backlinks'),
+  historySheet: $('history-sheet'),
+  historyList: $('history-list'),
+  historyPreview: $('history-preview'),
+  historyRestore: $<HTMLButtonElement>('history-restore'),
+  historyNote: $('history-note'),
   imgHandle: $('img-handle'),
   imgSize: $('img-size'),
   dropLine: $('drop-line'),
@@ -257,25 +272,47 @@ window.notesApi.onFlushRequest(() => {
 const PIN_SVG =
   '<svg class="pin-mark" viewBox="0 0 12 12" aria-label="Pinned" role="img"><path d="M7.5 1.5 10.5 4.5 8.6 5.2 6.9 8.4 5.4 6.9 2 10.5 1.5 10 5.1 6.6 3.6 5.1 6.8 3.4Z" fill="currentColor"/></svg>';
 
+/**
+ * The tag rail, as a tree: #wow/commands sits under #wow, and a tag is only
+ * unfolded while it is on the way to the one being filtered by. Choosing a
+ * tag both filters by it and reveals what is nested inside it, so the rail
+ * never needs a control of its own.
+ */
 function renderTags(): void {
-  const tags = allTags(notes);
-  if (tagFilter && !tags.some((t) => t.tag === tagFilter)) tagFilter = null;
-  el.tags.hidden = tags.length === 0;
+  const tree = tagTree(notes);
+  const known = new Set<string>();
+  const gather = (nodes: TagNode[]): void => {
+    for (const node of nodes) {
+      known.add(node.tag);
+      gather(node.children);
+    }
+  };
+  gather(tree);
+  if (tagFilter && !known.has(tagFilter)) tagFilter = null;
+  el.tags.hidden = tree.length === 0;
   el.tags.replaceChildren();
-  for (const { tag, count } of tags) {
+  drawTags(tree, 0);
+}
+
+function drawTags(nodes: TagNode[], depth: number): void {
+  for (const node of nodes) {
+    const on = node.tag === tagFilter;
     const chip = document.createElement('button');
-    chip.className = 'tag u';
+    chip.className = `tag u${depth > 0 ? ' tag-child' : ''}`;
     chip.type = 'button';
-    chip.setAttribute('aria-pressed', String(tag === tagFilter));
-    chip.title = tag === tagFilter ? 'Show all notes' : `Only notes tagged #${tag}`;
+    chip.setAttribute('aria-pressed', String(on));
+    chip.title = on ? 'Show all notes' : `Only notes tagged #${node.tag}`;
     const name = document.createElement('span');
-    name.textContent = `#${tag}`;
+    // Nested tags read as their own level: #wow, then /commands beneath it.
+    name.textContent = depth > 0 ? `/${node.label}` : `#${node.label}`;
     const n = document.createElement('span');
     n.className = 'tag-count';
-    n.textContent = String(count);
+    n.textContent = String(node.count);
     chip.append(name, n);
-    chip.addEventListener('click', () => setTagFilter(tag === tagFilter ? null : tag));
+    chip.addEventListener('click', () => setTagFilter(on ? null : node.tag));
     el.tags.append(chip);
+    // Unfolded while the filter is this tag or something inside it.
+    if (node.children.length > 0 && tagFilter && tagMatches(tagFilter, node.tag)) drawTags(node.children, depth + 1);
   }
 }
 
@@ -412,10 +449,128 @@ function renderEditor(): void {
       ? renderMarkdown(n.body)
       : '<p class="preview-empty">Nothing to preview yet.</p>';
     liveTaskBoxes();
+    liveCodeBlocks();
     el.preview.scrollTop = scroll;
   }
+  renderBacklinks();
   syncChipUi();
   syncWriting();
+}
+
+/**
+ * The notes that link here. Drawn when the note changes rather than as it is
+ * typed: what points at this note is a fact about the others, and does not
+ * move while these words are being written.
+ */
+function renderBacklinks(): void {
+  const n = selected();
+  const back = n ? backlinksOf(notes, n.id) : [];
+  el.backlinks.hidden = back.length === 0 || el.editorWrap.hidden;
+  el.backlinks.replaceChildren();
+  if (back.length === 0) return;
+  const label = document.createElement('span');
+  label.className = 'backlinks-label u';
+  label.textContent = 'Linked from';
+  el.backlinks.append(label);
+  for (const other of back) {
+    const chip = document.createElement('button');
+    chip.className = 'backlink';
+    chip.type = 'button';
+    chip.textContent = titleOf(other);
+    chip.title = `Go to “${titleOf(other)}”`;
+    chip.addEventListener('click', () => {
+      select(other.id);
+      focusEditor();
+    });
+    el.backlinks.append(chip);
+  }
+}
+
+/**
+ * Follows a [[link]]: to the note whose title it names, or to a new note with
+ * that title. Writing the link is how a note gets started, the way it works
+ * in every app that has them.
+ */
+function openLink(target: string): void {
+  const name = target.trim();
+  if (!name) return;
+  const hit = noteForLink(notes, name);
+  if (hit) {
+    if (query || tagFilter) clearFilters();
+    select(hit.id);
+    focusEditor();
+    return;
+  }
+  newNote(name);
+  showStatus(`Started “${name}”`, 2500);
+}
+
+/** A finished [[link]] just before the caret. */
+const LINK_JUST_TYPED = /\[\[([^[\]\n]+)\]\]$/;
+
+/**
+ * Turns a link into its chip the moment the writer closes it, so a link is
+ * something you can follow as soon as you have written it rather than after
+ * the note has been opened again.
+ */
+function convertLinkOnClose(): void {
+  const pos = caretPos();
+  if (!pos || pos.node.nodeType !== Node.TEXT_NODE) return;
+  const before = (pos.node.textContent ?? '').slice(0, pos.offset);
+  const m = LINK_JUST_TYPED.exec(before);
+  if (!m || !m[1].trim()) return;
+  const range = document.createRange();
+  range.setStart(pos.node, pos.offset - m[0].length);
+  range.setEnd(pos.node, pos.offset);
+  range.deleteContents();
+  const chip = makeLink(m[1].trim());
+  range.insertNode(chip);
+  caretAfter(chip);
+}
+
+/** Clears the search box and any tag filter, so a note can always be shown. */
+function clearFilters(): void {
+  query = '';
+  el.search.value = '';
+  tagFilter = null;
+}
+
+/**
+ * Each code block in the preview gets a button that copies it. The clipboard
+ * is written by the main process: this window is a file:// page, and Electron's
+ * own clipboard is the one thing certain to work from one.
+ */
+function liveCodeBlocks(): void {
+  for (const pre of Array.from(el.preview.querySelectorAll('pre'))) {
+    if (pre.parentElement?.classList.contains('code-block')) continue;
+    const wrap = document.createElement('div');
+    wrap.className = 'code-block';
+    pre.replaceWith(wrap);
+    wrap.append(pre);
+    const copy = document.createElement('button');
+    copy.className = 'code-copy u';
+    copy.type = 'button';
+    copy.textContent = 'Copy';
+    copy.title = 'Copy this code';
+    copy.addEventListener('click', () => void copyCode(pre, copy));
+    wrap.append(copy);
+  }
+}
+
+async function copyCode(pre: HTMLElement, button: HTMLButtonElement): Promise<void> {
+  try {
+    await window.notesApi.copyText(pre.textContent ?? '');
+  } catch (err) {
+    console.error('[notes] copy failed', err);
+    showStatus('Could not copy that', 3000);
+    return;
+  }
+  button.textContent = 'Copied';
+  button.classList.add('copied');
+  window.setTimeout(() => {
+    button.textContent = 'Copy';
+    button.classList.remove('copied');
+  }, 1400);
 }
 
 /**
@@ -567,7 +722,11 @@ function toggleTypewriter(): void {
 // --- actions ----------------------------------------------------------------
 
 function select(id: string | null): void {
-  if (ui.selectedId !== id) disarmDelete();
+  if (ui.selectedId !== id) {
+    disarmDelete();
+    // The history sheet is about one note; it does not follow you to another.
+    if (!el.historySheet.hidden) toggleHistory(false);
+  }
   ui.selectedId = id;
   saveUi();
   renderList();
@@ -602,11 +761,7 @@ function newNote(title = ''): void {
   if (title.trim()) n.title = title.trim();
   notes = [n, ...notes];
   scheduleSave();
-  if (query) {
-    query = '';
-    el.search.value = '';
-  }
-  tagFilter = null;
+  clearFilters();
   if (ui.preview) ui.preview = false;
   select(n.id);
   focusEditor();
@@ -816,9 +971,7 @@ async function importFiles(files: ImportedFile[]): Promise<void> {
   if (made.length === 0) return;
   notes = [...made, ...notes];
   scheduleSave();
-  query = '';
-  el.search.value = '';
-  tagFilter = null;
+  clearFilters();
   select(made[0].id);
   showStatus(made.length === 1 ? `Imported “${titleOf(made[0])}”` : `Imported ${made.length} notes`, 3000);
 }
@@ -1003,6 +1156,11 @@ el.imgHandle.addEventListener('pointerup', endResize);
 el.imgHandle.addEventListener('pointercancel', endResize);
 
 el.editor.addEventListener('click', (e) => {
+  if (isLink(e.target)) {
+    e.preventDefault();
+    openLink(linkTargetOf(e.target));
+    return;
+  }
   if (isChip(e.target) || isRule(e.target)) selectChip(e.target);
 });
 
@@ -1086,6 +1244,14 @@ function setBody(body: string): void {
   renderEditor();
 }
 
+// Links in the preview are the same links, and go to the same place.
+el.preview.addEventListener('click', (e) => {
+  if (isLink(e.target)) {
+    e.preventDefault();
+    openLink(linkTargetOf(e.target));
+  }
+});
+
 // Ticking a box in the preview writes the change back into the markdown.
 el.preview.addEventListener('click', (e) => {
   const box = e.target;
@@ -1112,6 +1278,39 @@ function toggleTaskHere(): void {
   // The re-render throws away the old caret. It comes back at the end of the
   // line, which is where the next word of a checklist item goes anyway.
   caretToLineEnd(line);
+}
+
+// --- code blocks ------------------------------------------------------------
+
+/** The lines the selection covers, or the paragraph the caret is in. */
+function selectedLines(lines: LineSpan[], text: string): { first: number; last: number } | null {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return null;
+  const range = sel.getRangeAt(0);
+  if (!el.editor.contains(range.commonAncestorContainer)) return null;
+  if (sel.isCollapsed) {
+    return paragraphBounds(text.split('\n'), lineIndexIn(lines, { node: range.startContainer, offset: range.startOffset }));
+  }
+  const first = lineIndexIn(lines, { node: range.startContainer, offset: range.startOffset });
+  const last = lineIndexIn(lines, { node: range.endContainer, offset: range.endOffset });
+  return { first: Math.min(first, last), last: Math.max(first, last) };
+}
+
+/**
+ * Fences the selection, or the paragraph the caret is in, as a code block —
+ * and takes the fence away again when it is already there. Inside a fence
+ * nothing is reflowed, which is what a wall of commands lined up by hand
+ * needs to stay readable.
+ */
+function toggleCodeBlock(): void {
+  ensureEditable();
+  const { text, lines } = readEditor(el.editor);
+  const range = selectedLines(lines, text);
+  if (!range) return;
+  const next = toggleFence(text, range.first, range.last);
+  if (next.body === text) return;
+  setBody(next.body);
+  caretToLineEnd(next.line);
 }
 
 /** Puts the caret at the end of a line, after the editor has been re-rendered. */
@@ -1323,7 +1522,10 @@ document.addEventListener('pointerdown', (e) => {
 
 // --- editor input -----------------------------------------------------------
 
-el.editor.addEventListener('input', () => {
+el.editor.addEventListener('input', (e) => {
+  // Closing a link is the moment it becomes one, the way --- becomes a rule
+  // on Enter. Anything else typed leaves the text exactly as it was typed.
+  if (e instanceof InputEvent && e.data === ']') convertLinkOnClose();
   commitEditor();
   syncWriting();
 });
@@ -1440,6 +1642,117 @@ el.typewriter.addEventListener('change', () => {
 el.layoutBtn.addEventListener('click', () => toggleLayout(true));
 el.layoutSheet.addEventListener('click', (e) => {
   if (e.target === el.layoutSheet) toggleLayout(false);
+});
+
+// --- version history --------------------------------------------------------
+
+/** The versions listed in the open sheet, newest first. */
+let versions: SnapshotSummary[] = [];
+/** Which of them is being previewed, by the moment it was taken. */
+let versionAt: number | null = null;
+
+function toggleHistory(force?: boolean): void {
+  const open = force ?? el.historySheet.hidden;
+  if (open && !selected()) return;
+  el.historySheet.hidden = !open;
+  if (!open) {
+    focusEditor();
+    return;
+  }
+  el.historySheet.querySelector<HTMLElement>('.sheet-card')?.focus();
+  void loadHistory();
+}
+
+async function loadHistory(): Promise<void> {
+  const n = selected();
+  if (!n) return;
+  versions = [];
+  versionAt = null;
+  el.historyList.replaceChildren();
+  el.historyPreview.textContent = '';
+  el.historyNote.textContent = 'Reading…';
+  el.historyRestore.disabled = true;
+  try {
+    versions = await window.notesApi.historyList(n.id);
+  } catch (err) {
+    console.error('[notes] could not read the history', err);
+    el.historyNote.textContent = 'Could not read the history of this note.';
+    return;
+  }
+  drawHistory();
+  if (versions.length > 0) void showVersion(versions[0].at);
+}
+
+function drawHistory(): void {
+  el.historyList.replaceChildren();
+  if (versions.length === 0) {
+    const none = document.createElement('div');
+    none.className = 'history-none u';
+    none.textContent = 'No earlier versions of this note yet.';
+    el.historyList.append(none);
+    el.historyNote.textContent = 'Versions are kept as you write, at most one every few minutes, for a week.';
+    return;
+  }
+  const now = Date.now();
+  for (const version of versions) {
+    const row = document.createElement('button');
+    row.className = `history-row${version.at === versionAt ? ' at' : ''}`;
+    row.type = 'button';
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', String(version.at === versionAt));
+    const when = document.createElement('span');
+    when.className = 'history-when u';
+    when.textContent = relativeTime(version.at, now);
+    when.title = absoluteTime(version.at);
+    const what = document.createElement('span');
+    what.className = 'history-what';
+    what.textContent = version.preview || 'Empty';
+    row.append(when, what);
+    row.addEventListener('click', () => void showVersion(version.at));
+    el.historyList.append(row);
+  }
+}
+
+async function showVersion(at: number): Promise<void> {
+  const n = selected();
+  if (!n) return;
+  versionAt = at;
+  drawHistory();
+  el.historyRestore.disabled = true;
+  const snap = await window.notesApi.historyGet(n.id, at).catch(() => null);
+  // The sheet may have moved on while this was being read.
+  if (!snap || versionAt !== at) return;
+  el.historyPreview.textContent = snap.body || '(empty)';
+  el.historyNote.textContent = `${absoluteTime(at)} · ${snap.body.length} characters`;
+  el.historyRestore.disabled = false;
+}
+
+async function restoreVersion(): Promise<void> {
+  const n = selected();
+  if (!n || versionAt === null) return;
+  const at = versionAt;
+  const snap = await window.notesApi.historyGet(n.id, at).catch(() => null);
+  if (!snap) {
+    showStatus('That version could not be read', 3000);
+    return;
+  }
+  // Keep what is there now first, so going back is itself something to go back from.
+  await window.notesApi.historyKeep(n).catch((err) => console.error('[notes] could not keep the current version', err));
+  if ((snap.title ?? '') !== (n.title ?? '')) {
+    notes = updateTitle(notes, n.id, snap.title ?? '');
+    el.title.value = snap.title ?? '';
+  }
+  setBody(snap.body);
+  scheduleSave();
+  renderList();
+  renderEditor();
+  toggleHistory(false);
+  showStatus(`Restored the version from ${relativeTime(at)}`, 3500);
+}
+
+el.historyRestore.addEventListener('click', () => void restoreVersion());
+el.historySheet.addEventListener('click', (e) => {
+  if (e.target === el.historySheet) toggleHistory(false);
 });
 
 // --- tray and the summon hotkey ---------------------------------------------
@@ -1665,6 +1978,16 @@ const ACTIONS: Action[] = [
     },
   },
   {
+    id: 'history',
+    label: 'Note history…',
+    hint: 'Earlier versions of this note, kept as you write, to look at or put back',
+    group: 'Notes',
+    chord: 'ctrl+shift+r',
+    enabled: hasNote,
+    terms: 'versions restore snapshots undo recover',
+    run: () => toggleHistory(),
+  },
+  {
     id: 'save',
     label: 'Save now',
     hint: 'Autosave is always on; this only makes it immediate',
@@ -1693,6 +2016,15 @@ const ACTIONS: Action[] = [
     chord: 'ctrl+shift+h',
     terms: 'rule horizontal line break',
     run: insertDivider,
+  },
+  {
+    id: 'code',
+    label: 'Code block around this',
+    hint: 'Fences the selection, or the paragraph you are in, so nothing in it is reflowed',
+    group: 'Writing',
+    chord: 'ctrl+shift+c',
+    terms: 'fence monospace preformatted highlight',
+    run: toggleCodeBlock,
   },
   {
     id: 'task',
@@ -1949,6 +2281,8 @@ function onEscape(): void {
     togglePalette(false);
   } else if (!el.exportMenu.hidden) {
     closeExportMenu(true);
+  } else if (!el.historySheet.hidden) {
+    toggleHistory(false);
   } else if (!el.layoutSheet.hidden) {
     toggleLayout(false);
   } else if (!el.helpSheet.hidden) {

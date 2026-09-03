@@ -17,6 +17,10 @@ const api: NotesApi = {
   onNewNote: (fn) => {
     ipcRenderer.on(IPC.newNote, () => fn());
   },
+  historyList: (noteId) => ipcRenderer.invoke(IPC.historyList, noteId),
+  historyGet: (noteId, at) => ipcRenderer.invoke(IPC.historyGet, noteId, at),
+  historyKeep: (note) => ipcRenderer.invoke(IPC.historyKeep, note),
+  copyText: (text) => ipcRenderer.invoke(IPC.copyText, text),
 };
 
 contextBridge.exposeInMainWorld('notesApi', api);

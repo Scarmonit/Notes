@@ -10,4 +10,8 @@ export const IPC = {
   settingsGet: 'notes:settings-get',
   settingsSet: 'notes:settings-set',
   newNote: 'notes:new-note',
+  historyList: 'notes:history-list',
+  historyGet: 'notes:history-get',
+  historyKeep: 'notes:history-keep',
+  copyText: 'notes:copy-text',
 } as const;

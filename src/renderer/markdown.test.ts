@@ -58,3 +58,38 @@ describe('sized attachments', () => {
     expect(html).toContain('width="320"');
   });
 });
+
+describe('code blocks', () => {
+  it('highlights a fence that names a language', () => {
+    const html = renderMarkdown('```js\nconst a = 1;\n```');
+    expect(html).toContain('class="hljs language-javascript"');
+    expect(html).toContain('<span class="hljs-keyword">const</span>');
+  });
+
+  it('leaves a fence with no language as plain, escaped code', () => {
+    const html = renderMarkdown('```\n.npc add 36597 <one>\n```');
+    expect(html).toBe('<pre><code class="hljs">.npc add 36597 &lt;one&gt;</code></pre>\n');
+  });
+
+  it('does not colour a language it does not know', () => {
+    expect(renderMarkdown('```klingon\nHIja\n```')).not.toContain('language-');
+  });
+});
+
+describe('note links', () => {
+  it('renders [[a link]] as a chip carrying its target', () => {
+    expect(renderMarkdown('see [[Other note]]')).toContain('<span class="inline-link" data-link="Other note">Other note</span>');
+  });
+
+  it('leaves a link inside code as the characters that were typed', () => {
+    expect(renderMarkdown('`[[not a link]]`')).toContain('<code>[[not a link]]</code>');
+    expect(renderMarkdown('```\n[[not a link]]\n```')).toContain('[[not a link]]');
+  });
+
+  it('makes no element out of a target that looks like markup', () => {
+    const holder = document.createElement('div');
+    holder.innerHTML = renderMarkdown('[[<img src=x onerror=alert(1)>]]');
+    expect(holder.querySelector('img')).toBe(null);
+    expect(holder.querySelector('.inline-link')?.textContent).toBe('<img src=x onerror=alert(1)>');
+  });
+});

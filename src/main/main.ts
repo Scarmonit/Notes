@@ -1,13 +1,14 @@
-import { app, BrowserWindow, globalShortcut, ipcMain, Menu, shell } from 'electron';
+import { app, BrowserWindow, clipboard, globalShortcut, ipcMain, Menu, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { IPC } from '../shared/channels';
-import type { ExportRequest, NotesFile } from '../shared/types';
+import type { ExportRequest, Note, NotesFile } from '../shared/types';
 import type { Settings } from '../shared/settings';
 import { installAssetProtocol, pickAttachments, registerAssetScheme, saveAttachment, sweepOrphans } from './attachments';
 import { installContextMenu } from './context-menu';
 import { exportNote } from './export';
+import { getSnapshot, keepNow, listHistory, record } from './history-store';
 import { pickImports } from './import';
 import { loadNotes, saveNotes } from './notes-store';
 import { loadSettings, saveSettings, settings } from './settings';
@@ -148,12 +149,19 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle(IPC.notesLoad, () => loadNotes());
   ipcMain.handle(IPC.notesSave, async (_event, file: NotesFile) => {
     await saveNotes(file);
+    // Both run behind the save, never in front of it: neither the snapshot
+    // ring nor the attachment sweep may delay or endanger the write itself.
+    void record(file.notes);
     void sweepOrphans(file).catch((err) => console.error('[notes] attachment sweep failed', err));
   });
   ipcMain.handle(IPC.attach, (_event, bytes: Uint8Array, name: string) => saveAttachment(bytes, name));
   ipcMain.handle(IPC.pickAttachments, (event) => pickAttachments(windowFor(event)));
   ipcMain.handle(IPC.pickImports, (event) => pickImports(windowFor(event)));
   ipcMain.handle(IPC.exportNote, (event, request: ExportRequest) => exportNote(windowFor(event), request));
+  ipcMain.handle(IPC.historyList, (_event, noteId: string) => listHistory(noteId));
+  ipcMain.handle(IPC.historyGet, (_event, noteId: string, at: number) => getSnapshot(noteId, at));
+  ipcMain.handle(IPC.historyKeep, (_event, note: Note) => keepNow(note));
+  ipcMain.handle(IPC.copyText, (_event, text: string) => clipboard.writeText(text));
   ipcMain.handle(IPC.settingsGet, () => settings());
   ipcMain.handle(IPC.settingsSet, async (event, next: Settings) => {
     const stored = await saveSettings(next);

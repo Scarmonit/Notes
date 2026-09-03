@@ -23,6 +23,15 @@
   /* The writing column, in px. Measured in px on purpose: a `ch` here would be
      the 13px utility font, not the 17px serif the words are actually set in. */
   --text-w: 960px;
+  /* Syntax highlighting: one warm and one cool family against the raised
+     panel, kept quiet enough that a code block still reads as part of a note. */
+  --code-comment: #6b7385;
+  --code-keyword: #d08a90;
+  --code-string: #9ec89a;
+  --code-number: #d6a06a;
+  --code-title: #7aa2d6;
+  --code-built: #7fbac9;
+  --code-attr: #c9b478;
   --serif: 'Sitka Text', 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
   --serif-display: 'Sitka Heading', 'Sitka Text', 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
   --utility: Bahnschrift, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
@@ -217,6 +226,17 @@ kbd {
 .tag-count {
   margin-left: 4px;
   opacity: 0.6;
+}
+/* A nested tag — #wow/commands under #wow — shown only while its parent is
+   the tag being filtered by, so the rail never needs a control of its own. */
+.tag-child {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--line);
+  font-size: 12px;
+}
+.tag-child[aria-pressed='true'] {
+  background: var(--blue-soft);
+  box-shadow: none;
 }
 
 .list {
@@ -505,6 +525,49 @@ kbd {
   pointer-events: none;
 }
 
+/* A link to another note, in the editor and in the preview alike. It is a
+   chip there is no writing inside, so clicking it can only mean "go there". */
+.inline-link {
+  color: var(--blue);
+  border-bottom: 1px solid var(--blue-soft);
+  cursor: pointer;
+  user-select: none;
+}
+.inline-link:hover {
+  border-bottom-color: var(--blue);
+}
+
+/* The notes that link to this one, under the words. */
+.backlinks {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  padding: 10px 36px 12px 28px;
+  border-top: 1px solid var(--line);
+  background: var(--ink);
+}
+.backlinks-label {
+  margin-right: 2px;
+}
+.backlink {
+  padding: 4px 10px 5px;
+  border-radius: 999px;
+  background: var(--raised);
+  color: var(--paper-dim);
+  /* A note title, set as one: the label beside it carries the utility register. */
+  font: 12.5px/1.1 var(--serif);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.backlink:hover {
+  background: var(--hover);
+  color: var(--paper);
+}
+
 /* Attached images render as pictures inline, each on its own line. */
 .inline-img {
   display: block;
@@ -729,6 +792,97 @@ kbd {
   background: none;
   font-size: 0.8em;
 }
+
+/* A code block and its copy button. The button lives in the wrapper rather
+   than the <pre> so it stays put while the code scrolls sideways under it. */
+.code-block {
+  position: relative;
+  margin: 0 0 1em;
+}
+.code-block pre {
+  margin: 0;
+}
+.code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--hover);
+  color: var(--paper-dim);
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.code-block:hover .code-copy,
+.code-copy:focus-visible {
+  opacity: 1;
+}
+.code-copy:hover {
+  background: var(--selected);
+  color: var(--paper);
+}
+.code-copy.copied {
+  color: var(--blue);
+  opacity: 1;
+}
+
+/* Syntax highlighting. The classes are highlight.js's; the colours are the
+   note's own, so a code block reads as part of the page rather than a screen
+   from another program. */
+.hljs-comment,
+.hljs-quote,
+.hljs-meta {
+  color: var(--code-comment);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag,
+.hljs-formula {
+  color: var(--code-keyword);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-meta .hljs-string {
+  color: var(--code-string);
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link {
+  color: var(--code-number);
+}
+.hljs-title,
+.hljs-section,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--code-title);
+}
+.hljs-built_in,
+.hljs-type,
+.hljs-class .hljs-title {
+  color: var(--code-built);
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-property,
+.hljs-params {
+  color: var(--code-attr);
+}
+.hljs-deletion {
+  color: var(--margin);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
 .markdown blockquote {
   padding: 0 0 0 1em;
   border-left: 2px solid var(--paper-faint);
@@ -910,6 +1064,87 @@ kbd {
   margin: 20px 0 0;
   text-align: center;
   color: var(--paper-faint);
+}
+
+/* --- note history ------------------------------------------------------- */
+
+.history-card {
+  width: min(760px, calc(100vw - 40px));
+}
+.history-body {
+  display: flex;
+  gap: 16px;
+  height: min(420px, 52vh);
+}
+.history-list {
+  flex: 0 0 240px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.history-row {
+  display: block;
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: 5px;
+  text-align: left;
+}
+.history-row:hover {
+  background: var(--hover);
+}
+.history-row.at {
+  background: var(--selected);
+}
+.history-when {
+  display: block;
+  color: var(--paper-dim);
+  margin-bottom: 4px;
+}
+.history-row.at .history-when {
+  color: var(--blue);
+}
+/* The snapshot's own words, in the note's own face: this is what would come
+   back, so it should not read as a label. */
+.history-what {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--paper);
+  font: 13px/1.3 var(--serif);
+}
+.history-restore {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+.history-restore:hover {
+  background: var(--blue);
+  color: var(--ink);
+}
+.history-none {
+  padding: 8px 9px;
+}
+/* The version itself, as the markdown it is: nothing here is rendered, so
+   what is offered back is exactly what would be put back. */
+.history-preview {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  background: var(--ink-deep);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--paper-dim);
+  font: 12px/1.6 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+.history-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 14px;
 }
 
 /* --- command palette ---------------------------------------------------- */

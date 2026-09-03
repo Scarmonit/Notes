@@ -9,6 +9,12 @@ import {
   sortByEdited,
   tagsOf,
   allTags,
+  backlinksOf,
+  linksIn,
+  noteForLink,
+  tagMatches,
+  tagPath,
+  tagTree,
   togglePin,
   updateTitle,
   exportBody,
@@ -215,5 +221,68 @@ describe('explicit titles', () => {
   it('go out as a heading on export', () => {
     expect(exportBody({ body: 'text', title: 'Plans' })).toBe('# Plans\n\ntext');
     expect(exportBody({ body: 'text' })).toBe('text');
+  });
+});
+
+describe('nested tags', () => {
+  it('reads a tag with slashes as one tag', () => {
+    expect(tagsOf('#wow/commands and #wow/server')).toEqual(['wow/commands', 'wow/server']);
+  });
+  it('stops before a trailing slash', () => {
+    expect(tagsOf('#wow/ and #wow//x')).toEqual(['wow']);
+  });
+  it('names the tags a tag sits under, outermost first', () => {
+    expect(tagPath('wow/commands/npc')).toEqual(['wow', 'wow/commands', 'wow/commands/npc']);
+    expect(tagPath('wow')).toEqual(['wow']);
+  });
+  it('matches a tag against the one it is filed under', () => {
+    expect(tagMatches('wow/commands', 'wow')).toBe(true);
+    expect(tagMatches('wow', 'wow')).toBe(true);
+    expect(tagMatches('wowza', 'wow')).toBe(false);
+  });
+  it('rolls child counts up into the parent, counting a note once', () => {
+    const list = [note('a', '#wow/commands #wow/server', 1), note('b', '#wow/commands', 2), note('c', '#home', 3)];
+    const tree = tagTree(list);
+    expect(tree.map((t) => [t.tag, t.count])).toEqual([
+      ['wow', 2],
+      ['home', 1],
+    ]);
+    expect(tree[0].children.map((t) => [t.tag, t.label, t.count])).toEqual([
+      ['wow/commands', 'commands', 2],
+      ['wow/server', 'server', 1],
+    ]);
+  });
+  it('gives a parent nobody wrote a place in the tree', () => {
+    const tree = tagTree([note('a', '#wow/commands', 1)]);
+    expect(tree.map((t) => t.tag)).toEqual(['wow']);
+    expect(tree[0].children.map((t) => t.tag)).toEqual(['wow/commands']);
+  });
+  it('filters by a parent tag, children included', () => {
+    const list = [note('a', '#wow/commands', 1), note('b', '#wow', 2), note('c', '#wowza', 3)];
+    expect(searchNotes(list, '', 'wow').map((n) => n.id)).toEqual(['a', 'b']);
+    expect(searchNotes(list, '', 'wow/commands').map((n) => n.id)).toEqual(['a']);
+  });
+});
+
+describe('links between notes', () => {
+  it('finds link targets in order, without repeats or case duplicates', () => {
+    expect(linksIn('see [[One]] and [[Two]], then [[one]] again')).toEqual(['One', 'Two']);
+  });
+  it('ignores an unclosed or empty link, and one broken across lines', () => {
+    expect(linksIn('[[ ]] [[open and [[a\nb]]')).toEqual([]);
+  });
+  it('reads a link through the title of the note it names', () => {
+    const list = [note('a', 'body', 1), { ...note('b', 'body', 2), title: 'Reading list' }];
+    expect(noteForLink(list, ' reading LIST ')?.id).toBe('b');
+    expect(noteForLink(list, 'nothing here')).toBe(null);
+  });
+  it('finds the notes that link to one, and never the note itself', () => {
+    const target = { ...note('t', 'about [[Plans]] itself', 1), title: 'Plans' };
+    const list = [target, note('a', 'see [[plans]]', 2), note('b', 'nothing', 3)];
+    expect(backlinksOf(list, 't').map((n) => n.id)).toEqual(['a']);
+    expect(backlinksOf(list, 'missing')).toEqual([]);
+  });
+  it('reads a link as its words in titles and snippets', () => {
+    expect(titleOf({ body: 'go to [[Other note]] now' })).toBe('go to Other note now');
   });
 });

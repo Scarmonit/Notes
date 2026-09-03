@@ -1,4 +1,5 @@
 import { assetNameFromUrl, assetUrl, isSafeAssetName } from '../shared/assets';
+import { LINK_PATTERN, linkMarkdown } from './notes';
 
 /**
  * The editor is a contenteditable surface, not a textarea, so attached images
@@ -17,10 +18,12 @@ import { assetNameFromUrl, assetUrl, isSafeAssetName } from '../shared/assets';
  */
 
 const NAME = '[a-f0-9]{8,32}\\.(?:png|jpe?g|gif|webp|bmp)';
-// Either form of an attached image, or a section rule (---, *** or ___ alone
-// on a line, as markdown defines a horizontal rule), in one pass over the body.
+// Either form of an attached image, a section rule (---, *** or ___ alone on a
+// line, as markdown defines a horizontal rule), or a link to another note, in
+// one pass over the body. A new kind goes on the end: imageTokens() filters
+// this list, so the index of an image must not move when a kind is added.
 const TOKEN = new RegExp(
-  `!\\[([^\\]]*)\\]\\(note-asset:\\/\\/(${NAME})\\)|<img\\b([^<>]*)>|^[ \\t]{0,3}(-{3,}|\\*{3,}|_{3,})[ \\t]*$`,
+  `!\\[([^\\]]*)\\]\\(note-asset:\\/\\/(${NAME})\\)|<img\\b([^<>]*)>|^[ \\t]{0,3}(-{3,}|\\*{3,}|_{3,})[ \\t]*$|${LINK_PATTERN}`,
   'gim',
 );
 
@@ -70,9 +73,18 @@ export function imageMarkdown(ref: ImageRef): string {
   return `<img src="${assetUrl(ref.name)}" alt="${escapeAttr(ref.alt)}" width="${ref.width}">`;
 }
 
-export type BodyToken = ({ kind: 'image' } & ImageRef | { kind: 'rule' }) & { start: number; end: number };
+/** Where a token sits in the body text. */
+export interface Span {
+  start: number;
+  end: number;
+}
 
-/** Every image and section rule in a body, in order, with the span of text each occupies. */
+export type BodyToken =
+  | ({ kind: 'image' } & ImageRef & Span)
+  | ({ kind: 'rule' } & Span)
+  | ({ kind: 'link'; target: string } & Span);
+
+/** Every image, section rule and note link in a body, in order, with the span of text each occupies. */
 export function bodyTokens(body: string): BodyToken[] {
   const out: BodyToken[] = [];
   TOKEN.lastIndex = 0;
@@ -81,6 +93,11 @@ export function bodyTokens(body: string): BodyToken[] {
     const span = { start: match.index, end: match.index + match[0].length };
     if (match[4] !== undefined) {
       out.push({ kind: 'rule', ...span });
+      continue;
+    }
+    if (match[5] !== undefined) {
+      const target = match[5].trim();
+      if (target) out.push({ kind: 'link', target, ...span });
       continue;
     }
     const ref = refOf(match);
@@ -109,6 +126,36 @@ export function makeRule(): HTMLHRElement {
 
 export function isRule(node: unknown): node is HTMLHRElement {
   return node instanceof HTMLHRElement && node.classList.contains('inline-rule');
+}
+
+/**
+ * A link to another note, drawn as a chip there is no writing inside. The
+ * target lives in the dataset rather than in the visible text, so what gets
+ * written back is the title the writer meant even if the chip is restyled.
+ */
+const LINK_CLASS = 'inline-link';
+
+export function makeLink(target: string): HTMLSpanElement {
+  const span = document.createElement('span');
+  span.className = LINK_CLASS;
+  // The attribute rather than the property: the property does not always
+  // reflect into the DOM, and the serializer reads what is actually there.
+  span.setAttribute('contenteditable', 'false');
+  span.dataset.link = target;
+  span.textContent = target;
+  span.title = `Go to “${target}”`;
+  return span;
+}
+
+// Deliberately widened to HTMLElement: a span carries nothing an element does
+// not, so narrowing on HTMLSpanElement would leave the other branch as never.
+export function isLink(node: unknown): node is HTMLElement {
+  return node instanceof HTMLElement && node.classList.contains(LINK_CLASS);
+}
+
+/** The note title a link chip points at. */
+export function linkTargetOf(node: HTMLElement): string {
+  return (node.dataset.link ?? node.textContent ?? '').trim();
 }
 
 /** The HTML for one inline image chip, for insertion at the caret. */
@@ -161,7 +208,7 @@ export function renderEditor(root: HTMLElement, body: string): void {
   let last = 0;
   for (const tok of bodyTokens(body)) {
     if (tok.start > last) root.appendChild(document.createTextNode(body.slice(last, tok.start)));
-    root.appendChild(tok.kind === 'rule' ? makeRule() : makeChip(tok));
+    root.appendChild(tok.kind === 'rule' ? makeRule() : tok.kind === 'link' ? makeLink(tok.target) : makeChip(tok));
     last = tok.end;
   }
   if (last < body.length) root.appendChild(document.createTextNode(body.slice(last)));
@@ -223,6 +270,12 @@ function analyze(root: HTMLElement, keepTrailing = false): Analysis {
       }
       if (child.nodeType !== Node.ELEMENT_NODE) return;
       const elm = child as HTMLElement;
+      // A link chip is a span, and a span is also what the browser makes on
+      // its own, so it is recognised by its class before its tag is looked at.
+      if (elm.classList.contains(LINK_CLASS)) {
+        out += linkMarkdown(linkTargetOf(elm));
+        return;
+      }
       switch (elm.tagName) {
         case 'IMG': {
           const name = elm.dataset.asset ?? assetNameFromUrl(elm.getAttribute('src') ?? '');

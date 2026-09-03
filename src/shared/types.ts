@@ -1,3 +1,4 @@
+import type { Snapshot, SnapshotSummary } from './history';
 import type { Settings } from './settings';
 
 export interface Note {
@@ -59,6 +60,17 @@ export interface NotesApi {
   setSettings(next: Settings): Promise<Settings & { hotkeyFailed: boolean }>;
   /** Called when the tray's "New note" item is chosen. */
   onNewNote(fn: () => void): void;
+  /** Every kept version of one note, newest first, without their bodies. */
+  historyList(noteId: string): Promise<SnapshotSummary[]>;
+  /** One kept version in full, by the moment it was taken. */
+  historyGet(noteId: string, at: number): Promise<Snapshot | null>;
+  /**
+   * Keeps the note as it stands right now, whatever the usual gap would say.
+   * Restoring calls this first, so going back is itself something to go back from.
+   */
+  historyKeep(note: Note): Promise<void>;
+  /** Puts text on the system clipboard. */
+  copyText(text: string): Promise<void>;
 }
 
 declare global {

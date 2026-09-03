@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   MIN_IMAGE_WIDTH,
+  bodyTokens,
   chipWidth,
+  imageTokens,
   paragraphBounds,
+  isLink,
   isRule,
   lineIndexAt,
   lineSpans,
@@ -302,5 +305,38 @@ describe('paragraphBounds', () => {
   it('holds a line index that is off the end', () => {
     expect(paragraphBounds(lines, 99)).toEqual({ first: 3, last: 5 });
     expect(paragraphBounds([], 0)).toEqual({ first: 0, last: 0 });
+  });
+});
+
+describe('note links', () => {
+  it('renders a link as a chip and writes it back unchanged', () => {
+    const root = editor();
+    renderEditor(root, 'see [[Other note]] here');
+    const chip = root.querySelector('.inline-link');
+    expect(chip?.textContent).toBe('Other note');
+    expect(chip?.getAttribute('contenteditable')).toBe('false');
+    expect(isLink(chip)).toBe(true);
+    expect(serializeEditor(root)).toBe('see [[Other note]] here');
+  });
+
+  it('writes back the target, not whatever the chip is showing', () => {
+    const root = editor();
+    renderEditor(root, '[[Other note]]');
+    const chip = root.querySelector('.inline-link') as HTMLElement;
+    chip.textContent = 'something else';
+    expect(serializeEditor(root)).toBe('[[Other note]]');
+  });
+
+  it('leaves the index of an image alone', () => {
+    const body = `[[a link]] ![one](note-asset://${NAME}) [[another]] ![two](note-asset://${NAME})`;
+    expect(bodyTokens(body).map((t) => t.kind)).toEqual(['link', 'image', 'link', 'image']);
+    expect(imageTokens(body).map((t) => t.alt)).toEqual(['one', 'two']);
+  });
+
+  it('keeps an empty or broken link as plain text', () => {
+    const root = editor();
+    renderEditor(root, '[[ ]] and [[open');
+    expect(root.querySelector('.inline-link')).toBe(null);
+    expect(serializeEditor(root)).toBe('[[ ]] and [[open');
   });
 });

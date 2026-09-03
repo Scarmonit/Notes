@@ -4,8 +4,11 @@ A minimal, keyboard-first markdown notes app for Windows. One window, a sidebar 
 
 - Sidebar list sorted by last edit, with title, relative timestamp and a snippet
 - Instant search across every note as you type; pressing `Enter` on a search that matches nothing starts a note with that title
-- Pin the notes you keep coming back to, and write `#tags` anywhere to filter the list by them
+- Pin the notes you keep coming back to, and write `#tags` anywhere to filter the list by them; nest them as `#wow/commands` and the parent gathers everything filed under it
+- Link notes together with `[[Another note]]` — click a link to go there, or to start it; every note lists what points at it
+- Version history: snapshots are kept as you write, for a week, and any of them can be read and put back (`Ctrl+Shift+R`)
 - Markdown editor with a rendered preview toggle (GitHub-flavoured, sanitised)
+- Code blocks are syntax-highlighted in the preview and have a copy button; `Ctrl+Shift+C` fences the selection, so hand-aligned columns stop reflowing
 - Checklists: `- [ ]` lines are real checkboxes in the preview, tickable in place, and `Ctrl+Shift+X` turns the line you are on into one
 - Attach images by pasting, dropping a file anywhere on the window, or `Ctrl+Shift+I`; they render as pictures inline, resize by their corner handle, and live in `%APPDATA%\Notes\attachments`
 - Section dividers, either from `Ctrl+Shift+H` or by typing `---` and pressing Enter
@@ -16,7 +19,7 @@ A minimal, keyboard-first markdown notes app for Windows. One window, a sidebar 
 - Stays in the tray and comes back on a shortcut of your choosing (Layout, `Ctrl+,`)
 - Adjustable line width, so the words fill as much of the window as you want (Layout, `Ctrl+,`)
 - Right-click a word the spellchecker underlines to correct it, or add it to the dictionary for good
-- Autosave to `%APPDATA%\Notes\notes.json` (atomic writes, flushed on close)
+- Autosave to `%APPDATA%\Notes\notes.json` (atomic writes, flushed on close), with the snapshots beside it in `%APPDATA%\Notes\history`, one file per note
 
 ## Shortcuts
 
@@ -36,6 +39,8 @@ The full list lives in the app on `Ctrl+/`, and every command is also reachable 
 | `Ctrl+Shift+F` | Focus mode |
 | `Ctrl+Shift+T` | Typewriter scrolling |
 | `Ctrl+Shift+X` | Checklist item on this line |
+| `Ctrl+Shift+C` | Code block around the selection, or the paragraph you are in |
+| `Ctrl+Shift+R` | Note history: the versions kept as you wrote, with restore |
 | `Ctrl+Shift+H` | Insert a section divider |
 | `Ctrl+Shift+I` | Attach an image (or paste / drop one onto the editor) |
 | `Ctrl+Shift+O` | Import markdown or text files |
@@ -60,17 +65,19 @@ npm run make       # Squirrel installer + zip in out/make/
 npm run icon       # regenerate assets/icon.ico from scripts/generate-icon.mjs
 ```
 
-Built with Electron Forge, Vite and TypeScript. Markdown is rendered by `marked` and sanitised by DOMPurify; links open in the system browser.
+Built with Electron Forge, Vite and TypeScript. Markdown is rendered by `marked` and sanitised by DOMPurify; code is highlighted by `highlight.js`, registered a language at a time because the page's script may only come from itself. Links open in the system browser.
 
 ## Layout
 
 ```
 src/main/       Electron main process: window, tray, IPC, notes.json and settings.json stores
 src/preload/    contextBridge API (window.notesApi)
-src/renderer/   UI: notes.ts and tasks.ts (pure store ops), richeditor.ts (markdown <-> DOM),
-                actions.ts (the command registry the keys, sheet and palette all read),
-                markdown.ts, importer.ts, time.ts, main.ts (DOM + keys)
-src/shared/     Types, IPC channel names, key chords, settings and notes.json parsers
+src/renderer/   UI: notes.ts, tasks.ts and fences.ts (pure store ops), richeditor.ts
+                (markdown <-> DOM), actions.ts (the command registry the keys, sheet
+                and palette all read), markdown.ts and highlight.ts, importer.ts,
+                time.ts, main.ts (DOM + keys)
+src/shared/     Types, IPC channel names, key chords, and the rules for settings,
+                notes.json and the snapshot ring
 ```
 
 Every command in the app is one entry in `ACTIONS` in `src/renderer/main.ts`. The keyboard map, the shortcut sheet and the command palette are all generated from that list, so adding a command adds its key and both of its listings at once.
