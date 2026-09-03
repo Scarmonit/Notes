@@ -109,6 +109,42 @@ export interface NotesApi {
   trashPurge(id: string): Promise<boolean>;
   /** Puts text on the system clipboard. */
   copyText(text: string): Promise<void>;
+  /** Writes an export to a path the command line chose; no dialog. */
+  exportNoteTo(path: string, request: ExportRequest): Promise<void>;
+  /** Called when the main process changed the settings on the command line's behalf. */
+  onSettingsChanged(fn: (settings: Settings) => void): void;
+  /** The `notes` command's launcher: where it is and whether PATH has it. */
+  cliStatus(): Promise<CliStatus>;
+  cliInstall(): Promise<CliStatus>;
+  cliUninstall(): Promise<CliStatus>;
+  /**
+   * Requests from the command line that only the window can answer: the
+   * notes as they stand (unsaved words included), the layout, its commands.
+   * The handler's result or error goes back over the pipe.
+   */
+  onCliRequest(fn: (method: string, params: unknown) => Promise<CliReplyEnvelope>): void;
+  /** Tells the main process the note on screen changed, for `notes open --wait`. */
+  noteClosed(id: string): void;
+}
+
+/**
+ * The window's answer to a command-line request. A plain object rather than
+ * a thrown error: the context bridge strips everything but the message from
+ * an Error, and the exit code has to survive the crossing.
+ */
+export type CliReplyEnvelope =
+  | { ok: true; result: unknown }
+  | { ok: false; error: { message: string; exit?: number; candidates?: Array<{ id: string; title: string }> } };
+
+/** The `notes` launcher as the Layout sheet reports it. */
+export interface CliStatus {
+  /** Not a packaged app: nothing can be installed. */
+  available: boolean;
+  installed: boolean;
+  onPath: boolean;
+  binDir: string;
+  /** current.cmd names this app version. */
+  current: boolean;
 }
 
 /** What comes back from storing settings: what was kept, and which chords could not be registered. */

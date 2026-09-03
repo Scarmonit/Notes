@@ -1,7 +1,7 @@
 import { assetNameFromUrl } from '../shared/assets';
 import { chordOf, isCommandChord, keyLabel } from '../shared/keys';
 import { DEFAULT_SETTINGS, type Settings } from '../shared/settings';
-import type { ExportKind, ExportRequest, ImportedFile, Note, NotesFile } from '../shared/types';
+import type { CliStatus, ExportKind, ExportRequest, ImportedFile, Note, NotesFile } from '../shared/types';
 import { keyMap, matchActions, type Action, type Match } from './actions';
 import { toggleFence } from './fences';
 import { findMatches, matchFrom, replaceAll, replaceOne, validQuery, type FindMatch, type FindOptions } from './find';
@@ -153,6 +153,9 @@ const el = {
   captureHotkeyClear: $<HTMLButtonElement>('capture-hotkey-clear'),
   captureHotkeyNote: $('capture-hotkey-note'),
   openFolder: $<HTMLButtonElement>('open-folder'),
+  cliText: $<HTMLSpanElement>('cli-text'),
+  cliInstall: $<HTMLButtonElement>('cli-install'),
+  cliNote: $<HTMLParagraphElement>('cli-note'),
 };
 
 // --- UI state (per-machine conveniences, kept in localStorage) --------------
@@ -834,6 +837,8 @@ function select(id: string | null): void {
     // follow you to another.
     if (!el.historySheet.hidden) toggleHistory(false);
     if (!el.findBar.hidden) closeFind(false);
+    // A command waiting on `notes open --wait` learns the note left the screen.
+    if (ui.selectedId) window.notesApi.noteClosed(ui.selectedId);
   }
   ui.selectedId = id;
   saveUi();
@@ -1940,8 +1945,10 @@ function focusTitle(): void {
 function toggleLayout(force?: boolean): void {
   const open = force ?? el.layoutSheet.hidden;
   el.layoutSheet.hidden = !open;
-  if (open) el.textW.focus();
-  else focusEditor();
+  if (open) {
+    el.textW.focus();
+    void refreshCliRow();
+  } else focusEditor();
 }
 
 el.textW.addEventListener('input', () => {
@@ -2189,6 +2196,54 @@ for (const row of hotkeyRows) {
 
 el.openFolder.addEventListener('click', () => {
   void window.notesApi.openNotesFolder().catch((err) => console.error('[notes] could not open the folder', err));
+});
+
+// The command line can change the settings while the sheet is not looking.
+window.notesApi.onSettingsChanged((next) => {
+  settings = next;
+  renderSettings();
+});
+
+// --- the `notes` command's launcher, from the Layout sheet -------------------
+
+function renderCliRow(status: CliStatus): void {
+  el.cliInstall.hidden = !status.available;
+  if (!status.available) {
+    el.cliNote.textContent = 'Available in the installed app.';
+    return;
+  }
+  el.cliInstall.textContent = status.installed && status.onPath ? 'Remove' : 'Install';
+  el.cliNote.textContent =
+    status.installed && status.onPath
+      ? `Installed: ${status.binDir}${status.current ? '' : ' (pointing at an older version; Install again to refresh)'}. Open a new terminal and type notes --help.`
+      : status.installed
+        ? `The launcher is in ${status.binDir} but not on your PATH.`
+        : '';
+}
+
+async function refreshCliRow(): Promise<void> {
+  try {
+    renderCliRow(await window.notesApi.cliStatus());
+  } catch (err) {
+    console.error('[notes] could not read the command-line status', err);
+  }
+}
+
+el.cliInstall.addEventListener('click', () => {
+  void (async () => {
+    el.cliInstall.disabled = true;
+    try {
+      const status = await window.notesApi.cliStatus();
+      const removing = status.installed && status.onPath;
+      renderCliRow(removing ? await window.notesApi.cliUninstall() : await window.notesApi.cliInstall());
+      showStatus(removing ? 'Removed the notes command' : 'Installed the notes command', 3000);
+    } catch (err) {
+      console.error('[notes] could not change the command-line launcher', err);
+      el.cliNote.textContent = 'That did not work; try `notes cli install` from a terminal.';
+    } finally {
+      el.cliInstall.disabled = false;
+    }
+  })();
 });
 
 // --- search -----------------------------------------------------------------
@@ -3430,6 +3485,220 @@ window.setInterval(() => {
   renderList();
   renderMeta();
 }, 60_000);
+
+// --- the command line -------------------------------------------------------
+
+/**
+ * While the app runs it is the single writer, so the `notes` command asks
+ * the window for what only the window knows — the notes as they stand this
+ * moment, unsaved words included — and hands it every change. A note being
+ * typed in right now is refused rather than overwritten, unless the command
+ * insists; a change to the note on screen is drawn in place, with the caret
+ * left where it was, so an append from a terminal never throws the writer
+ * out of their sentence.
+ */
+
+/** An answer the command line turns straight into an exit code. */
+class CliRefusal extends Error {
+  readonly exit: number;
+  constructor(message: string, exit: number) {
+    super(message);
+    this.exit = exit;
+  }
+}
+
+const CLI_NOT_FOUND = 3;
+const CLI_BUSY = 4;
+const CLI_APP_ERROR = 6;
+
+function noteById(id: string): Note {
+  const n = notes.find((x) => x.id === id);
+  if (!n) throw new CliRefusal(`No note with id ${id}`, CLI_NOT_FOUND);
+  return n;
+}
+
+/** Whether the note is the one on screen, with words not yet saved. */
+const beingTyped = (id: string): boolean => dirty && ui.selectedId === id;
+
+function refuseIfTyping(id: string, force: boolean | undefined): void {
+  if (beingTyped(id) && !force) throw new CliRefusal('That note is being typed in the window right now; pass --force to change it anyway', CLI_BUSY);
+}
+
+/** Puts the caret at a text offset of the note on screen, or at the end when the offset is past it. */
+function placeCaretAt(offset: number): void {
+  el.editor.focus();
+  const { segments } = readEditor(el.editor);
+  const pos = posAt(segments, offset);
+  if (!pos) {
+    caretToEnd();
+    return;
+  }
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  const range = document.createRange();
+  range.setStart(pos.node, pos.offset);
+  range.collapse(true);
+  sel?.addRange(range);
+  keepCaretInView();
+}
+
+/** Takes a note from the command line into the list, redrawing it in place if it is on screen. */
+function takeIn(note: Note): void {
+  const i = notes.findIndex((n) => n.id === note.id);
+  notes = i < 0 ? [note, ...notes] : notes.map((n) => (n.id === note.id ? note : n));
+  if (ui.selectedId === note.id) {
+    // A step of its own, so undo takes the command's change back out.
+    rememberNow('cli');
+    const caret = document.activeElement === el.editor ? caretOffsetOrStart() : null;
+    editorNoteId = null;
+    el.title.value = note.title ?? '';
+    renderList();
+    renderEditor();
+    if (caret !== null) placeCaretAt(caret);
+  } else {
+    renderList();
+    renderEditor();
+  }
+  scheduleSave();
+}
+
+type CliHandler = (params: never) => Promise<unknown> | unknown;
+
+const UI_TOGGLES: Record<string, () => void> = {
+  preview: togglePreview,
+  liveFormat: toggleLiveFormat,
+  outline: toggleOutline,
+  focusMode: toggleFocusMode,
+  typewriter: toggleTypewriter,
+  sidebarHidden: toggleSidebar,
+};
+
+const cliHandlers: Record<string, CliHandler> = {
+  'note.list': () => notes,
+  'note.get': ({ id }: { id: string }) => notes.find((n) => n.id === id) ?? null,
+  'note.status': ({ id }: { id: string }) => ({ open: ui.selectedId === id, dirty: beingTyped(id) }),
+  'note.put': async ({ note, force }: { note: Note; force?: boolean }) => {
+    if (notes.some((n) => n.id === note.id)) refuseIfTyping(note.id, force);
+    takeIn(note);
+    await flush();
+    return note;
+  },
+  'note.remove': async ({ id, force }: { id: string; force?: boolean }) => {
+    if (!notes.some((n) => n.id === id)) return { removed: false };
+    refuseIfTyping(id, force);
+    const wasSelected = ui.selectedId === id;
+    const next = wasSelected ? neighborOf(visibleNotes(), id) : ui.selectedId;
+    notes = removeNote(notes, id);
+    scheduleSave();
+    if (wasSelected) select(next);
+    else renderList();
+    await flush();
+    return { removed: true };
+  },
+  inbox: async ({ text }: { text: string }) => {
+    captureToInbox(text);
+    await flush();
+    return { id: inboxNote().id };
+  },
+  'trash.restore': async ({ id }: { id: string }) => {
+    const note = await window.notesApi.trashRestore(id);
+    if (!note) return null;
+    notes = [note, ...notes.filter((n) => n.id !== note.id)];
+    scheduleSave();
+    renderList();
+    await flush();
+    return note;
+  },
+  'history.keep': async ({ id }: { id: string }) => {
+    await window.notesApi.historyKeep(noteById(id));
+    return { kept: true };
+  },
+  'history.restore': async ({ id, at, force }: { id: string; at: number; force?: boolean }) => {
+    const n = noteById(id);
+    refuseIfTyping(id, force);
+    const snap = await window.notesApi.historyGet(id, at);
+    if (!snap) throw new CliRefusal('No version of the note from that moment', CLI_NOT_FOUND);
+    await window.notesApi.historyKeep(n);
+    const { title: _old, ...rest } = n;
+    const restored: Note = snap.title ? { ...rest, title: snap.title, body: snap.body, updatedAt: Date.now() } : { ...rest, body: snap.body, updatedAt: Date.now() };
+    takeIn(restored);
+    await flush();
+    return restored;
+  },
+  open: ({ id, search }: { id?: string; search?: string }) => {
+    if (id) {
+      noteById(id);
+      if (query || tagFilter) clearFilters();
+      if (ui.preview) ui.preview = false;
+      select(id);
+      focusEditor();
+    }
+    if (search !== undefined) {
+      el.search.value = search;
+      query = search;
+      renderList();
+      el.search.focus();
+    }
+    return { opened: true };
+  },
+  'ui.get': () => ({ ...ui }),
+  'ui.set': ({ key, value }: { key: string; value: boolean | number | string | null }) => {
+    if (key in UI_TOGGLES) {
+      if (typeof value !== 'boolean') throw new CliRefusal(`${key} is on or off`, 2);
+      if ((ui as unknown as Record<string, unknown>)[key] !== value) UI_TOGGLES[key]();
+    } else if (key === 'marginHidden') {
+      ui.marginHidden = value === true;
+      applyLayout();
+      saveUi();
+    } else if (key === 'textW' || key === 'marginW') {
+      if (typeof value !== 'number') throw new CliRefusal(`${key} is a number of pixels`, 2);
+      ui[key] = key === 'textW' ? clamp(value, TEXT_MIN, TEXT_MAX, TEXT_DEFAULT) : clamp(value, MARGIN_MIN, MARGIN_MAX, MARGIN_DEFAULT);
+      applyLayout();
+      saveUi();
+    } else {
+      throw new CliRefusal(`No layout setting "${key}"`, 2);
+    }
+    return { ...ui };
+  },
+  commands: () =>
+    ACTIONS.map((a) => ({
+      id: a.id,
+      label: a.label,
+      group: a.group,
+      chord: a.chord,
+      also: a.also,
+      hint: a.hint,
+      on: a.on?.(),
+      enabled: a.enabled?.() !== false,
+    })),
+  run: ({ id }: { id: string }) => {
+    const action = ACTIONS.find((a) => a.id === id);
+    if (!action || action.enabled?.() === false) return { ran: false };
+    action.run();
+    return { ran: true };
+  },
+  'export.png': async ({ id, path }: { id: string; path: string }) => {
+    const n = noteById(id);
+    const body = exportBody(n);
+    const request: ExportRequest = { kind: 'png', title: titleOf(n), html: renderMarkdown(body), css: stylesText, edited: `Edited ${absoluteTime(n.updatedAt)}` };
+    await window.notesApi.exportNoteTo(path, request);
+    return { path };
+  },
+  'render.html': ({ body }: { body: string }) => ({ html: renderMarkdown(body) }),
+};
+
+window.notesApi.onCliRequest(async (method, params) => {
+  try {
+    const handler = cliHandlers[method];
+    if (!handler) throw new CliRefusal(`The window cannot do ${method}`, CLI_APP_ERROR);
+    if (!loaded) throw new CliRefusal('The notes are still loading; try again in a moment', CLI_APP_ERROR);
+    return { ok: true, result: await handler(params as never) };
+  } catch (err) {
+    // A plain object, because an Error loses its extra fields at the context bridge.
+    if (err instanceof CliRefusal) return { ok: false, error: { message: err.message, exit: err.exit } };
+    return { ok: false, error: { message: err instanceof Error ? err.message : String(err), exit: CLI_APP_ERROR } };
+  }
+});
 
 // --- boot -------------------------------------------------------------------
 

@@ -32,13 +32,19 @@ const config: ForgeConfig = {
         { entry: 'src/main/main.ts', config: 'vite.main.config.ts', target: 'main' },
         { entry: 'src/preload/preload.ts', config: 'vite.preload.config.ts', target: 'preload' },
         { entry: 'src/preload/capture-preload.ts', config: 'vite.preload.config.ts', target: 'preload' },
+        // The `notes` command: a plain Node bundle the launcher runs on the
+        // app's own binary with ELECTRON_RUN_AS_NODE=1.
+        { entry: 'src/cli/index.ts', config: 'vite.cli.config.ts', target: 'main' },
       ],
       renderer: [{ name: 'main_window', config: 'vite.renderer.config.ts' }],
     }),
     // Fuses lock down Electron capabilities the app does not need.
     new FusesPlugin({
       version: FuseVersion.V1,
-      [FuseV1Options.RunAsNode]: false,
+      // On, deliberately: the `notes` command is the app's binary run as
+      // Node, the way VS Code's `code` is. NODE_OPTIONS and --inspect stay
+      // off, so the environment cannot make that runtime load foreign code.
+      [FuseV1Options.RunAsNode]: true,
       [FuseV1Options.EnableCookieEncryption]: true,
       [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
       [FuseV1Options.EnableNodeCliInspectArguments]: false,

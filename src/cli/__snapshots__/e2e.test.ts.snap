@@ -1,0 +1,68 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`notes (end to end) > shows help the same way every time 1`] = `
+"Usage: notes [options] [command]
+
+Notes from the command line: every feature of the app, from cmd, PowerShell or
+any shell.
+
+Options:
+  --json                                          JSON output
+  --plain                                         tab-separated output without colour or headers (the default when piped)
+  --fields <a,b>                                  only these fields, in --json and --plain output
+  --no-color                                      no colour (NO_COLOR does the same)
+  -q, --quiet                                     no messages on stderr
+  -y, --yes                                       answer yes to every confirmation
+  --no-input                                      never prompt, never open an editor, never read a terminal
+  --app                                           insist on the running app (start it if needed)
+  --no-app                                        never talk to the app: work on the files, even while it runs
+  --user-data-dir <dir>                           the data folder (default: %APPDATA%\\Notes)
+  -V, --version                                   print the version
+  -h, --help                                      display help for command
+
+Commands:
+  new|add [options] [title] [text...]             start a note
+  list|ls [options] [words...]                    list notes, newest first, pinned on top
+  search [options] <words...>                     find notes by their words, with the line that matched
+  show|cat [options] <note>                       print a note
+  edit [options] [note]                           open a note in $EDITOR; saves only if the text changed
+  append [options] <note> [text...]               add text to the end of a note (or under a heading, or at the top)
+  replace-body [options] <note> [text...]         replace the whole text of a note
+  inbox [text...]                                 file a quick note in the Inbox note (made if missing), as the quick-note box does
+  capture                                         show the quick-note box (needs the window)
+  rename [options] <note> [title]                 give a note an explicit title, or clear it so the first line is the title
+  pin <note...>                                   pin a note to the top of the list
+  unpin <note...>                                 unpin a note
+  delete|rm [options] [note...]                   move notes to the trash (they wait a month there)
+  open [options] [note]                           bring up the window at a note (starts Notes if it is not running)
+  show-window                                     bring the Notes window to the front (starts it if needed)
+  stats [note]                                    words, characters, tasks and links, for one note or all of them
+  tags [options]                                  every tag in use, with how many notes carry it
+  tag                                             add or remove a #tag on a note
+  links [options] <note>                          the notes a note links to with [[...]]
+  backlinks <note>                                the notes that link to a note
+  trash                                           deleted notes, which wait a month before they are gone
+  history                                         the versions of a note kept as it was written
+  attach [options] <note> <files...>              attach images to a note (PNG, JPEG, GIF, WebP, BMP; checked by their bytes)
+  attachments <note>                              the images a note holds, with their files
+  import [options] <files...>                     make notes from markdown and text files (a leading # heading becomes the title)
+  export [options] [note...]                      write a note out as Markdown (images alongside), plain text, or a PNG like the preview
+  tasks [options] <note>                          the checklist items in a note
+  task [options] <note> <which>                   tick, untick or toggle a checklist item; or turn a line into one
+  fence [options] <note>                          put a code block around lines (or take one away when they are already fenced)
+  find [options] <note> <query>                   find text in a note; each hit as line:col
+  replace [options] <note> <query> <replacement>  replace text in a note (the first match, or every one with --all)
+  outline [options] <note>                        the headings of a note
+  render [options] <note>                         a note as HTML (as the preview shows it) or as readable plain text
+  settings                                        the settings the app keeps in settings.json: closeToTray, hotkey, captureHotkey
+  hotkeys                                         the two system-wide shortcuts: summon (the window) and capture (the quick-note box)
+  ui                                              the window layout and view toggles (the window keeps these, so it must be running)
+  commands                                        every command in the window, with its keys (from the app's own registry)
+  run <command>                                   run one of the window's commands by id (see \`notes commands\`)
+  path [which]                                    where the notes live (or the trash, history, attachments, settings)
+  folder                                          open the notes folder in Explorer
+  watch                                           print changes to the notes as they happen, until Ctrl+C
+  cli                                             the \`notes\` command itself: put it on PATH, take it off, or check
+  version                                         the versions of this command, the app it belongs to, and whether the app is running
+  completion <shell>                              Generate shell completion scripts"
+`;

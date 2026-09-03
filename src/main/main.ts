@@ -1,16 +1,17 @@
 import { app, BrowserWindow, clipboard, globalShortcut, ipcMain, Menu, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
-import started from 'electron-squirrel-startup';
+import { installCli, layoutFor, shimStatus, uninstallCli } from '../core/shim';
 import { IPC } from '../shared/channels';
-import type { ExportRequest, Note, NotesFile } from '../shared/types';
+import type { CliStatus, ExportRequest, Note, NotesFile } from '../shared/types';
 import type { Settings } from '../shared/settings';
-import { installAssetProtocol, pickAttachments, registerAssetScheme, saveAttachment, sweepOrphans } from './attachments';
+import { attachments, installAssetProtocol, pickAttachments, registerAssetScheme, saveAttachment, sweepOrphans } from './attachments';
 import { destroyCapture, hideCapture, showCapture, toggleCapture } from './capture';
 import { installContextMenu } from './context-menu';
-import { exportNote } from './export';
-import { forgetHistory, getSnapshot, keepNow, listHistory, record } from './history-store';
+import { exportNote, exportTo } from './export';
+import { forgetHistory, getSnapshot, history, keepNow, listHistory, record } from './history-store';
 import { pickImports } from './import';
+import { startIpcServer, type IpcServer } from './ipc-server';
 import {
   expireTrash,
   getTrashed,
@@ -21,16 +22,22 @@ import {
   restoreFromTrash,
   saveNotes,
   stopWatching,
+  store,
   trashedIds,
   watchNotes,
 } from './notes-store';
-import { loadSettings, saveSettings, settings } from './settings';
+import { loadSettings, saveSettings, settings, settingsStore } from './settings';
+import { handleSquirrelEvent } from './squirrel';
 import { applyHotkey, createTray, destroyTray, releaseHotkeys, showWindow, toggleWindow } from './tray';
 
-// Squirrel runs the exe with install/update flags; those launches must exit.
-if (started) app.quit();
+// Squirrel runs the exe with install/update flags; those launches do their
+// housekeeping (shortcuts, the `notes` command) and exit.
+const squirrelLaunch = handleSquirrelEvent();
 
 const BG = '#121722';
+
+/** The scheme launchers can use: notes://open?id=…, notes://new?text=…, notes://inbox?text=… */
+const URI_SCHEME = 'notes';
 
 // A packaged build takes its taskbar icon from the executable. In dev the
 // executable is electron.exe, so point at the source icon instead.
@@ -152,8 +159,9 @@ function windowFor(event: Electron.IpcMainInvokeEvent): BrowserWindow {
   return win;
 }
 
-/** The notes window, once it exists. The capture box and the tray talk to it. */
+/** The notes window, once it exists. The capture box, the tray and the command line talk to it. */
 let mainWin: BrowserWindow | null = null;
+let ipcServer: IpcServer | null = null;
 
 /** Registers both system-wide chords; returns which of them could not be. */
 function applyHotkeys(): { hotkeyFailed: boolean; captureHotkeyFailed: boolean } {
@@ -166,7 +174,69 @@ function applyHotkeys(): { hotkeyFailed: boolean; captureHotkeyFailed: boolean }
   return { hotkeyFailed: s.hotkey !== null && !summon, captureHotkeyFailed: s.captureHotkey !== null && !capture };
 }
 
-if (!app.requestSingleInstanceLock()) {
+/** Stores settings and applies them: from the sheet, or from the command line. */
+async function applySettings(next: Settings, fromWindow: boolean): Promise<Settings & { hotkeyFailed: boolean; captureHotkeyFailed: boolean }> {
+  const stored = await saveSettings(next);
+  const result = { ...stored, ...applyHotkeys() };
+  if (!fromWindow && mainWin && !mainWin.isDestroyed()) mainWin.webContents.send(IPC.settingsChanged, stored);
+  return result;
+}
+
+// --- the `notes` command ---------------------------------------------------------
+
+function cliLayout() {
+  return layoutFor(path.dirname(process.execPath));
+}
+
+function cliStatus(): CliStatus {
+  if (!app.isPackaged) return { available: false, installed: false, onPath: false, binDir: '', current: false };
+  const s = shimStatus(cliLayout());
+  return { available: true, installed: s.installed, onPath: s.onPath, binDir: s.binDir, current: s.current };
+}
+
+// --- notes:// links -----------------------------------------------------------------
+
+/** A launcher's request: notes://open?id=…, notes://new?text=…, notes://inbox?text=… */
+function handleUri(raw: string): void {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return;
+  }
+  if (url.protocol !== `${URI_SCHEME}:`) return;
+  const action = (url.hostname || url.pathname.replace(/^\/+/, '')).toLowerCase();
+  const text = url.searchParams.get('text') ?? '';
+  const id = url.searchParams.get('id') ?? undefined;
+  const search = url.searchParams.get('search') ?? url.searchParams.get('q') ?? undefined;
+  if (!ipcServer) return;
+  const win = mainWin;
+  if (win) showWindow(win);
+  const ask = ipcServer.ask;
+  switch (action) {
+    case 'open':
+      void ask('open', { id, search }).catch((err) => console.error('[notes] notes://open failed', err));
+      break;
+    case 'new': {
+      const note: Note = { id: crypto.randomUUID(), body: text, createdAt: Date.now(), updatedAt: Date.now() };
+      void ask('note.put', { note, force: false })
+        .then(() => ask('open', { id: note.id }))
+        .catch((err) => console.error('[notes] notes://new failed', err));
+      break;
+    }
+    case 'inbox':
+      if (text.trim()) void ask('inbox', { text }).catch((err) => console.error('[notes] notes://inbox failed', err));
+      break;
+    default:
+      break;
+  }
+}
+
+const uriIn = (argv: string[]): string | undefined => argv.find((a) => a.toLowerCase().startsWith(`${URI_SCHEME}://`));
+
+if (squirrelLaunch) {
+  // On its way out.
+} else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   registerAssetScheme();
@@ -174,8 +244,13 @@ if (!app.requestSingleInstanceLock()) {
   // would shadow the app's own shortcuts. F12 still opens DevTools.
   Menu.setApplicationMenu(null);
 
-  app.on('second-instance', () => {
+  // A second launch only wakes this one — and hands over a notes:// link if
+  // it carried one. Its argv is not a channel for anything else: the command
+  // line uses the pipe.
+  app.on('second-instance', (_event, argv) => {
     if (mainWin) showWindow(mainWin);
+    const uri = uriIn(argv);
+    if (uri) handleUri(uri);
   });
 
   let housekept = false;
@@ -207,6 +282,7 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle(IPC.pickAttachments, (event) => pickAttachments(windowFor(event)));
   ipcMain.handle(IPC.pickImports, (event) => pickImports(windowFor(event)));
   ipcMain.handle(IPC.exportNote, (event, request: ExportRequest) => exportNote(windowFor(event), request));
+  ipcMain.handle(IPC.exportNoteTo, (_event, target: string, request: ExportRequest) => exportTo(target, request));
   ipcMain.handle(IPC.historyList, (_event, noteId: string) => listHistory(noteId));
   ipcMain.handle(IPC.historyGet, (_event, noteId: string, at: number) => getSnapshot(noteId, at));
   ipcMain.handle(IPC.historyKeep, (_event, note: Note) => keepNow(note));
@@ -220,9 +296,15 @@ if (!app.requestSingleInstanceLock()) {
   });
   ipcMain.handle(IPC.copyText, (_event, text: string) => clipboard.writeText(text));
   ipcMain.handle(IPC.settingsGet, () => settings());
-  ipcMain.handle(IPC.settingsSet, async (_event, next: Settings) => {
-    const stored = await saveSettings(next);
-    return { ...stored, ...applyHotkeys() };
+  ipcMain.handle(IPC.settingsSet, (_event, next: Settings) => applySettings(next, true));
+  ipcMain.handle(IPC.cliStatus, () => cliStatus());
+  ipcMain.handle(IPC.cliInstall, () => {
+    if (app.isPackaged) installCli(cliLayout());
+    return cliStatus();
+  });
+  ipcMain.handle(IPC.cliUninstall, () => {
+    if (app.isPackaged) uninstallCli(cliLayout());
+    return cliStatus();
   });
 
   // The quick-note box hands its text to the notes window, which owns the
@@ -246,13 +328,42 @@ if (!app.requestSingleInstanceLock()) {
       quickNote: showCapture,
     });
     applyHotkeys();
+    if (app.isPackaged) app.setAsDefaultProtocolClient(URI_SCHEME);
+    try {
+      ipcServer = await startIpcServer({
+        userData: app.getPath('userData'),
+        version: app.getVersion(),
+        store,
+        history,
+        settings: settingsStore,
+        attachments,
+        window: () => mainWin,
+        applySettings: (next) => applySettings(next, false),
+        showWindow: () => {
+          if (mainWin) showWindow(mainWin);
+        },
+        showCapture,
+      });
+    } catch (err) {
+      console.error('[notes] the command line cannot reach this instance', err);
+    }
+    // Launched by a notes:// link: act on it once the window can answer.
+    const uri = uriIn(process.argv);
+    if (uri) win.webContents.once('did-finish-load', () => setTimeout(() => handleUri(uri), 300));
   });
 
   app.on('window-all-closed', () => app.quit());
-  app.on('will-quit', () => {
+  app.on('will-quit', (event) => {
     globalShortcut.unregisterAll();
     stopWatching();
     destroyCapture();
     destroyTray();
+    if (ipcServer) {
+      // ipc.json must not outlive the process that wrote it.
+      event.preventDefault();
+      const server = ipcServer;
+      ipcServer = null;
+      void server.close().finally(() => app.quit());
+    }
   });
 }

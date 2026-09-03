@@ -9,8 +9,12 @@ export const IPC = {
   pickAttachments: 'notes:pick-attachments',
   pickImports: 'notes:pick-imports',
   exportNote: 'notes:export',
+  /** Export to a path already chosen (by the command line), no dialog. */
+  exportNoteTo: 'notes:export-to',
   settingsGet: 'notes:settings-get',
   settingsSet: 'notes:settings-set',
+  /** Main → notes window: the settings changed behind its back (the command line). */
+  settingsChanged: 'notes:settings-changed',
   newNote: 'notes:new-note',
   historyList: 'notes:history-list',
   historyGet: 'notes:history-get',
@@ -20,6 +24,15 @@ export const IPC = {
   trashRestore: 'notes:trash-restore',
   trashPurge: 'notes:trash-purge',
   copyText: 'notes:copy-text',
+  /** The `notes` command's launcher: is it installed, install it, remove it. */
+  cliStatus: 'notes:cli-status',
+  cliInstall: 'notes:cli-install',
+  cliUninstall: 'notes:cli-uninstall',
+  /** Main → notes window: a request from the command line, answered on cliReply. */
+  cliRequest: 'notes:cli-request',
+  cliReply: 'notes:cli-reply',
+  /** Notes window → main: the note on screen changed (for `notes open --wait`). */
+  noteClosed: 'notes:note-closed',
   /** Capture box → main: the text to file, or nothing. */
   captureSend: 'capture:send',
   captureDismiss: 'capture:dismiss',
