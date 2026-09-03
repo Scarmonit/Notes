@@ -1428,7 +1428,12 @@ body.capture {
   padding: 10px 14px 0;
   color: var(--paper-faint);
 }
+/* Three key hints, sentence case, kept apart by space rather than by
+   separator glyphs: a middle dot in the faint colour at this size vanished,
+   and the three read as one run. */
 .capture-hint {
+  display: flex;
+  gap: 14px;
   text-transform: none;
   letter-spacing: 0.03em;
   white-space: nowrap;
@@ -1458,7 +1463,9 @@ body.capture {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 6px 10px 8px 14px;
+  /* The same 14px on the right as the words and the hint above, so the
+     button's edge sits on the column's edge rather than 4px proud of it. */
+  padding: 6px 14px 8px;
 }
 .capture-status {
   color: var(--paper-faint);
