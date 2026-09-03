@@ -114,6 +114,7 @@ kbd {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   overflow: hidden;
   background: var(--ink-deep);
   border-right: 1px solid var(--line);
@@ -324,6 +325,10 @@ kbd {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* A grid item's min-height is auto, which would let a long note stretch the
+     100vh row instead of scrolling inside the editor. Clamp it here. */
+  min-height: 0;
+  overflow: hidden;
   background: var(--ink);
 }
 
