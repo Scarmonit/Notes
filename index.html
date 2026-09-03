@@ -18,19 +18,23 @@
               id="search"
               class="search"
               type="search"
-              placeholder="Search notes"
+              placeholder="Find a note"
               autocomplete="off"
               spellcheck="false"
-              aria-label="Search notes"
+              aria-label="Find a note"
             />
             <kbd class="search-hint">Ctrl K</kbd>
           </div>
-          <button id="new" class="icon-btn no-drag" title="New note (Ctrl+N)" aria-label="New note">+</button>
+          <button id="new" class="icon-btn no-drag" title="New note (Ctrl+N)" aria-label="New note">
+            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+              <path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            </svg>
+          </button>
         </div>
         <div id="list" class="list" role="listbox" aria-label="Notes" tabindex="-1"></div>
         <div class="sidebar-foot">
-          <span id="count" class="count"></span>
-          <button id="help" class="link-btn" title="Keyboard shortcuts (Ctrl+/)">Shortcuts</button>
+          <span id="count" class="count u"></span>
+          <button id="help" class="link-btn u" title="Keyboard shortcuts (Ctrl+/)">Shortcuts</button>
         </div>
       </aside>
 
@@ -43,43 +47,50 @@
             </svg>
           </button>
           <div class="pane-meta">
-            <span id="edited" class="edited"></span>
-            <span id="saved" class="saved" aria-live="polite"></span>
+            <span id="saved" class="saved u" aria-live="polite"></span>
           </div>
           <div class="pane-actions no-drag">
-            <button id="preview-toggle" class="pill" title="Toggle preview (Ctrl+E)" aria-pressed="false">Preview</button>
-            <button id="delete" class="pill danger" title="Delete note (Ctrl+Shift+D)">Delete</button>
+            <button id="preview-toggle" class="pill u" title="Toggle preview (Ctrl+E)" aria-pressed="false">Preview</button>
+            <button id="delete" class="pill u danger" title="Delete note (Ctrl+Shift+D)">Delete</button>
           </div>
         </header>
 
         <section id="editor-wrap" class="editor-wrap">
-          <textarea id="editor" class="editor" spellcheck="true" placeholder="Start writing…" aria-label="Note body"></textarea>
-          <article id="preview" class="preview markdown" tabindex="0" hidden></article>
+          <div class="page">
+            <aside class="marginalia" aria-label="Note details">
+              <span id="edited" class="u"></span>
+              <span id="words" class="u"></span>
+            </aside>
+            <div id="text" class="text">
+              <textarea id="editor" class="editor" spellcheck="true" placeholder="Start writing…" aria-label="Note body"></textarea>
+              <article id="preview" class="preview markdown" tabindex="0" hidden></article>
+            </div>
+          </div>
         </section>
 
         <section id="empty" class="empty" hidden>
-          <p class="empty-title">No note selected</p>
-          <p class="empty-hint">Press <kbd>Ctrl</kbd> <kbd>N</kbd> to start a new note.</p>
+          <p class="empty-title">Nothing here yet.</p>
+          <p class="empty-hint u">Press <kbd>Ctrl</kbd> <kbd>N</kbd> to start a note</p>
         </section>
       </main>
 
       <div id="help-sheet" class="sheet" hidden role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
-        <div class="sheet-card">
+        <div class="sheet-card" tabindex="-1">
           <h2>Keyboard shortcuts</h2>
           <dl class="keys">
             <dt><kbd>Ctrl</kbd> <kbd>N</kbd></dt><dd>New note</dd>
-            <dt><kbd>Ctrl</kbd> <kbd>K</kbd> / <kbd>Ctrl</kbd> <kbd>F</kbd></dt><dd>Search</dd>
-            <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move through notes (in the list or search)</dd>
+            <dt><kbd>Ctrl</kbd> <kbd>K</kbd> / <kbd>Ctrl</kbd> <kbd>F</kbd></dt><dd>Find a note</dd>
+            <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move through notes, in the list or while searching</dd>
             <dt><kbd>Enter</kbd></dt><dd>Open the note in the editor</dd>
-            <dt><kbd>Ctrl</kbd> <kbd>↑</kbd> / <kbd>Ctrl</kbd> <kbd>↓</kbd></dt><dd>Previous / next note from anywhere</dd>
+            <dt><kbd>Ctrl</kbd> <kbd>↑</kbd> / <kbd>Ctrl</kbd> <kbd>↓</kbd></dt><dd>Previous or next note from anywhere</dd>
             <dt><kbd>Ctrl</kbd> <kbd>E</kbd></dt><dd>Toggle markdown preview</dd>
             <dt><kbd>Ctrl</kbd> <kbd>S</kbd></dt><dd>Save now (autosave is always on)</dd>
             <dt><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>D</kbd></dt><dd>Delete note, press again to confirm</dd>
             <dt><kbd>Ctrl</kbd> <kbd>\</kbd></dt><dd>Toggle sidebar</dd>
-            <dt><kbd>Esc</kbd></dt><dd>Back to the list, clear search, or cancel</dd>
+            <dt><kbd>Esc</kbd></dt><dd>Back to the list, clear the search, or cancel</dd>
             <dt><kbd>Ctrl</kbd> <kbd>/</kbd></dt><dd>This sheet</dd>
           </dl>
-          <p class="sheet-foot">Press <kbd>Esc</kbd> to close</p>
+          <p class="sheet-foot u">Press <kbd>Esc</kbd> to close</p>
         </div>
       </div>
     </div>

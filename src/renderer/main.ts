@@ -9,6 +9,7 @@ import {
   sortByEdited,
   titleOf,
   updateBody,
+  wordCount,
 } from './notes';
 import { absoluteTime, relativeTime } from './time';
 
@@ -27,6 +28,8 @@ const el = {
   helpBtn: $<HTMLButtonElement>('help'),
   toggleSidebar: $<HTMLButtonElement>('toggle-sidebar'),
   edited: $('edited'),
+  words: $('words'),
+  text: $('text'),
   saved: $('saved'),
   previewToggle: $<HTMLButtonElement>('preview-toggle'),
   deleteBtn: $<HTMLButtonElement>('delete'),
@@ -133,9 +136,9 @@ function renderList(): void {
     const msg = document.createElement('div');
     msg.className = 'list-empty';
     if (notes.length === 0) {
-      msg.innerHTML = 'No notes yet.<br />Press <kbd>Ctrl</kbd> <kbd>N</kbd> to write one.';
+      msg.innerHTML = 'Nothing here yet.<span class="u">Press <kbd>Ctrl</kbd> <kbd>N</kbd> to start a note</span>';
     } else {
-      msg.textContent = 'No notes match.';
+      msg.textContent = 'No notes match that.';
     }
     el.list.append(msg);
   }
@@ -158,7 +161,7 @@ function renderList(): void {
     const meta = document.createElement('div');
     meta.className = 'item-meta';
     const time = document.createElement('span');
-    time.className = 'item-time';
+    time.className = 'item-time u';
     time.textContent = relativeTime(n.updatedAt, now);
     time.title = absoluteTime(n.updatedAt);
     const snip = document.createElement('span');
@@ -185,11 +188,14 @@ function renderMeta(): void {
   if (!n) {
     el.edited.textContent = '';
     el.edited.title = '';
+    el.words.textContent = '';
     document.title = 'Notes';
     return;
   }
-  el.edited.textContent = `Edited ${relativeTime(n.updatedAt)}`;
-  el.edited.title = absoluteTime(n.updatedAt);
+  el.edited.textContent = relativeTime(n.updatedAt);
+  el.edited.title = `Last edited ${absoluteTime(n.updatedAt)}`;
+  const count = wordCount(n.body);
+  el.words.textContent = `${count} ${count === 1 ? 'word' : 'words'}`;
   document.title = `${titleOf(n)} – Notes`;
 }
 
@@ -211,6 +217,10 @@ function renderEditor(): void {
     el.editor.scrollTop = 0;
     el.editor.setSelectionRange(n.body.length, n.body.length);
     editorNoteId = n.id;
+    // Restart the short fade so switching notes reads as turning a page.
+    el.text.classList.remove('swap');
+    void el.text.offsetWidth;
+    el.text.classList.add('swap');
   }
 
   el.previewToggle.setAttribute('aria-pressed', String(ui.preview));

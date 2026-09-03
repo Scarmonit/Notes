@@ -1,6 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import type { Note } from '../shared/types';
-import { createNote, neighborOf, removeNote, searchNotes, snippetOf, sortByEdited, titleOf, updateBody } from './notes';
+import {
+  createNote,
+  neighborOf,
+  removeNote,
+  searchNotes,
+  snippetOf,
+  sortByEdited,
+  titleOf,
+  updateBody,
+  wordCount,
+} from './notes';
+
+describe('wordCount', () => {
+  it('counts words and ignores markdown markers', () => {
+    expect(wordCount('# Groceries\n\n- milk\n- eggs')).toBe(3);
+  });
+  it('keeps contractions together and handles empty text', () => {
+    expect(wordCount("don't stop")).toBe(2);
+    expect(wordCount('')).toBe(0);
+    expect(wordCount('---\n***')).toBe(0);
+  });
+});
 
 const note = (id: string, body: string, updatedAt: number): Note => ({ id, body, createdAt: updatedAt, updatedAt });
 

@@ -18,11 +18,11 @@ const SIZES = [16, 20, 24, 32, 48, 64, 128, 256];
 const BMP_MAX = 64;
 
 // palette (mirrors src/renderer/styles.css)
-const BG_TOP = [44, 48, 55];
-const BG_BOTTOM = [22, 23, 25];
-const PAGE = [216, 218, 222];
-const LINE = [120, 125, 134];
-const ACCENT = [217, 164, 65];
+const BG_TOP = [38, 46, 64];
+const BG_BOTTOM = [14, 18, 27];
+const PAGE = [232, 228, 220];
+const LINE = [140, 146, 160];
+const ACCENT = [185, 85, 91];
 const EDGE = [255, 255, 255];
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);

@@ -39,6 +39,12 @@ export function snippetOf(note: Pick<Note, 'body'>, max = 90): string {
   return rest.length > max ? `${rest.slice(0, max - 1).trimEnd()}…` : rest;
 }
 
+/** Words are runs of letters or digits, so markdown markers like "#" and "-" do not count. */
+export function wordCount(body: string): number {
+  const words = body.match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu);
+  return words ? words.length : 0;
+}
+
 export function sortByEdited(notes: Note[]): Note[] {
   return [...notes].sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
 }

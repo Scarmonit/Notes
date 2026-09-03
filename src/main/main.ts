@@ -9,7 +9,7 @@ import { loadNotes, saveNotes } from './notes-store';
 // Squirrel runs the exe with install/update flags; those launches must exit.
 if (started) app.quit();
 
-const BG = '#161719';
+const BG = '#121722';
 
 // A packaged build takes its taskbar icon from the executable. In dev the
 // executable is electron.exe, so point at the source icon instead.
@@ -37,7 +37,7 @@ function createWindow(): BrowserWindow {
     // Native caption buttons drawn over our own header, so the chrome stays
     // minimal without re-implementing minimise/maximise/close.
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: BG, symbolColor: '#a9adb5', height: 40 },
+    titleBarOverlay: { color: BG, symbolColor: '#a3a9b6', height: 40 },
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
