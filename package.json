@@ -1,0 +1,41 @@
+{
+  "name": "notes",
+  "productName": "Notes",
+  "version": "0.1.0",
+  "description": "Minimal keyboard-friendly markdown notes",
+  "main": ".vite/build/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron-forge start",
+    "icon": "node scripts/generate-icon.mjs",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "author": {
+    "name": "Scarmonit",
+    "email": "Scarmonit@gmail.com"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@electron-forge/cli": "^7.11.2",
+    "@electron-forge/maker-squirrel": "^7.11.2",
+    "@electron-forge/maker-zip": "^7.11.2",
+    "@electron-forge/plugin-fuses": "^7.11.2",
+    "@electron-forge/plugin-vite": "^7.11.2",
+    "@electron/fuses": "^1.8.0",
+    "@types/electron-squirrel-startup": "^1.0.2",
+    "electron": "43.3.0",
+    "jsdom": "^26.1.0",
+    "typescript": "~5.9.0",
+    "vite": "^5.4.21",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "dompurify": "^3.2.6",
+    "electron-squirrel-startup": "^1.0.1",
+    "marked": "^15.0.12"
+  }
+}
