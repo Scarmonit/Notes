@@ -19,17 +19,18 @@ interface Write { id: string; before: { body: string; title?: string }; after: {
 interface Plan {
   kind: 'refile' | 'move-section' | 'rename' | 'tag-rename' | 'merge';
   writes: Write[];          // one entry per changed note; the merge source is never here
-  trash: string[];          // ids to move to the trash, after the writes
+  trash: Array<{ id: string; before: { body: string; title?: string } }>;   // moved to the trash after the writes; `before` is checked like a write's
   summary: { notes: number; links?: number; tags?: number; lines?: number };
-  touched: Array<{ id: string; title: string; what: 'text added' | 'lines removed' | 'links rewritten' | 'tags rewritten' | 'renamed' | 'trashed' }>;
+  touched: Array<{ id: string; title: string; changes: ChangeKind[] }>;   // every effect on that note, e.g. a merge destination: ['text added', 'links rewritten']
   select?: string;          // the note the window should show afterwards (merge: the destination)
 }
 type PlanResult = { ok: true; plan: Plan } | { ok: false; code: PlanErrorCode; message: string };
 type PlanErrorCode = 'not_found' | 'same_note' | 'heading_not_found' | 'not_in_section' | 'bad_tag' | 'nothing_selected' | 'nothing_to_do';
+type ChangeKind = 'text added' | 'lines removed' | 'links rewritten' | 'tags rewritten' | 'renamed' | 'trashed';
 type Target = { line: number } | 'top' | 'end';   // a heading by the line it stands on
 ```
 
-`describePlan(plan)` gives the one sentence both the confirm sheet and the CLI print, e.g. "Rename 'Old' to 'New' and update 4 links in 3 notes". `checkPlan(plan, notes)` returns `{ ok: true }` or `{ ok: false, code: 'stale', message }` when any write's `before` no longer matches the live note (or a trashed id is gone). `--force` never bypasses this check.
+`describePlan(plan)` gives the one sentence both the confirm sheet and the CLI print, e.g. "Rename 'Old' to 'New' and update 4 links in 3 notes". `checkPlan(plan, notes)` returns `{ ok: true }` or `{ ok: false, code: 'stale', message }` when any write's or trash entry's `before` no longer matches the live note (or the note is gone): a merge confirmed after its source was edited is refused, not applied over the edit. `--force` never bypasses this check.
 
 ### Planners
 
@@ -38,7 +39,7 @@ type Target = { line: number } | 'top' | 'end';   // a heading by the line it st
 - **`planMoveSection(notes, { from, line, to, target, createHeading? })`**: the section is the nearest heading at or above `line`, through the line before the next heading of the same or a higher level (or the end). Headings keep their levels. Delegates to `planRefile`. Caret above the first heading: `not_in_section`.
 - **`planRename(notes, { id, title, links })`**: sets the explicit title. With `links`, rewrites `[[Old]]` and `[[Old|alias]]` to `[[New]]` / `[[New|alias]]` in every note including this one; matching is `linkKey` (trimmed, case-insensitive) on the note's current title. `summary.links` counts rewrites. The note's own write carries both the title and its body rewrite as one mutation.
 - **`planTagRename(notes, { from, to })`**: whole-token, case-insensitive rewrite of `#from` and `#from/child` to `#to` / `#to/child`, wherever `tagsOf` would count them (so a `#from` inside a word or a URL, or wherever `tagsOf` already ignores it, stays). `to` must be a tag name: no spaces, no leading `#`, else `bad_tag`. `summary.tags` counts rewrites.
-- **`planMerge(notes, { source, into })`**: builds the destination body: source body appended as a paragraph, prefixed by `## <source title>` unless the source's first non-blank line is a heading whose text equals its title (case-insensitive). Then links to the source's title are rewritten to the destination's title in every surviving note (the destination's write already includes the merged text). Source id goes in `trash`; it never appears in `writes`. `same_note` when source equals destination. `select` = destination.
+- **`planMerge(notes, { source, into })`**: builds the destination body: source body appended as a paragraph, prefixed by `## <source title>` unless the source's first non-blank line is a heading whose text equals its title (case-insensitive). Then links to the source's title are rewritten to the destination's title in every surviving note (the destination's write already includes the merged text). The source goes in `trash` with its `before`; it never appears in `writes`. `same_note` when source equals destination. `select` = destination.
 
 ## 2. Window
 
@@ -66,9 +67,9 @@ type Target = { line: number } | 'top' | 'end';   // a heading by the line it st
 
 **Merge.** Picker of every other note, then the confirm sheet. Afterwards the destination is selected and the source is in the trash.
 
-**Rename with links.** No new command. The title box keeps updating the list as you type. On commit (Enter, blur) with a changed title and at least one other note linking to the old one, the Plan is built against the title as it was when the box took focus and the confirm sheet opens: "Update 4 links in 3 notes to 'New'?" Enter applies that Plan; Esc applies a title-only Plan. Either way the title change is one undoable step.
+**Rename with links.** No new command. While the title box has focus the typed text is provisional UI state: the list item and the heading show it, but the note's title, persistence, history and the Plan precondition stay at the focus-time title until Enter or blur resolves it. On commit with a changed title and at least one `[[link]]` to the old title anywhere, the renamed note included, the Plan is built against that focus-time title and the confirm sheet opens: "Update 4 links in 3 notes to 'New'?" Enter applies that Plan; Esc applies a title-only Plan. Either way the title change is one undoable step.
 
-**Confirm sheet** (new, shared, same card and tokens as the history sheet, no new colour): the `describePlan` sentence, an "n notes" row that Space or → expands into the `touched` titles with their `what`, Enter applies, Esc cancels and returns focus to the editor. A stale Plan shows "That note changed meanwhile; try again".
+**Confirm sheet** (new, shared, same card and tokens as the history sheet, no new colour): the `describePlan` sentence, an "n notes" row that Space or → expands into the `touched` titles with every one of their `changes`, Enter applies, Esc cancels and returns focus to the editor. A stale Plan shows "That note changed meanwhile; try again".
 
 **Prompt sheet** (new): one labelled input, Enter/Esc.
 
@@ -84,7 +85,7 @@ type Target = { line: number } | 'top' | 'end';   // a heading by the line it st
 | `notes tag rename <old> <new> [--dry-run]` | Whole-token, nested tags included. |
 | `notes merge <source> <into> [--dry-run]` | As `planMerge`. |
 
-`--dry-run` writes nothing and exits 0: at a terminal the `describePlan` sentence and the `touched` table (id, title, what); with `--json` the complete Plan, `before` and `after` included. Every plan error maps to exit 3 (`not_found`, `heading_not_found`, `not_in_section`), exit 2 (`bad_tag`, `same_note`, `nothing_selected`, `nothing_to_do`) or exit 1 (`stale`).
+`--dry-run` writes nothing and exits 0: at a terminal the `describePlan` sentence and the `touched` table (id, title, changes); with `--json` the complete Plan, `before` and `after` included. Every plan error maps to exit 3 (`not_found`, `heading_not_found`, `not_in_section`), exit 2 (`bad_tag`, `same_note`, `nothing_selected`, `nothing_to_do`) or exit 1 (`stale`).
 
 `Backend` gains `applyPlan(plan, { force? }) => Promise<{ applied: string[] }>`.
 
