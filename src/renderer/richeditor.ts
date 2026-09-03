@@ -202,16 +202,38 @@ export function chipsOf(root: HTMLElement): HTMLImageElement[] {
   return Array.from(root.querySelectorAll<HTMLImageElement>('img.inline-img'));
 }
 
+/** The class of the element each render puts the note's DOM inside. */
+const DOC_CLASS = 'doc';
+
+/**
+ * The element the note's DOM lives in: a wrapper made fresh for every render,
+ * or the root itself when the wrapper has gone. A fresh wrapper is what makes
+ * a render a clean break for undo — the browser's undo entries hold on to the
+ * nodes they changed, and once those nodes are the old wrapper's they can no
+ * longer reach the editor. Without it, undo after switching notes could pull
+ * the previous note's text into this one.
+ */
+export function docOf(root: HTMLElement): HTMLElement {
+  const first = root.firstElementChild;
+  return root.childNodes.length === 1 && first instanceof HTMLElement && first.classList.contains(DOC_CLASS) ? first : root;
+}
+
 /** Replaces the editor's contents with the DOM for `body`. Call on note switch. */
 export function renderEditor(root: HTMLElement, body: string): void {
-  root.replaceChildren();
+  const doc = document.createElement('div');
+  doc.className = DOC_CLASS;
   let last = 0;
   for (const tok of bodyTokens(body)) {
-    if (tok.start > last) root.appendChild(document.createTextNode(body.slice(last, tok.start)));
-    root.appendChild(tok.kind === 'rule' ? makeRule() : tok.kind === 'link' ? makeLink(tok.target) : makeChip(tok));
+    if (tok.start > last) doc.appendChild(document.createTextNode(body.slice(last, tok.start)));
+    doc.appendChild(tok.kind === 'rule' ? makeRule() : tok.kind === 'link' ? makeLink(tok.target) : makeChip(tok));
     last = tok.end;
   }
-  if (last < body.length) root.appendChild(document.createTextNode(body.slice(last)));
+  if (last < body.length) doc.appendChild(document.createTextNode(body.slice(last)));
+  // An empty element has no place for a caret, so the browser would type
+  // beside the wrapper rather than in it; a <br> is its own idiom for an empty
+  // editable line, and the serializer reads it as nothing.
+  if (doc.childNodes.length === 0) doc.appendChild(document.createElement('br'));
+  root.replaceChildren(doc);
   markEmpty(root);
 }
 
@@ -228,14 +250,40 @@ export interface LineSpan {
   end: DomPos;
 }
 
+/**
+ * One run of the markdown text and the DOM it came from: a text node, or a
+ * single node — a chip, a <br>, the edge of a browser-made line — that
+ * stands for a run of characters. Together they map any offset in the text
+ * to a place in the DOM, which is how find paints a match and how the caret
+ * is put back after a line is redrawn.
+ */
+export interface Segment {
+  /** A text node with offset 0, or the parent of a block node with its child index. */
+  node: Node;
+  offset: number;
+  /** Where in the text the run starts, and how many characters it covers. */
+  at: number;
+  length: number;
+  kind: 'text' | 'block';
+  /** Text inside a formatting wrapper, which a caret placed by the app should keep out of. */
+  wrapped: boolean;
+}
+
 export interface Analysis {
   /** The markdown body, exactly as serializeEditor returns it. */
   text: string;
   /** One span per line of `text`. */
   lines: LineSpan[];
+  /** Every run of `text`, in order. */
+  segments: Segment[];
 }
 
 const indexIn = (node: Node): number => Array.prototype.indexOf.call(node.parentNode?.childNodes ?? [], node);
+
+/** The class live formatting gives its wrappers; the walker treats them as transparent. */
+const FORMAT_PREFIX = 'md-';
+
+const isFormatWrapper = (elm: Element): boolean => Array.from(elm.classList).some((c) => c.startsWith(FORMAT_PREFIX));
 
 /**
  * Walks the editor once, producing the markdown text and, for every line of
@@ -247,16 +295,22 @@ const indexIn = (node: Node): number => Array.prototype.indexOf.call(node.parent
 function analyze(root: HTMLElement, keepTrailing = false): Analysis {
   let out = '';
   const lines: LineSpan[] = [];
-  let start: DomPos = { node: root, offset: 0 };
+  const segments: Segment[] = [];
+  const base = docOf(root);
+  let start: DomPos = { node: base, offset: 0 };
   const breakAt = (end: DomPos, next: DomPos): void => {
     lines.push({ start, end });
     start = next;
     out += '\n';
   };
-  const walk = (node: Node): void => {
+  const block = (elm: HTMLElement, length: number, wrapped: boolean): void => {
+    segments.push({ node: elm.parentNode as Node, offset: indexIn(elm), at: out.length, length, kind: 'block', wrapped });
+  };
+  const walk = (node: Node, wrapped: boolean): void => {
     node.childNodes.forEach((child) => {
       if (child.nodeType === Node.TEXT_NODE) {
         const text = child.textContent ?? '';
+        segments.push({ node: child, offset: 0, at: out.length, length: text.length, kind: 'text', wrapped });
         let from = 0;
         for (;;) {
           const nl = text.indexOf('\n', from);
@@ -273,7 +327,9 @@ function analyze(root: HTMLElement, keepTrailing = false): Analysis {
       // A link chip is a span, and a span is also what the browser makes on
       // its own, so it is recognised by its class before its tag is looked at.
       if (elm.classList.contains(LINK_CLASS)) {
-        out += linkMarkdown(linkTargetOf(elm));
+        const md = linkMarkdown(linkTargetOf(elm));
+        block(elm, md.length, wrapped);
+        out += md;
         return;
       }
       switch (elm.tagName) {
@@ -281,15 +337,19 @@ function analyze(root: HTMLElement, keepTrailing = false): Analysis {
           const name = elm.dataset.asset ?? assetNameFromUrl(elm.getAttribute('src') ?? '');
           if (name && isSafeAssetName(name)) {
             const alt = elm.dataset.alt ?? elm.getAttribute('alt') ?? 'image';
-            out += imageMarkdown({ name, alt, width: parseWidth(elm.getAttribute('width')) });
+            const md = imageMarkdown({ name, alt, width: parseWidth(elm.getAttribute('width')) });
+            block(elm, md.length, wrapped);
+            out += md;
           }
           break;
         }
         case 'HR':
+          block(elm, RULE_MD.length, wrapped);
           out += RULE_MD;
           break;
         case 'BR': {
           const i = indexIn(elm);
+          block(elm, 1, wrapped);
           breakAt({ node: elm.parentNode as Node, offset: i }, { node: elm.parentNode as Node, offset: i + 1 });
           break;
         }
@@ -297,24 +357,73 @@ function analyze(root: HTMLElement, keepTrailing = false): Analysis {
         case 'P':
           // A browser-created line: start it on a new line, then descend.
           if (out.length > 0 && !out.endsWith('\n')) {
+            block(elm, 1, wrapped);
             breakAt({ node: elm.parentNode as Node, offset: indexIn(elm) }, { node: elm, offset: 0 });
           }
-          walk(elm);
+          walk(elm, wrapped);
           break;
         default:
-          walk(elm);
+          walk(elm, wrapped || isFormatWrapper(elm));
       }
     });
   };
-  walk(root);
-  lines.push({ start, end: { node: root, offset: root.childNodes.length } });
+  walk(root, false);
+  lines.push({ start, end: { node: base, offset: base.childNodes.length } });
   // A contenteditable keeps a trailing <br> to make the last line visible;
   // that shows up as one extra newline, which is not part of the text.
   if (!keepTrailing && out.endsWith('\n')) {
     out = out.slice(0, -1);
     lines.pop();
   }
-  return { text: out, lines };
+  return { text: out, lines, segments };
+}
+
+/**
+ * The DOM position for an offset in the text. On a boundary between runs
+ * there is more than one answer; the one chosen is inside a text node rather
+ * than beside a block, and outside a formatting wrapper rather than inside
+ * one, so that typing there lands in plain text and not in the bold word
+ * just finished.
+ */
+export function posAt(segments: Segment[], offset: number): DomPos | null {
+  let best: { rank: number; pos: DomPos } | null = null;
+  for (const seg of segments) {
+    if (offset < seg.at || offset > seg.at + seg.length) continue;
+    let rank: number;
+    let pos: DomPos;
+    if (seg.kind === 'text') {
+      const inside = offset < seg.at + seg.length;
+      // Plain text first, whether inside or at its end; wrapped text only then.
+      rank = (seg.wrapped ? 2 : 0) + (inside ? 0 : 1);
+      pos = { node: seg.node, offset: offset - seg.at };
+    } else {
+      rank = 4;
+      pos = { node: seg.node, offset: seg.offset + (offset === seg.at ? 0 : 1) };
+    }
+    if (!best || rank < best.rank) best = { rank, pos };
+  }
+  if (best) return best.pos;
+  const last = segments[segments.length - 1];
+  return last ? { node: last.node, offset: last.kind === 'text' ? last.length : last.offset + 1 } : null;
+}
+
+/** A range over the text between two offsets. */
+export function rangeBetween(root: HTMLElement, segments: Segment[], start: number, end: number): Range | null {
+  const from = posAt(segments, start) ?? { node: root, offset: 0 };
+  const to = posAt(segments, end) ?? from;
+  const range = document.createRange();
+  try {
+    range.setStart(from.node, from.offset);
+    range.setEnd(to.node, to.offset);
+  } catch {
+    return null;
+  }
+  return range;
+}
+
+/** How far into the text a DOM position is: the length of everything before it. */
+export function offsetOf(root: HTMLElement, pos: DomPos): number {
+  return textBefore(root, pos).length;
 }
 
 /** Reads the editor's DOM back out as a markdown body. */
@@ -337,6 +446,11 @@ export function textBefore(root: HTMLElement, pos: DomPos): string {
   const range = document.createRange();
   range.setStart(root, 0);
   range.setEnd(pos.node, pos.offset);
+  return textOfRange(range);
+}
+
+/** The markdown a range of the editor covers — what copying it should put on the clipboard. */
+export function textOfRange(range: Range): string {
   const holder = document.createElement('div');
   holder.append(range.cloneContents());
   return analyze(holder, true).text;

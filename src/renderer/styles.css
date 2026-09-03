@@ -728,6 +728,9 @@ kbd {
   .drop-line {
     right: 28px;
   }
+  .find-bar {
+    top: 46px;
+  }
 }
 
 /* --- rendered markdown -------------------------------------------------- */
@@ -1339,4 +1342,347 @@ html.export body {
   .text.swap {
     animation: none;
   }
+}
+
+/* --- quick-note box ----------------------------------------------------- */
+
+/* A frameless window of its own: the raised panel colour edge to edge, and
+   the same faces as the app, so it reads as a piece of Notes rather than a
+   dialog from somewhere else. */
+body.capture {
+  background: var(--raised);
+}
+.capture-box {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.capture-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px 0;
+  color: var(--paper-faint);
+}
+.capture-hint {
+  text-transform: none;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+.capture-hint kbd {
+  padding: 2px 4px 1px;
+}
+.capture-text {
+  flex: 1;
+  min-height: 0;
+  margin: 8px 14px 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--paper);
+  caret-color: var(--margin);
+  font: 17px/1.55 var(--serif);
+}
+.capture-text::placeholder {
+  color: var(--paper-faint);
+  font-style: italic;
+}
+.capture-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px 8px 14px;
+}
+.capture-status {
+  color: var(--paper-faint);
+  font-variant-numeric: tabular-nums;
+}
+.capture-send {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+.capture-send:hover {
+  background: var(--blue);
+  color: var(--ink);
+}
+
+/* --- find and replace --------------------------------------------------- */
+
+/* A small panel over the top right of the words, the way editors do it, so
+   the note does not shift when it opens. */
+.find-bar {
+  position: absolute;
+  z-index: 4;
+  /* Below the title, over the first lines of the words: the title stays
+     reachable while the bar is open. */
+  top: 66px;
+  right: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.find-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.find-input {
+  width: 220px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--ink-deep);
+  color: var(--paper);
+  font: 13px var(--utility);
+  outline: none;
+}
+.find-input:focus {
+  border-color: var(--line);
+  box-shadow: none;
+}
+.find-input.no-match {
+  color: var(--margin);
+}
+.find-count {
+  min-width: 52px;
+  text-align: right;
+  color: var(--paper-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.find-opt {
+  height: 24px;
+  padding: 1px 6px 0;
+  border-radius: 4px;
+  color: var(--paper-faint);
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+.find-opt:hover {
+  background: var(--hover);
+  color: var(--paper);
+}
+.find-opt[aria-pressed='true'] {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+.find-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  color: var(--paper-dim);
+}
+.find-btn:hover {
+  background: var(--hover);
+  color: var(--paper);
+}
+.find-btn[aria-expanded='true'] {
+  color: var(--blue);
+}
+.find-btn[aria-expanded='true'] svg {
+  transform: rotate(90deg);
+}
+/* Matches are painted as custom highlights over ranges: nothing enters the
+   editor's DOM, and the markdown is untouched. */
+::highlight(note-find) {
+  background: rgba(214, 160, 106, 0.28);
+}
+::highlight(note-find-at) {
+  background: var(--blue);
+  color: var(--ink);
+}
+
+/* --- outline ------------------------------------------------------------ */
+
+/* The headings of the note, down the right of the page. A column of its
+   own, so the words keep their width; it folds away on a narrow window. */
+.outline {
+  flex: 0 0 200px;
+  min-width: 0;
+  padding: 58px 12px 24px 18px;
+  overflow-y: auto;
+  border-left: 1px solid var(--line);
+}
+.page.has-outline {
+  max-width: calc(var(--text-w) + var(--margin-w) + 200px);
+}
+.app.margin-hidden .page.has-outline {
+  max-width: calc(var(--text-w) + 200px);
+}
+.outline-label {
+  display: block;
+  margin: 0 0 10px 8px;
+  color: var(--paper-faint);
+}
+.outline-item {
+  display: block;
+  width: 100%;
+  padding: 4px 8px 5px;
+  border-radius: 4px;
+  color: var(--paper-dim);
+  font: 12.5px/1.35 var(--utility);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.outline-item:hover {
+  background: var(--hover);
+  color: var(--paper);
+}
+.outline-item.at {
+  color: var(--blue);
+}
+.outline-item.l1 {
+  font-weight: 600;
+  color: var(--paper);
+}
+.outline-item.l2 {
+  padding-left: 18px;
+}
+.outline-item.l3 {
+  padding-left: 28px;
+}
+.outline-item.l4,
+.outline-item.l5,
+.outline-item.l6 {
+  padding-left: 38px;
+  font-size: 12px;
+}
+@media (max-width: 1000px) {
+  .outline {
+    display: none;
+  }
+}
+
+/* --- live formatting ---------------------------------------------------- */
+
+/* Markdown drawn as what it means while the characters stay exactly what
+   was typed: the spans wrap runs of the text and never change it. The
+   markers fade, and on every line but the one being written they are hidden. */
+.md-mark {
+  color: var(--paper-faint);
+  opacity: 0.55;
+}
+/* On the line being written the markers come forward a little, so what is
+   about to be typed next to them can be seen. They are never hidden: the
+   browser edits what it can see, and text it cannot see would survive a
+   delete and turn up later as stray stars. */
+.md-mark.raw {
+  opacity: 1;
+}
+.md-h {
+  font-family: var(--serif-display);
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+.md-h1 {
+  font-size: 1.6em;
+  line-height: 1.3;
+}
+.md-h2 {
+  font-size: 1.35em;
+  line-height: 1.35;
+}
+.md-h3 {
+  font-size: 1.15em;
+  line-height: 1.4;
+}
+.md-h4,
+.md-h5,
+.md-h6 {
+  color: var(--paper-dim);
+}
+.md-strong {
+  font-weight: 600;
+}
+.md-em {
+  font-style: italic;
+}
+.md-strike {
+  text-decoration: line-through;
+  text-decoration-color: var(--paper-faint);
+}
+.md-code {
+  font: 0.85em var(--mono);
+  background: var(--raised);
+  border-radius: 3px;
+  padding: 0.1em 0.2em;
+}
+.md-fence,
+.md-codeline {
+  font: 0.82em var(--mono);
+  line-height: 1.75;
+  color: var(--paper-dim);
+}
+.md-fence {
+  color: var(--paper-faint);
+}
+.md-quote {
+  color: var(--paper-dim);
+  font-style: italic;
+}
+.md-link {
+  color: var(--blue);
+}
+.md-link .md-mark {
+  color: var(--paper-faint);
+  font-size: 0.85em;
+}
+.md-tag {
+  color: var(--blue);
+}
+.md-done {
+  color: var(--paper-faint);
+  text-decoration: line-through;
+}
+.md-bullet {
+  color: var(--paper-dim);
+}
+
+/* --- trash and layout rows ---------------------------------------------- */
+
+.history-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.danger-link:hover {
+  color: #e08a8f;
+}
+.history-row .history-when small {
+  margin-left: 6px;
+  color: var(--paper-faint);
+  font-size: inherit;
+}
+.layout-text {
+  flex: 1;
+  color: var(--paper-faint);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.layout-row .pill {
+  flex: none;
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+.layout-row .pill:hover {
+  background: var(--blue);
+  color: var(--ink);
 }

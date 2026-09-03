@@ -14,9 +14,9 @@ import {
 import type { Note } from '../shared/types';
 
 /**
- * Snapshots of every note, one file per note, kept well away from notes.json:
- * a history file that goes bad can be thrown out on its own, and can never
- * take the notes down with it.
+ * Snapshots of every note, one file per note, kept well away from the notes
+ * themselves: a history file that goes bad can be thrown out on its own, and
+ * can never take the notes down with it.
  *
  * Saving is the moment a note is worth remembering, so this hangs off the
  * save path — but off to the side of it, after the write has landed, because
@@ -92,8 +92,11 @@ let swept = false;
  * save, never before it, and its failures are logged rather than raised: a
  * note that saved but was not snapshotted is a small loss, a save that failed
  * because of the snapshot would be a large one.
+ *
+ * `alsoKeep` names notes that are not in the list but whose history must
+ * stay — the ones waiting in the trash, which may yet come back.
  */
-export function record(notes: Note[]): Promise<void> {
+export function record(notes: Note[], alsoKeep: ReadonlySet<string>): Promise<void> {
   const run = async () => {
     const now = Date.now();
     for (const note of notes) {
@@ -102,27 +105,34 @@ export function record(notes: Note[]): Promise<void> {
     // Once per launch is enough: notes are deleted by hand, not in floods.
     if (!swept) {
       swept = true;
-      await sweepDeleted(notes);
+      await sweepDeleted(notes, alsoKeep);
     }
   };
   recording = recording.then(run, run).catch((err) => console.error('[notes] history failed', err));
   return recording;
 }
 
-/** Throws away the history of notes that no longer exist. */
-async function sweepDeleted(notes: Note[]): Promise<void> {
+/** Throws away the history of notes that are neither live nor in the trash. */
+async function sweepDeleted(notes: Note[], alsoKeep: ReadonlySet<string>): Promise<void> {
   let names: string[];
   try {
     names = await fs.readdir(historyDir());
   } catch {
     return;
   }
-  const live = new Set(notes.map((n) => path.basename(fileFor(n.id))));
+  const keep = new Set(notes.map((n) => path.basename(fileFor(n.id))));
+  for (const id of alsoKeep) keep.add(path.basename(fileFor(id)));
   for (const name of names) {
-    if (!name.endsWith('.json') || live.has(name)) continue;
+    if (!name.endsWith('.json') || keep.has(name)) continue;
     await fs.unlink(path.join(historyDir(), name)).catch(() => undefined);
     lastKnown.delete(decodeURIComponent(name.slice(0, -'.json'.length)));
   }
+}
+
+/** Throws away one note's history: it has left the trash for good. */
+export async function forgetHistory(id: string): Promise<void> {
+  await fs.unlink(fileFor(id)).catch(() => undefined);
+  lastKnown.delete(id);
 }
 
 /** Every kept version of one note, newest first, without the bodies. */

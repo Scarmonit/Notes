@@ -1,7 +1,7 @@
 import { app } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { DEFAULT_SETTINGS, parseSettings, type Settings } from '../shared/settings';
+import { DEFAULT_SETTINGS, cleanSettings, parseSettings, type Settings } from '../shared/settings';
 
 function settingsPath(): string {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -25,7 +25,7 @@ export async function loadSettings(): Promise<Settings> {
 }
 
 export async function saveSettings(next: Settings): Promise<Settings> {
-  current = { closeToTray: next.closeToTray === true, hotkey: next.hotkey ?? null };
+  current = cleanSettings(next);
   const target = settingsPath();
   await fs.mkdir(path.dirname(target), { recursive: true });
   await fs.writeFile(target, JSON.stringify(current, null, 2), 'utf8');

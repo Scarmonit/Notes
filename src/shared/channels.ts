@@ -3,6 +3,8 @@ export const IPC = {
   notesSave: 'notes:save',
   flushRequest: 'notes:flush-request',
   flushReply: 'notes:flush-reply',
+  externalChange: 'notes:external-change',
+  openFolder: 'notes:open-folder',
   attach: 'notes:attach',
   pickAttachments: 'notes:pick-attachments',
   pickImports: 'notes:pick-imports',
@@ -13,5 +15,16 @@ export const IPC = {
   historyList: 'notes:history-list',
   historyGet: 'notes:history-get',
   historyKeep: 'notes:history-keep',
+  trashList: 'notes:trash-list',
+  trashGet: 'notes:trash-get',
+  trashRestore: 'notes:trash-restore',
+  trashPurge: 'notes:trash-purge',
   copyText: 'notes:copy-text',
+  /** Capture box → main: the text to file, or nothing. */
+  captureSend: 'capture:send',
+  captureDismiss: 'capture:dismiss',
+  /** Main → capture box: it has just been shown. */
+  captureShown: 'capture:shown',
+  /** Main → notes window: a quick note to append to the inbox. */
+  captured: 'notes:captured',
 } as const;

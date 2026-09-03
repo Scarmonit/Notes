@@ -1,0 +1,148 @@
+import type { Note } from './types';
+
+/**
+ * Notes as a folder of markdown files, one per note, each with a small
+ * front-matter block carrying what the filename and the text cannot: the
+ * note's id, its explicit title, when it was made and last changed, and
+ * whether it is pinned.
+ *
+ * The rules for reading and writing one file live here, away from the
+ * filesystem, so they can be tested on their own. What comes out of
+ * parseNoteFile is exactly a Note; what goes into formatNoteFile is exactly a
+ * Note; and a file that has passed through both is the same file.
+ *
+ * A file without front matter — one dropped into the folder by hand, or made
+ * by another program — is still a note: its title is its filename and its
+ * dates are the file's own. It gets front matter the first time it is written.
+ */
+
+/** What is known about a file before its text is read. */
+export interface FileFacts {
+  /** The id to use when the file does not carry one. */
+  id: string;
+  /** The filename without its extension, which is the title when there is no other. */
+  name: string;
+  /** The file's modification time, for a file with no dates of its own. */
+  mtime: number;
+}
+
+export interface ParsedNoteFile {
+  note: Note;
+  /** Front-matter lines the app does not understand, kept so they survive a rewrite. */
+  extra: string[];
+  /** True when the file had no front matter, or was missing its id: it should be written back. */
+  needsWrite: boolean;
+  /** When the file is in the trash: the moment it was deleted. */
+  deletedAt?: number;
+}
+
+const KNOWN = new Set(['id', 'title', 'created', 'updated', 'pinned', 'deleted']);
+
+/** The front-matter block at the top of a file, and the text after it. */
+function splitFrontMatter(text: string): { fields: Map<string, string>; extra: string[]; body: string } | null {
+  if (!text.startsWith('---\n') && !text.startsWith('---\r\n')) return null;
+  const m = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
+  if (!m) return null;
+  const fields = new Map<string, string>();
+  const extra: string[] = [];
+  for (const line of m[1].split(/\r?\n/)) {
+    const kv = /^([A-Za-z_][\w-]*)\s*:\s*(.*)$/.exec(line);
+    if (kv && KNOWN.has(kv[1])) fields.set(kv[1], kv[2].trim());
+    else if (line.trim()) extra.push(line);
+  }
+  return { fields, extra, body: text.slice(m[0].length) };
+}
+
+/** A front-matter string value: quoted the way it was written, or bare. */
+function unquote(value: string): string {
+  if (value.startsWith('"')) {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (typeof parsed === 'string') return parsed;
+    } catch {
+      // Not a JSON string after all; fall through to the raw text.
+    }
+  }
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1).replace(/''/g, "'");
+  return value;
+}
+
+/** A date written as ISO text, or as a number of milliseconds. Null when it is neither. */
+function timeOf(value: string | undefined): number | null {
+  if (!value) return null;
+  if (/^\d+$/.test(value)) return Number(value);
+  const t = Date.parse(value);
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * Reads one note file. Never throws: every field has a fallback in the facts
+ * about the file itself, so any text at all reads as some note.
+ */
+export function parseNoteFile(text: string, facts: FileFacts): ParsedNoteFile {
+  const normalized = text.replace(/\r\n/g, '\n');
+  const split = splitFrontMatter(normalized);
+  // One trailing newline is the file's, added on write; the rest is the note's.
+  const body = (split ? split.body : normalized).replace(/\n$/, '');
+  const fields = split?.fields ?? new Map<string, string>();
+  const id = fields.get('id')?.trim() || facts.id;
+  const created = timeOf(fields.get('created')) ?? facts.mtime;
+  const updated = timeOf(fields.get('updated')) ?? facts.mtime;
+  const note: Note = { id, body, createdAt: created, updatedAt: updated };
+  const explicit = fields.has('title') ? unquote(fields.get('title') ?? '').trim() : '';
+  if (explicit) note.title = explicit;
+  else if (!split && facts.name.trim()) note.title = facts.name.trim();
+  if (fields.get('pinned') === 'true') note.pinned = true;
+  const out: ParsedNoteFile = { note, extra: split?.extra ?? [], needsWrite: !split || !fields.get('id')?.trim() };
+  const deleted = timeOf(fields.get('deleted'));
+  if (deleted !== null) out.deletedAt = deleted;
+  return out;
+}
+
+const iso = (t: number): string => new Date(t).toISOString();
+
+/** The text of one note file: front matter, then the body, then one newline. */
+export function formatNoteFile(note: Note, extra: string[] = [], deletedAt?: number): string {
+  const lines = ['---', `id: ${note.id}`];
+  if (note.title?.trim()) lines.push(`title: ${JSON.stringify(note.title.trim())}`);
+  lines.push(`created: ${iso(note.createdAt)}`, `updated: ${iso(note.updatedAt)}`);
+  if (note.pinned) lines.push('pinned: true');
+  if (deletedAt !== undefined) lines.push(`deleted: ${iso(deletedAt)}`);
+  lines.push(...extra, '---');
+  return `${lines.join('\n')}\n${note.body}\n`;
+}
+
+const MAX_NAME = 80;
+
+/**
+ * A filename for a title: the characters Windows allows, spaces kept, cut to
+ * a sensible length. The id is not in the name — the name is for people, and
+ * the front matter is what the app goes by.
+ */
+export function fileNameFor(title: string): string {
+  const clean = title
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[. ]+$/, '')
+    .slice(0, MAX_NAME)
+    .trim();
+  // Names Windows reserves, whatever the extension.
+  if (!clean || /^(?:con|prn|aux|nul|com\d|lpt\d)$/i.test(clean)) return 'Untitled';
+  return clean;
+}
+
+/** `Name.md`, or `Name 2.md`, `Name 3.md`… until one is free. */
+export function uniqueFileName(base: string, taken: (name: string) => boolean): string {
+  const first = `${base}.md`;
+  if (!taken(first)) return first;
+  for (let n = 2; ; n++) {
+    const candidate = `${base} ${n}.md`;
+    if (!taken(candidate)) return candidate;
+  }
+}
+
+/** True when a directory entry is a note file rather than something else living in the folder. */
+export function isNoteFileName(name: string): boolean {
+  return /\.md$/i.test(name) && !name.startsWith('.') && !name.startsWith('~');
+}

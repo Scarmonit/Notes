@@ -86,6 +86,33 @@
                 aria-label="Note title"
                 maxlength="200"
               />
+              <!-- Find and replace within this note. Sits over the top of the
+                   words, so the note does not move when it opens. -->
+              <div id="find-bar" class="find-bar no-drag" role="search" aria-label="Find in this note" hidden>
+                <div class="find-row">
+                  <input id="find-input" class="find-input" type="text" placeholder="Find in this note" autocomplete="off" spellcheck="false" aria-label="Find" />
+                  <span id="find-count" class="find-count u" aria-live="polite"></span>
+                  <button id="find-case" class="find-opt u" type="button" title="Match case" aria-pressed="false">Aa</button>
+                  <button id="find-regex" class="find-opt u" type="button" title="Regular expression" aria-pressed="false">.*</button>
+                  <button id="find-prev" class="find-btn" type="button" title="Previous match (Shift+Enter)" aria-label="Previous match">
+                    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 8l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                  </button>
+                  <button id="find-next" class="find-btn" type="button" title="Next match (Enter)" aria-label="Next match">
+                    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                  </button>
+                  <button id="find-toggle-replace" class="find-btn" type="button" title="Replace (Ctrl+H)" aria-label="Show replace" aria-expanded="false">
+                    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 2L8 6 4 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                  </button>
+                  <button id="find-close" class="find-btn" type="button" title="Close (Esc)" aria-label="Close find">
+                    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
+                  </button>
+                </div>
+                <div id="find-replace-row" class="find-row" hidden>
+                  <input id="replace-input" class="find-input" type="text" placeholder="Replace with" autocomplete="off" spellcheck="false" aria-label="Replace with" />
+                  <button id="replace-one" class="find-opt u" type="button" title="Replace this match (Enter)">Replace</button>
+                  <button id="replace-all" class="find-opt u" type="button" title="Replace every match (Ctrl+Enter)">All</button>
+                </div>
+              </div>
               <div
                 id="editor"
                 class="editor"
@@ -104,6 +131,9 @@
               <div id="img-size" class="img-size u" hidden></div>
               <div id="drop-line" class="drop-line" hidden></div>
             </div>
+            <!-- The note's headings, to jump by. Only there when the note has
+                 some; a note with none is not made narrower for it. -->
+            <nav id="outline" class="outline" aria-label="Outline" hidden></nav>
           </div>
         </section>
 
@@ -146,10 +176,13 @@
             <dt><kbd>#tag</kbd></dt><dd>Anywhere in a note; click a tag in the sidebar or search <kbd>#tag</kbd> to filter</dd>
             <dt><kbd>#tag/part</kbd></dt><dd>Nests one tag inside another; the parent finds everything filed under it</dd>
             <dt><kbd>[[Note title]]</kbd></dt><dd>Links to another note — click it to go there, or to start it. Notes pointing here are listed under the words</dd>
+            <dt><kbd>**bold**</kbd> <kbd># Heading</kbd></dt><dd>Markdown takes its shape as you write it; the markers fade, and hide on every line but the one you are on</dd>
             <dt><kbd>---</kbd> <kbd>Enter</kbd></dt><dd>Turns into a section divider</dd>
+            <dt><kbd>Click</kbd> a heading</dt><dd>In the outline beside the note, jumps there</dd>
             <dt><kbd>Click</kbd> an image</dt><dd>Select it, then drag the corner handle to resize; double-click for the original size</dd>
             <dt><kbd>Alt</kbd> <kbd>↑</kbd> / <kbd>Alt</kbd> <kbd>↓</kbd></dt><dd>Move the selected image up or down a line (or drag it)</dd>
             <dt><kbd>Drop</kbd> a file</dt><dd>Images attach; .md and .txt files come in as notes</dd>
+            <dt><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>J</kbd></dt><dd>Anywhere in Windows: a quick-note box that files a line in the Inbox note (change it in Layout)</dd>
             <dt><kbd>Esc</kbd></dt><dd>Back to the list, clear the search, or cancel</dd>
           </dl>
           <p class="sheet-foot u">Press <kbd>Esc</kbd> to close</p>
@@ -165,7 +198,28 @@
           </div>
           <div class="history-foot">
             <span id="history-note" class="u"></span>
-            <button id="history-restore" class="pill u history-restore" type="button" disabled>Restore this version</button>
+            <span class="history-actions">
+              <button id="history-trash" class="link-btn u" type="button" title="Notes deleted in the last month">Deleted notes…</button>
+              <button id="history-restore" class="pill u history-restore" type="button" disabled>Restore this version</button>
+            </span>
+          </div>
+          <p class="sheet-foot u">Press <kbd>Esc</kbd> to close</p>
+        </div>
+      </div>
+
+      <div id="trash-sheet" class="sheet" hidden role="dialog" aria-modal="true" aria-label="Deleted notes">
+        <div class="sheet-card history-card" tabindex="-1">
+          <h2>Deleted notes</h2>
+          <div class="history-body">
+            <div id="trash-list" class="history-list" role="listbox" aria-label="Deleted notes"></div>
+            <pre id="trash-preview" class="history-preview" aria-live="polite"></pre>
+          </div>
+          <div class="history-foot">
+            <span id="trash-note" class="u"></span>
+            <span class="history-actions">
+              <button id="trash-purge" class="link-btn u danger-link" type="button" disabled>Delete for good</button>
+              <button id="trash-restore" class="pill u history-restore" type="button" disabled>Put it back</button>
+            </span>
           </div>
           <p class="sheet-foot u">Press <kbd>Esc</kbd> to close</p>
         </div>
@@ -189,6 +243,14 @@
             <span class="u">Show the margin (edit time and word count)</span>
           </label>
           <label class="layout-row layout-check">
+            <input id="outline-show" type="checkbox" />
+            <span class="u">Show the outline — the note's headings, beside it, to jump by</span>
+          </label>
+          <label class="layout-row layout-check">
+            <input id="live-format" type="checkbox" />
+            <span class="u">Live formatting — headings, bold and code take shape as you write</span>
+          </label>
+          <label class="layout-row layout-check">
             <input id="focus-mode" type="checkbox" />
             <span class="u">Focus mode — dim everything but the paragraph you are in</span>
           </label>
@@ -208,6 +270,19 @@
             <button id="hotkey-clear" class="link-btn u" type="button">Clear</button>
           </div>
           <p id="hotkey-note" class="layout-note u"></p>
+          <div class="layout-row">
+            <span class="u">Quick note</span>
+            <button id="capture-hotkey" class="hotkey-btn" type="button" aria-label="Quick-note shortcut, click to change"></button>
+            <button id="capture-hotkey-clear" class="link-btn u" type="button">Clear</button>
+          </div>
+          <p id="capture-hotkey-note" class="layout-note u"></p>
+
+          <h3 class="layout-head">Files</h3>
+          <div class="layout-row">
+            <span class="u">Notes folder</span>
+            <span class="layout-text">One markdown file per note. Put the folder in OneDrive, Dropbox or git to keep them elsewhere too.</span>
+            <button id="open-folder" class="pill u" type="button">Open</button>
+          </div>
           <p class="sheet-foot u">Press <kbd>Esc</kbd> to close</p>
         </div>
       </div>

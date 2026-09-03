@@ -4,13 +4,17 @@ import { DEFAULT_SETTINGS, type Settings } from '../shared/settings';
 import type { ExportKind, ExportRequest, ImportedFile, Note, NotesFile } from '../shared/types';
 import { keyMap, matchActions, type Action, type Match } from './actions';
 import { toggleFence } from './fences';
+import { findMatches, matchFrom, replaceAll, replaceOne, validQuery, type FindMatch, type FindOptions } from './find';
 import { isTextFile, noteFromFile } from './importer';
+import { decorateLines, isDecorated, type Protected } from './inline';
 import { renderMarkdown } from './markdown';
+import { headingAt, headingsIn, type Heading } from './outline';
 import { cycleTaskLine, toggleTaskAt } from './tasks';
 import {
   backlinksOf,
   createNote,
   exportBody,
+  linkKey,
   neighborOf,
   noteForLink,
   removeNote,
@@ -29,7 +33,9 @@ import {
 import { markdownToText } from './plaintext';
 import {
   MIN_IMAGE_WIDTH,
+  bodyTokens,
   chipsOf,
+  docOf,
   imageChipHtml,
   isChip,
   isLink,
@@ -41,7 +47,10 @@ import {
   markEmpty,
   moveImageBy,
   moveImageToLine,
+  offsetOf,
   paragraphBounds,
+  posAt,
+  rangeBetween,
   readEditor,
   renderEditor as renderEditorDom,
   makeLink,
@@ -49,11 +58,13 @@ import {
   serializeEditor,
   setChipWidth,
   textBefore,
+  textOfRange,
   type LineSpan,
 } from './richeditor';
 import stylesText from './styles.css?inline';
 import { absoluteTime, relativeTime } from './time';
 import type { SnapshotSummary } from '../shared/history';
+import type { ExternalChanges, TrashedNote } from '../shared/types';
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const node = document.getElementById(id);
@@ -114,6 +125,33 @@ const el = {
   dropLine: $('drop-line'),
   empty: $('empty'),
   helpSheet: $('help-sheet'),
+  outline: $('outline'),
+  outlineShow: $<HTMLInputElement>('outline-show'),
+  liveFormat: $<HTMLInputElement>('live-format'),
+  findBar: $('find-bar'),
+  findInput: $<HTMLInputElement>('find-input'),
+  findCount: $('find-count'),
+  findCase: $<HTMLButtonElement>('find-case'),
+  findRegex: $<HTMLButtonElement>('find-regex'),
+  findPrev: $<HTMLButtonElement>('find-prev'),
+  findNext: $<HTMLButtonElement>('find-next'),
+  findToggleReplace: $<HTMLButtonElement>('find-toggle-replace'),
+  findClose: $<HTMLButtonElement>('find-close'),
+  findReplaceRow: $('find-replace-row'),
+  replaceInput: $<HTMLInputElement>('replace-input'),
+  replaceOne: $<HTMLButtonElement>('replace-one'),
+  replaceAll: $<HTMLButtonElement>('replace-all'),
+  trashSheet: $('trash-sheet'),
+  trashList: $('trash-list'),
+  trashPreview: $('trash-preview'),
+  trashNote: $('trash-note'),
+  trashRestore: $<HTMLButtonElement>('trash-restore'),
+  trashPurge: $<HTMLButtonElement>('trash-purge'),
+  historyTrash: $<HTMLButtonElement>('history-trash'),
+  captureHotkeyBtn: $<HTMLButtonElement>('capture-hotkey'),
+  captureHotkeyClear: $<HTMLButtonElement>('capture-hotkey-clear'),
+  captureHotkeyNote: $('capture-hotkey-note'),
+  openFolder: $<HTMLButtonElement>('open-folder'),
 };
 
 // --- UI state (per-machine conveniences, kept in localStorage) --------------
@@ -131,6 +169,10 @@ interface UiState {
   focusMode: boolean;
   /** Keep the line being written near the middle of the editor. */
   typewriter: boolean;
+  /** The note's headings in a column beside it. */
+  outline: boolean;
+  /** Markdown drawn as what it means while it is typed. */
+  liveFormat: boolean;
 }
 
 const MARGIN_DEFAULT = 176;
@@ -156,6 +198,8 @@ function loadUi(): UiState {
     marginHidden: false,
     focusMode: false,
     typewriter: false,
+    outline: true,
+    liveFormat: true,
   };
   try {
     const raw = localStorage.getItem(UI_KEY);
@@ -428,7 +472,7 @@ function renderEditor(): void {
   }
 
   if (editorNoteId !== n.id) {
-    renderEditorDom(el.editor, n.body);
+    drawEditor(n.body);
     el.editor.scrollTop = 0;
     editorNoteId = n.id;
     el.title.value = n.title ?? '';
@@ -453,8 +497,15 @@ function renderEditor(): void {
     el.preview.scrollTop = scroll;
   }
   renderBacklinks();
+  renderOutline();
   syncChipUi();
   syncWriting();
+}
+
+/** Puts a body into the editor: the DOM for it, then the live formatting over that. */
+function drawEditor(body: string): void {
+  renderEditorDom(el.editor, body);
+  decorateAll();
 }
 
 /**
@@ -696,7 +747,31 @@ function syncWriting(): void {
     writingFrame = 0;
     applyFocus();
     applyTypewriter();
+    applyCaretLine();
   });
+}
+
+/**
+ * What follows the caret from line to line: the outline's current heading,
+ * and the markers revealed on the line being written. One DOM walk serves
+ * both, and none happens while neither is wanted.
+ */
+function applyCaretLine(): void {
+  const off = ui.preview || el.editorWrap.hidden;
+  const wantMarks = !off && ui.liveFormat;
+  const wantOutline = !off && !el.outline.hidden;
+  if (!wantMarks && !wantOutline) return;
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || !el.editor.contains(sel.getRangeAt(0).commonAncestorContainer)) {
+    if (wantMarks) revealMarks(null, -1, -1);
+    return;
+  }
+  const range = sel.getRangeAt(0);
+  const { lines } = readEditor(el.editor);
+  const a = lineIndexIn(lines, { node: range.startContainer, offset: range.startOffset });
+  const b = range.collapsed ? a : lineIndexIn(lines, { node: range.endContainer, offset: range.endOffset });
+  if (wantMarks) revealMarks(lines, Math.min(a, b), Math.max(a, b));
+  if (wantOutline) markOutlineAt(Math.min(a, b));
 }
 
 function applyWriting(): void {
@@ -724,8 +799,10 @@ function toggleTypewriter(): void {
 function select(id: string | null): void {
   if (ui.selectedId !== id) {
     disarmDelete();
-    // The history sheet is about one note; it does not follow you to another.
+    // The history sheet and the find bar are about one note; they do not
+    // follow you to another.
     if (!el.historySheet.hidden) toggleHistory(false);
+    if (!el.findBar.hidden) closeFind(false);
   }
   ui.selectedId = id;
   saveUi();
@@ -849,12 +926,15 @@ function deleteSelected(): void {
   const n = selected();
   if (!n) return;
   const next = neighborOf(visibleNotes(), n.id);
+  const title = titleOf(n);
   notes = removeNote(notes, n.id);
+  editLogs.delete(n.id);
   scheduleSave();
   disarmDelete();
   select(next);
   if (next) focusList();
   else el.search.focus();
+  showStatus(`Deleted “${title}” · in Deleted notes for a month`, 4000);
 }
 
 function toggleHelp(force?: boolean): void {
@@ -880,7 +960,7 @@ function ensureEditable(): void {
 /** Puts the caret at the very end of the editor's content. */
 function caretToEnd(): void {
   const range = document.createRange();
-  range.selectNodeContents(el.editor);
+  range.selectNodeContents(docOf(el.editor));
   range.collapse(false);
   const sel = window.getSelection();
   sel?.removeAllRanges();
@@ -897,7 +977,8 @@ function selectionInEditor(): boolean {
 function insertImageChip(name: string, alt: string): void {
   el.editor.focus();
   if (!selectionInEditor()) caretToEnd();
-  // execCommand keeps the caret and undo history working inside contenteditable.
+  // execCommand keeps the caret working inside contenteditable.
+  markEdit();
   document.execCommand('insertHTML', false, imageChipHtml(name, alt));
   // A programmatic insert may not raise 'input' on every build, so store now.
   commitEditor();
@@ -912,6 +993,8 @@ function commitEditor(): void {
   scheduleSave();
   renderList();
   renderMeta();
+  renderOutline();
+  if (!el.findBar.hidden) refreshFind();
 }
 
 function altFor(fileName: string): string {
@@ -1232,8 +1315,16 @@ function convertDashesOnEnter(): boolean {
 
 // --- checklists -------------------------------------------------------------
 
-/** Replaces the body of the open note and puts the editor back in step with it. */
+/** Replaces the body of the open note and puts the editor back in step with it. Undoable. */
 function setBody(body: string): void {
+  const n = selected();
+  if (!n || n.body === body) return;
+  rememberEdit({ text: n.body, caret: caretOffsetOrStart() }, 'command');
+  applyBody(body);
+}
+
+/** The same, without remembering: for undo and redo themselves. */
+function applyBody(body: string): void {
   const n = selected();
   if (!n || n.body === body) return;
   notes = updateBody(notes, n.id, body);
@@ -1242,6 +1333,124 @@ function setBody(body: string): void {
   editorNoteId = null;
   renderList();
   renderEditor();
+}
+
+// --- undo -------------------------------------------------------------------
+
+/**
+ * Undo and redo are kept here, per note, as the text and the caret before
+ * each edit. The browser has an undo history of its own, but it is a log of
+ * DOM changes, and the live formatting changes the DOM without the text
+ * changing; that history would replay redraws as if they were typing. Text
+ * is what the note is, so text is what is remembered. Putting a state back
+ * is a plain re-render, the way every other rewrite of the body is done.
+ */
+interface EditState {
+  text: string;
+  caret: number;
+}
+
+interface EditLog {
+  undo: EditState[];
+  redo: EditState[];
+  /** When and of what kind the last edit was, so a run of typing is one step. */
+  lastAt: number;
+  lastKind: string;
+}
+
+const UNDO_LIMIT = 300;
+/** Keystrokes closer together than this, of the same kind, are one step to undo. */
+const UNDO_RUN_MS = 800;
+const RUN_KINDS = new Set(['insertText', 'deleteContentBackward', 'deleteContentForward', 'insertCompositionText']);
+
+const editLogs = new Map<string, EditLog>();
+/** The state before the edit the browser is about to make, taken at beforeinput. */
+let pendingEdit: EditState | null = null;
+
+function editLogFor(id: string): EditLog {
+  let log = editLogs.get(id);
+  if (!log) {
+    log = { undo: [], redo: [], lastAt: 0, lastKind: '' };
+    editLogs.set(id, log);
+  }
+  return log;
+}
+
+/** Where the selection starts, as an offset into the text; 0 when it is elsewhere. */
+function caretOffsetOrStart(): number {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return 0;
+  const range = sel.getRangeAt(0);
+  if (!el.editor.contains(range.startContainer)) return 0;
+  return offsetOf(el.editor, { node: range.startContainer, offset: range.startOffset });
+}
+
+/**
+ * Takes the state before an edit the app is about to make itself through an
+ * editing command, which raises no beforeinput of its own.
+ */
+function markEdit(): void {
+  const n = selected();
+  if (n && editorNoteId === n.id) pendingEdit = { text: n.body, caret: caretOffsetOrStart() };
+}
+
+/** Keeps the state before an edit of `kind`, folding a run of typing into one step. */
+function rememberEdit(before: EditState, kind: string): void {
+  const n = selected();
+  if (!n) return;
+  const log = editLogFor(n.id);
+  const now = Date.now();
+  const sameRun = RUN_KINDS.has(kind) && kind === log.lastKind && now - log.lastAt < UNDO_RUN_MS && log.undo.length > 0;
+  if (!sameRun) {
+    log.undo.push(before);
+    if (log.undo.length > UNDO_LIMIT) log.undo.shift();
+  }
+  log.lastAt = now;
+  log.lastKind = kind;
+  log.redo = [];
+}
+
+function restoreEdit(state: EditState): void {
+  applyBody(state.text);
+  el.editor.focus();
+  const { segments } = readEditor(el.editor);
+  const pos = posAt(segments, state.caret);
+  if (pos) {
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    const range = document.createRange();
+    range.setStart(pos.node, pos.offset);
+    range.collapse(true);
+    sel?.addRange(range);
+    const rect = caretRect();
+    if (rect) {
+      const box = el.editor.getBoundingClientRect();
+      if (rect.top < box.top || rect.bottom > box.bottom) el.editor.scrollTop += rect.top - (box.top + box.height / 2);
+    }
+  }
+  syncWriting();
+}
+
+function undoEdit(): void {
+  const n = selected();
+  if (!n) return;
+  const log = editLogFor(n.id);
+  const before = log.undo.pop();
+  if (!before) return;
+  log.redo.push({ text: n.body, caret: caretOffsetOrStart() });
+  log.lastKind = '';
+  restoreEdit(before);
+}
+
+function redoEdit(): void {
+  const n = selected();
+  if (!n) return;
+  const log = editLogFor(n.id);
+  const after = log.redo.pop();
+  if (!after) return;
+  log.undo.push({ text: n.body, caret: caretOffsetOrStart() });
+  log.lastKind = '';
+  restoreEdit(after);
 }
 
 // Links in the preview are the same links, and go to the same place.
@@ -1351,7 +1560,7 @@ window.addEventListener('resize', () => {
 function applyMove(moved: { body: string; index: number }): void {
   const n = selected();
   if (!n || moved.body === n.body) return;
-  renderEditorDom(el.editor, moved.body);
+  drawEditor(moved.body);
   commitEditor();
   const chip = chipsOf(el.editor)[moved.index];
   if (chip) {
@@ -1522,17 +1731,78 @@ document.addEventListener('pointerdown', (e) => {
 
 // --- editor input -----------------------------------------------------------
 
+/** True between compositionstart and compositionend: an IME owns the text then. */
+let composing = false;
+el.editor.addEventListener('compositionstart', () => {
+  composing = true;
+});
+el.editor.addEventListener('compositionend', () => {
+  composing = false;
+  decorateAfterInput();
+});
+
 el.editor.addEventListener('input', (e) => {
+  const kind = e instanceof InputEvent ? e.inputType : '';
   // Closing a link is the moment it becomes one, the way --- becomes a rule
   // on Enter. Anything else typed leaves the text exactly as it was typed.
   if (e instanceof InputEvent && e.data === ']') convertLinkOnClose();
+  // An edit that gave no warning — a script-driven command, a drop — is
+  // remembered from the model, which still holds the text before it.
+  const n = selected();
+  if (n && editorNoteId === n.id) rememberEdit(pendingEdit ?? { text: n.body, caret: caretOffsetOrStart() }, kind);
+  pendingEdit = null;
   commitEditor();
+  if (!composing) decorateAfterInput();
   syncWriting();
+});
+
+// What leaves the editor is markdown, whatever the browser would have made
+// of the formatting spans — and with the markers on other lines hidden,
+// the browser's own copy would leave them out.
+function selectionRangeInEditor(): Range | null {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+  const range = sel.getRangeAt(0);
+  return el.editor.contains(range.commonAncestorContainer) ? range : null;
+}
+el.editor.addEventListener('copy', (e) => {
+  const range = selectionRangeInEditor();
+  if (!range || !e.clipboardData) return;
+  e.preventDefault();
+  e.clipboardData.setData('text/plain', textOfRange(range));
+});
+el.editor.addEventListener('cut', (e) => {
+  const range = selectionRangeInEditor();
+  if (!range || !e.clipboardData) return;
+  e.preventDefault();
+  e.clipboardData.setData('text/plain', textOfRange(range));
+  document.execCommand('delete');
+});
+// What comes in is text: pasted HTML would bring its own tags, which the
+// serializer would drop and the formatting would then fight.
+el.editor.addEventListener('paste', (e) => {
+  if (!e.clipboardData || e.clipboardData.files.length > 0) return;
+  const text = e.clipboardData.getData('text/plain');
+  if (!text) return;
+  e.preventDefault();
+  markEdit();
+  document.execCommand('insertText', false, text.replace(/\r\n/g, '\n'));
 });
 
 // Enter inserts a plain line break rather than a new paragraph block, so the
 // content stays a flat run of text, breaks and image chips.
 el.editor.addEventListener('beforeinput', (e) => {
+  // Undo and redo are the app's own, kept as text: the browser's would try to
+  // undo the formatting's redraws along with the typing and lose its way.
+  if (e.inputType === 'historyUndo' || e.inputType === 'historyRedo') {
+    e.preventDefault();
+    if (e.inputType === 'historyUndo') undoEdit();
+    else redoEdit();
+    return;
+  }
+  // What the note looked like before this edit, kept if the edit goes through.
+  const n = selected();
+  if (n && editorNoteId === n.id) pendingEdit = { text: n.body, caret: caretOffsetOrStart() };
   if (e.inputType === 'insertParagraph') {
     e.preventDefault();
     if (!convertDashesOnEnter()) document.execCommand('insertLineBreak');
@@ -1570,6 +1840,7 @@ el.editor.addEventListener('keydown', (e) => {
         }
       }
     } else {
+      markEdit();
       document.execCommand('insertText', false, '  ');
     }
   }
@@ -1595,7 +1866,7 @@ el.title.addEventListener('keydown', (e) => {
     }
     el.editor.focus();
     const range = document.createRange();
-    range.selectNodeContents(el.editor);
+    range.selectNodeContents(docOf(el.editor));
     range.collapse(true);
     const sel = window.getSelection();
     sel?.removeAllRanges();
@@ -1638,6 +1909,12 @@ el.focusMode.addEventListener('change', () => {
 });
 el.typewriter.addEventListener('change', () => {
   if (el.typewriter.checked !== ui.typewriter) toggleTypewriter();
+});
+el.outlineShow.addEventListener('change', () => {
+  if (el.outlineShow.checked !== ui.outline) toggleOutline();
+});
+el.liveFormat.addEventListener('change', () => {
+  if (el.liveFormat.checked !== ui.liveFormat) toggleLiveFormat();
 });
 el.layoutBtn.addEventListener('click', () => toggleLayout(true));
 el.layoutSheet.addEventListener('click', (e) => {
@@ -1757,26 +2034,42 @@ el.historySheet.addEventListener('click', (e) => {
 
 // --- tray and the summon hotkey ---------------------------------------------
 
-/** True while the hotkey button is listening for the chord to record. */
-let recording = false;
+/** One of the two system-wide chords, with the row of the sheet that records it. */
+interface HotkeyRow {
+  key: 'hotkey' | 'captureHotkey';
+  failed: 'hotkeyFailed' | 'captureHotkeyFailed';
+  btn: HTMLButtonElement;
+  clear: HTMLButtonElement;
+  note: HTMLElement;
+  /** True while the button is listening for the chord to record. */
+  recording: boolean;
+}
 
-function renderSettings(note = ''): void {
+const hotkeyRows: HotkeyRow[] = [
+  { key: 'hotkey', failed: 'hotkeyFailed', btn: el.hotkeyBtn, clear: el.hotkeyClear, note: el.hotkeyNote, recording: false },
+  { key: 'captureHotkey', failed: 'captureHotkeyFailed', btn: el.captureHotkeyBtn, clear: el.captureHotkeyClear, note: el.captureHotkeyNote, recording: false },
+];
+
+function renderSettings(notes: Partial<Record<HotkeyRow['key'], string>> = {}): void {
   el.closeTray.checked = settings.closeToTray;
-  el.hotkeyBtn.classList.toggle('recording', recording);
-  el.hotkeyBtn.replaceChildren();
-  if (recording) {
-    el.hotkeyBtn.append('Press a combination…');
-  } else if (settings.hotkey) {
-    for (const part of keyLabel(settings.hotkey)) {
-      const k = document.createElement('kbd');
-      k.textContent = part;
-      el.hotkeyBtn.append(k);
+  for (const row of hotkeyRows) {
+    const chord = settings[row.key];
+    row.btn.classList.toggle('recording', row.recording);
+    row.btn.replaceChildren();
+    if (row.recording) {
+      row.btn.append('Press a combination…');
+    } else if (chord) {
+      for (const part of keyLabel(chord)) {
+        const k = document.createElement('kbd');
+        k.textContent = part;
+        row.btn.append(k);
+      }
+    } else {
+      row.btn.append('None');
     }
-  } else {
-    el.hotkeyBtn.append('None');
+    row.clear.hidden = !chord || row.recording;
+    row.note.textContent = notes[row.key] ?? '';
   }
-  el.hotkeyClear.hidden = !settings.hotkey || recording;
-  el.hotkeyNote.textContent = note;
 }
 
 /** Hands the settings to the main process, which is the one that acts on them. */
@@ -1786,12 +2079,14 @@ async function saveSettings(next: Settings): Promise<void> {
   renderSettings();
   try {
     const stored = await window.notesApi.setSettings(next);
-    settings = { closeToTray: stored.closeToTray, hotkey: stored.hotkey };
-    renderSettings(stored.hotkeyFailed ? 'Another program already uses that combination.' : '');
+    settings = { closeToTray: stored.closeToTray, hotkey: stored.hotkey, captureHotkey: stored.captureHotkey };
+    const notes: Partial<Record<HotkeyRow['key'], string>> = {};
+    for (const row of hotkeyRows) if (stored[row.failed]) notes[row.key] = 'Another program already uses that combination.';
+    renderSettings(notes);
   } catch (err) {
     console.error('[notes] could not save settings', err);
     settings = previous;
-    renderSettings('Could not save that setting.');
+    renderSettings({ hotkey: 'Could not save that setting.' });
   }
 }
 
@@ -1799,44 +2094,47 @@ el.closeTray.addEventListener('change', () => {
   void saveSettings({ ...settings, closeToTray: el.closeTray.checked });
 });
 
-function stopRecording(): void {
-  if (!recording) return;
-  recording = false;
-  renderSettings();
+for (const row of hotkeyRows) {
+  const stop = (): void => {
+    if (!row.recording) return;
+    row.recording = false;
+    renderSettings();
+  };
+  row.btn.addEventListener('click', () => {
+    row.recording = !row.recording;
+    renderSettings(row.recording ? { [row.key]: 'Esc cancels, Backspace clears.' } : {});
+  });
+  // The chord is read here, before the app's own keyboard map sees it, so
+  // recording Ctrl+Shift+P does not also pin the note.
+  row.btn.addEventListener('keydown', (e) => {
+    if (!row.recording) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === 'Escape') {
+      stop();
+      return;
+    }
+    if (e.key === 'Backspace' || e.key === 'Delete') {
+      row.recording = false;
+      void saveSettings({ ...settings, [row.key]: null });
+      return;
+    }
+    const chord = chordOf(e);
+    if (!chord) return;
+    if (!isCommandChord(chord)) {
+      renderSettings({ [row.key]: 'Hold Ctrl or Alt as part of the combination.' });
+      return;
+    }
+    row.recording = false;
+    void saveSettings({ ...settings, [row.key]: chord });
+  });
+  row.btn.addEventListener('blur', stop);
+  row.clear.addEventListener('click', () => void saveSettings({ ...settings, [row.key]: null }));
 }
 
-el.hotkeyBtn.addEventListener('click', () => {
-  recording = !recording;
-  renderSettings(recording ? 'Esc cancels, Backspace clears.' : '');
+el.openFolder.addEventListener('click', () => {
+  void window.notesApi.openNotesFolder().catch((err) => console.error('[notes] could not open the folder', err));
 });
-
-// The chord is read here, before the app's own keyboard map sees it, so
-// recording Ctrl+Shift+P does not also pin the note.
-el.hotkeyBtn.addEventListener('keydown', (e) => {
-  if (!recording) return;
-  e.preventDefault();
-  e.stopPropagation();
-  if (e.key === 'Escape') {
-    stopRecording();
-    return;
-  }
-  if (e.key === 'Backspace' || e.key === 'Delete') {
-    recording = false;
-    void saveSettings({ ...settings, hotkey: null });
-    return;
-  }
-  const chord = chordOf(e);
-  if (!chord) return;
-  if (!isCommandChord(chord)) {
-    renderSettings('Hold Ctrl or Alt as part of the combination.');
-    return;
-  }
-  recording = false;
-  void saveSettings({ ...settings, hotkey: chord });
-});
-
-el.hotkeyBtn.addEventListener('blur', stopRecording);
-el.hotkeyClear.addEventListener('click', () => void saveSettings({ ...settings, hotkey: null }));
 
 // --- search -----------------------------------------------------------------
 
@@ -1908,6 +2206,668 @@ el.helpSheet.addEventListener('click', (e) => {
   if (e.target === el.helpSheet) toggleHelp(false);
 });
 
+// --- outline ----------------------------------------------------------------
+
+/** The headings drawn in the outline, so an unchanged note is not redrawn while typing. */
+let outlineKey = '';
+let outlineHeadings: Heading[] = [];
+
+/**
+ * The note's headings, beside it. Only there when there are at least two:
+ * one heading is a title, and a column for it would be a column for nothing.
+ */
+function renderOutline(): void {
+  const n = selected();
+  const headings = n && ui.outline ? headingsIn(n.body) : [];
+  const show = headings.length >= 2 && !el.editorWrap.hidden;
+  const key = show ? headings.map((h) => `${h.level}:${h.line}:${h.text}`).join('\n') : '';
+  el.outline.hidden = !show;
+  el.outline.closest('.page')?.classList.toggle('has-outline', show);
+  if (key === outlineKey) return;
+  outlineKey = key;
+  outlineHeadings = headings;
+  el.outline.replaceChildren();
+  if (!show) return;
+  const label = document.createElement('span');
+  label.className = 'outline-label u';
+  label.textContent = 'Outline';
+  el.outline.append(label);
+  headings.forEach((h, i) => {
+    const row = document.createElement('button');
+    row.className = `outline-item l${h.level}`;
+    row.type = 'button';
+    row.dataset.index = String(i);
+    row.textContent = h.text;
+    row.title = h.text;
+    row.addEventListener('click', () => jumpToHeading(i));
+    el.outline.append(row);
+  });
+}
+
+/** Lights the heading the caret's line falls under. */
+function markOutlineAt(line: number): void {
+  const at = headingAt(outlineHeadings, line);
+  el.outline.querySelectorAll<HTMLElement>('.outline-item').forEach((row, i) => row.classList.toggle('at', i === at));
+}
+
+/** Where a line of the editor should scroll to sit: a little below the top. */
+const JUMP_AT = 0.18;
+
+function jumpToHeading(index: number): void {
+  const h = outlineHeadings[index];
+  if (!h) return;
+  if (ui.preview) {
+    // The nth heading of ours is the nth heading marked rendered, except
+    // where marked found one we do not look for; matching the words is safer.
+    const found = Array.from(el.preview.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6')).find(
+      (e) => (e.textContent ?? '').trim() === h.text,
+    );
+    found?.scrollIntoView({ block: 'start' });
+    el.preview.focus();
+    return;
+  }
+  caretToLineEnd(h.line);
+  const rect = caretRect();
+  if (rect) {
+    const box = el.editor.getBoundingClientRect();
+    el.editor.scrollTop += rect.top - (box.top + box.height * JUMP_AT);
+  }
+}
+
+function toggleOutline(): void {
+  ui.outline = !ui.outline;
+  saveUi();
+  el.outlineShow.checked = ui.outline;
+  renderOutline();
+  syncWriting();
+  showStatus(ui.outline ? 'Outline on' : 'Outline off', 1500);
+}
+
+// --- find and replace -------------------------------------------------------
+
+/** The names the match highlights are registered under; matched by ::highlight() in the CSS. */
+const FIND_ALL = 'note-find';
+const FIND_AT = 'note-find-at';
+
+const findOpts: FindOptions = { caseSensitive: false, regex: false };
+let findHits: FindMatch[] = [];
+/** Which match is the current one, or -1. */
+let findAt = -1;
+
+/** Shows the bar, with the replace row when asked, and puts the caret in the field. */
+function openFind(withReplace: boolean): void {
+  if (!selected()) {
+    // Nothing to search in: the search box is the nearest thing that helps.
+    if (ui.sidebarHidden) toggleSidebar();
+    el.search.focus();
+    el.search.select();
+    return;
+  }
+  if (ui.preview) {
+    ui.preview = false;
+    saveUi();
+    renderEditor();
+  }
+  // Selected words become the query, the way every editor does it.
+  const range = selectionRangeInEditor();
+  const picked = range ? textOfRange(range) : '';
+  if (picked && !picked.includes('\n')) el.findInput.value = picked;
+  el.findBar.hidden = false;
+  setReplaceRow(withReplace || !el.findReplaceRow.hidden);
+  refreshFind();
+  const field = withReplace && el.findInput.value ? el.replaceInput : el.findInput;
+  field.focus();
+  field.select();
+}
+
+function setReplaceRow(show: boolean): void {
+  el.findReplaceRow.hidden = !show;
+  el.findToggleReplace.setAttribute('aria-expanded', String(show));
+}
+
+/** Closes the bar. With `land`, the caret goes to the current match, so Esc means "take me there". */
+function closeFind(land: boolean): void {
+  if (el.findBar.hidden) return;
+  el.findBar.hidden = true;
+  const hit = findHits[findAt];
+  findHits = [];
+  findAt = -1;
+  paintFind();
+  el.editor.focus();
+  if (land && hit) {
+    const { segments } = readEditor(el.editor);
+    const range = rangeBetween(el.editor, segments, hit.start, hit.end);
+    if (range) {
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    }
+  }
+  syncWriting();
+}
+
+/** Re-runs the search on the note as it now stands, keeping the current match where it can. */
+function refreshFind(): void {
+  const n = selected();
+  const query = el.findInput.value;
+  const previous = findHits[findAt]?.start ?? -1;
+  findHits = n ? findMatches(n.body, query, findOpts) : [];
+  el.findInput.classList.toggle('no-match', query !== '' && (findHits.length === 0 || !validQuery(query, findOpts)));
+  if (findHits.length === 0) findAt = -1;
+  else if (previous >= 0) findAt = matchFrom(findHits, previous);
+  else findAt = matchFrom(findHits, caretOffset());
+  paintFind();
+}
+
+/** How far into the note the caret is, or 0 when it is elsewhere. */
+function caretOffset(): number {
+  const pos = caretPos();
+  return pos ? offsetOf(el.editor, pos) : 0;
+}
+
+/** Paints every match, the current one apart, and says how many there are. */
+function paintFind(): void {
+  const reg = highlights();
+  if (findHits.length === 0 || el.findBar.hidden) {
+    reg?.delete(FIND_ALL);
+    reg?.delete(FIND_AT);
+    el.findCount.textContent = el.findBar.hidden || !el.findInput.value ? '' : 'No matches';
+    return;
+  }
+  const { segments } = readEditor(el.editor);
+  const others: Range[] = [];
+  let current: Range | null = null;
+  findHits.forEach((hit, i) => {
+    const range = rangeBetween(el.editor, segments, hit.start, hit.end);
+    if (!range) return;
+    if (i === findAt) current = range;
+    else others.push(range);
+  });
+  if (reg) {
+    if (others.length > 0) reg.set(FIND_ALL, new Highlight(...others));
+    else reg.delete(FIND_ALL);
+    if (current) {
+      const at = new Highlight(current);
+      at.priority = 2;
+      reg.set(FIND_AT, at);
+    } else reg.delete(FIND_AT);
+  }
+  el.findCount.textContent = `${findAt + 1} of ${findHits.length}`;
+  if (current) scrollRangeIntoView(current);
+}
+
+function scrollRangeIntoView(range: Range): void {
+  const rect = range.getBoundingClientRect();
+  const box = el.editor.getBoundingClientRect();
+  if (rect.height === 0) return;
+  if (rect.top < box.top + 40 || rect.bottom > box.bottom - 40) {
+    el.editor.scrollTop += rect.top - (box.top + box.height * 0.35);
+  }
+}
+
+function stepFind(delta: 1 | -1): void {
+  if (findHits.length === 0) return;
+  findAt = (findAt + delta + findHits.length) % findHits.length;
+  paintFind();
+}
+
+/** Replaces the current match, then moves on to the next. */
+function replaceCurrent(): void {
+  const n = selected();
+  const hit = findHits[findAt];
+  if (!n || !hit) return;
+  const query = el.findInput.value;
+  const next = replaceOne(n.body, hit, query, el.replaceInput.value, findOpts);
+  const resume = hit.start;
+  setBody(next);
+  findHits = findMatches(next, query, findOpts);
+  findAt = matchFrom(findHits, resume + 1);
+  // The match just replaced may have been the last; wrap to the first.
+  if (findAt < 0 && findHits.length > 0) findAt = 0;
+  paintFind();
+}
+
+function replaceEvery(): void {
+  const n = selected();
+  if (!n) return;
+  const { text, count } = replaceAll(n.body, el.findInput.value, el.replaceInput.value, findOpts);
+  if (count === 0) return;
+  setBody(text);
+  refreshFind();
+  showStatus(`Replaced ${count} ${count === 1 ? 'match' : 'matches'}`, 2500);
+}
+
+el.findInput.addEventListener('input', refreshFind);
+el.findInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    stepFind(e.shiftKey ? -1 : 1);
+  }
+});
+el.replaceInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey) replaceEvery();
+    else replaceCurrent();
+  }
+});
+// Esc inside the bar closes it before the window's own Esc chain runs.
+el.findBar.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+    closeFind(true);
+  }
+});
+el.findPrev.addEventListener('click', () => stepFind(-1));
+el.findNext.addEventListener('click', () => stepFind(1));
+el.findClose.addEventListener('click', () => closeFind(false));
+el.findToggleReplace.addEventListener('click', () => {
+  setReplaceRow(el.findReplaceRow.hidden);
+  if (!el.findReplaceRow.hidden) el.replaceInput.focus();
+});
+el.replaceOne.addEventListener('click', replaceCurrent);
+el.replaceAll.addEventListener('click', replaceEvery);
+for (const [btn, key] of [
+  [el.findCase, 'caseSensitive'],
+  [el.findRegex, 'regex'],
+] as const) {
+  btn.addEventListener('click', () => {
+    findOpts[key] = !findOpts[key];
+    btn.setAttribute('aria-pressed', String(findOpts[key]));
+    refreshFind();
+    el.findInput.focus();
+  });
+}
+
+// --- live formatting --------------------------------------------------------
+
+/** The HTML each line was last drawn from, by line, so unchanged lines are not touched. */
+let drawn: string[] = [];
+
+/** Where the chips sit on each line of a body, for the decorator to leave alone. */
+function chipSpansByLine(text: string, lines: string[]): Protected[][] {
+  const starts: number[] = [];
+  let at = 0;
+  for (const line of lines) {
+    starts.push(at);
+    at += line.length + 1;
+  }
+  const out: Protected[][] = lines.map(() => []);
+  for (const tok of bodyTokens(text)) {
+    let line = 0;
+    while (line + 1 < starts.length && starts[line + 1] <= tok.start) line++;
+    out[line].push({ start: tok.start - starts[line], end: tok.end - starts[line] });
+  }
+  return out;
+}
+
+const CHIP_SELECTOR = '.inline-img, .inline-rule, .inline-link';
+
+/** The chip elements a range of the editor holds, in order. */
+function chipsInRange(range: Range): Element[] {
+  return Array.from(el.editor.querySelectorAll(CHIP_SELECTOR)).filter((c) => range.intersectsNode(c));
+}
+
+function rangeOverLines(from: LineSpan, to: LineSpan): Range {
+  const range = document.createRange();
+  range.setStart(from.start.node, from.start.offset);
+  range.setEnd(to.end.node, to.end.offset);
+  return range;
+}
+
+/**
+ * A line's DOM as the HTML the decorator would have to produce to match it:
+ * chips as placeholders, the one entity the browser writes that the decorator
+ * does not, and no empty wrappers, so a line that already reads right is
+ * left alone.
+ */
+function currentLineHtml(range: Range): string {
+  const frag = range.cloneContents();
+  for (const chip of Array.from(frag.querySelectorAll(CHIP_SELECTOR))) chip.replaceWith(document.createComment('chip'));
+  for (const empty of Array.from(frag.querySelectorAll('[class^="md-"]'))) {
+    if (!empty.textContent && !empty.querySelector(CHIP_SELECTOR) && !empty.querySelector('br')) empty.remove();
+  }
+  const holder = document.createElement('div');
+  holder.append(frag);
+  return holder.innerHTML.replace(/&nbsp;/g, ' ');
+}
+
+/** True when a DOM position sits inside one of the formatting wrappers. */
+function insideWrapper(pos: { node: Node; offset: number }): boolean {
+  const base = docOf(el.editor);
+  let node: Node | null = pos.node.nodeType === Node.TEXT_NODE ? pos.node.parentNode : pos.node;
+  while (node && node !== base && node !== el.editor) {
+    if (node instanceof HTMLElement && Array.from(node.classList).some((c) => c.startsWith('md-'))) return true;
+    node = node.parentNode;
+  }
+  return false;
+}
+
+/**
+ * Redraws a run of lines from their HTML, straight into the DOM, keeping the
+ * real chips: an image element is moved, never remade, so it stays loaded.
+ * The browser's own undo history is not consulted for this — the app keeps
+ * its own, in text, which is why a redraw need not be undoable.
+ */
+function patchBlock(lines: LineSpan[], from: number, to: number, html: string[]): void {
+  const range = rangeOverLines(lines[from], lines[to]);
+  const chips = chipsInRange(range);
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html.slice(from, to + 1).join('<br>');
+  const walker = document.createTreeWalker(tpl.content, NodeFilter.SHOW_COMMENT);
+  const slots: ChildNode[] = [];
+  while (walker.nextNode()) slots.push(walker.currentNode as ChildNode);
+  slots.forEach((slot, i) => {
+    const chip = chips[i];
+    if (chip) slot.replaceWith(chip);
+    else slot.remove();
+  });
+  range.deleteContents();
+  range.insertNode(tpl.content);
+}
+
+/** Draws the formatting over the whole editor. For a fresh render, where there is no caret to keep. */
+function decorateAll(): void {
+  drawn = [];
+  el.editor.classList.toggle('live', ui.liveFormat);
+  if (!ui.liveFormat) return;
+  const { text, lines } = readEditor(el.editor);
+  const rows = text.split('\n');
+  const html = decorateLines(rows, chipSpansByLine(text, rows));
+  // Bottom up, so redrawing a line cannot move the spans of the lines still to do.
+  for (let i = Math.min(lines.length, html.length) - 1; i >= 0; i--) {
+    if (isDecorated(html[i])) patchBlock(lines, i, i, html);
+  }
+  drawn = html;
+}
+
+/**
+ * After a keystroke: works out what every line should look like, and redraws
+ * only the lines that no longer do — usually none, since typing inside a
+ * bold word lands in the bold span already there. Lines are redrawn in runs
+ * that begin and end outside any wrapper, so a line break the browser put
+ * inside a heading span cannot leave the next line trapped in it. The caret
+ * is put back by its offset in the text, which the redraw does not change.
+ */
+function decorateAfterInput(): void {
+  if (!ui.liveFormat || ui.preview) return;
+  const { text, lines } = readEditor(el.editor);
+  const rows = text.split('\n');
+  const html = decorateLines(rows, chipSpansByLine(text, rows));
+  const count = Math.min(lines.length, html.length);
+  const stale: boolean[] = [];
+  let any = false;
+  for (let i = 0; i < count; i++) {
+    stale[i] = html[i] !== drawn[i] && currentLineHtml(rangeOverLines(lines[i], lines[i])) !== html[i];
+    any ||= stale[i];
+  }
+  drawn = html;
+  if (!any) return;
+  // Runs of stale lines, widened until both ends sit outside every wrapper.
+  const blocks: Array<[number, number]> = [];
+  for (let i = 0; i < count; i++) {
+    if (!stale[i]) continue;
+    let from = i;
+    let to = i;
+    while (to + 1 < count && stale[to + 1]) to++;
+    while (from > 0 && insideWrapper(lines[from].start)) from--;
+    while (to + 1 < count && insideWrapper(lines[to].end)) to++;
+    const last = blocks[blocks.length - 1];
+    if (last && from <= last[1] + 1) last[1] = Math.max(last[1], to);
+    else blocks.push([from, to]);
+    i = to;
+  }
+  const sel = window.getSelection();
+  const keep =
+    sel && sel.rangeCount > 0 && sel.anchorNode && sel.focusNode && el.editor.contains(sel.anchorNode)
+      ? {
+          anchor: offsetOf(el.editor, { node: sel.anchorNode, offset: sel.anchorOffset }),
+          focus: offsetOf(el.editor, { node: sel.focusNode, offset: sel.focusOffset }),
+        }
+      : null;
+  for (let k = blocks.length - 1; k >= 0; k--) patchBlock(lines, blocks[k][0], blocks[k][1], html);
+  // The marks on the caret line are new elements now; let them be found again.
+  revealedLines = '';
+  syncWriting();
+  if (keep && sel) {
+    const { segments } = readEditor(el.editor);
+    const a = posAt(segments, keep.anchor);
+    const f = posAt(segments, keep.focus);
+    if (a && f) sel.setBaseAndExtent(a.node, a.offset, f.node, f.offset);
+  }
+}
+
+
+/** The marks last revealed, so they can be hidden again without a search. */
+let revealed: Element[] = [];
+let revealedLines = '';
+
+/** Shows the markers on the lines the caret is on, and hides them everywhere else. */
+function revealMarks(lines: LineSpan[] | null, from: number, to: number): void {
+  const key = lines ? `${from}-${to}-${lines.length}` : '';
+  if (key === revealedLines && key !== '') return;
+  revealedLines = key;
+  for (const m of revealed) m.classList.remove('raw');
+  revealed = [];
+  if (!lines || from < 0) return;
+  const range = document.createRange();
+  const a = lines[Math.max(0, from)];
+  const b = lines[Math.min(lines.length - 1, to)];
+  if (!a || !b) return;
+  range.setStart(a.start.node, a.start.offset);
+  range.setEnd(b.end.node, b.end.offset);
+  for (const m of Array.from(el.editor.querySelectorAll('.md-mark'))) {
+    if (range.intersectsNode(m)) {
+      m.classList.add('raw');
+      revealed.push(m);
+    }
+  }
+}
+
+function toggleLiveFormat(): void {
+  ui.liveFormat = !ui.liveFormat;
+  saveUi();
+  el.liveFormat.checked = ui.liveFormat;
+  // The editor only re-renders on a note switch, so tell it this counts as one.
+  editorNoteId = null;
+  renderEditor();
+  if (selected() && !ui.preview) caretToEnd();
+  showStatus(ui.liveFormat ? 'Live formatting on' : 'Live formatting off', 1500);
+}
+
+// --- deleted notes ----------------------------------------------------------
+
+let trashed: TrashedNote[] = [];
+let trashAt: string | null = null;
+
+function toggleTrash(force?: boolean): void {
+  const open = force ?? el.trashSheet.hidden;
+  el.trashSheet.hidden = !open;
+  if (!open) {
+    focusEditor();
+    return;
+  }
+  el.trashSheet.querySelector<HTMLElement>('.sheet-card')?.focus();
+  void loadTrash();
+}
+
+async function loadTrash(): Promise<void> {
+  trashed = [];
+  trashAt = null;
+  el.trashList.replaceChildren();
+  el.trashPreview.textContent = '';
+  el.trashNote.textContent = 'Reading…';
+  el.trashRestore.disabled = true;
+  el.trashPurge.disabled = true;
+  try {
+    trashed = await window.notesApi.trashList();
+  } catch (err) {
+    console.error('[notes] could not read the trash', err);
+    el.trashNote.textContent = 'Could not read the deleted notes.';
+    return;
+  }
+  drawTrash();
+  if (trashed.length > 0) void showTrashed(trashed[0].id);
+}
+
+function drawTrash(): void {
+  el.trashList.replaceChildren();
+  if (trashed.length === 0) {
+    const none = document.createElement('div');
+    none.className = 'history-none u';
+    none.textContent = 'Nothing has been deleted.';
+    el.trashList.append(none);
+    el.trashNote.textContent = 'A deleted note waits here for a month, then goes for good.';
+    return;
+  }
+  const now = Date.now();
+  for (const t of trashed) {
+    const row = document.createElement('button');
+    row.className = `history-row${t.id === trashAt ? ' at' : ''}`;
+    row.type = 'button';
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', String(t.id === trashAt));
+    const when = document.createElement('span');
+    when.className = 'history-when u';
+    when.textContent = `Deleted ${relativeTime(t.deletedAt, now)}`;
+    when.title = absoluteTime(t.deletedAt);
+    const what = document.createElement('span');
+    what.className = 'history-what';
+    what.textContent = t.title === 'Untitled' && t.preview ? t.preview : t.title;
+    row.append(when, what);
+    row.addEventListener('click', () => void showTrashed(t.id));
+    el.trashList.append(row);
+  }
+}
+
+async function showTrashed(id: string): Promise<void> {
+  trashAt = id;
+  drawTrash();
+  el.trashRestore.disabled = true;
+  el.trashPurge.disabled = true;
+  const note = await window.notesApi.trashGet(id).catch(() => null);
+  if (!note || trashAt !== id) return;
+  el.trashPreview.textContent = note.body || '(empty)';
+  const t = trashed.find((x) => x.id === id);
+  el.trashNote.textContent = `${titleOf(note)} · ${note.body.length} characters · last edited ${relativeTime(note.updatedAt)}`;
+  el.trashRestore.disabled = false;
+  el.trashPurge.disabled = !t;
+}
+
+async function restoreTrashed(): Promise<void> {
+  if (!trashAt) return;
+  const id = trashAt;
+  const note = await window.notesApi.trashRestore(id).catch(() => null);
+  if (!note) {
+    showStatus('That note could not be put back', 3000);
+    return;
+  }
+  notes = [note, ...notes.filter((n) => n.id !== note.id)];
+  scheduleSave();
+  clearFilters();
+  toggleTrash(false);
+  select(note.id);
+  focusEditor();
+  showStatus(`Put back “${titleOf(note)}”`, 3000);
+}
+
+async function purgeTrashed(): Promise<void> {
+  if (!trashAt) return;
+  const id = trashAt;
+  const t = trashed.find((x) => x.id === id);
+  const gone = await window.notesApi.trashPurge(id).catch(() => false);
+  if (!gone) {
+    showStatus('That note could not be removed', 3000);
+    return;
+  }
+  showStatus(`Removed “${t?.title ?? 'the note'}” for good`, 3000);
+  await loadTrash();
+}
+
+el.trashRestore.addEventListener('click', () => void restoreTrashed());
+el.trashPurge.addEventListener('click', () => void purgeTrashed());
+el.trashSheet.addEventListener('click', (e) => {
+  if (e.target === el.trashSheet) toggleTrash(false);
+});
+el.historyTrash.addEventListener('click', () => {
+  toggleHistory(false);
+  toggleTrash(true);
+});
+
+// --- the inbox: quick notes from the capture box -----------------------------
+
+const INBOX_TITLE = 'Inbox';
+
+/** The Inbox note, started if there is none. */
+function inboxNote(): Note {
+  const hit = notes.find((n) => linkKey(titleOf(n)) === linkKey(INBOX_TITLE));
+  if (hit) return hit;
+  const made = createNote();
+  made.title = INBOX_TITLE;
+  notes = [made, ...notes];
+  return made;
+}
+
+/** Whether the notes have been loaded; a quick note that arrives sooner waits. */
+let loaded = false;
+const captureQueue: string[] = [];
+
+/** Files a quick note at the bottom of the Inbox, as its own paragraph. */
+function captureToInbox(text: string): void {
+  const clean = text.replace(/\r\n/g, '\n').trim();
+  if (!clean) return;
+  if (!loaded) {
+    captureQueue.push(clean);
+    return;
+  }
+  const inbox = inboxNote();
+  const body = inbox.body.trimEnd() ? `${inbox.body.trimEnd()}\n\n${clean}` : clean;
+  notes = updateBody(notes, inbox.id, body);
+  scheduleSave();
+  // If the Inbox is the note on screen, it must show the new line.
+  if (ui.selectedId === inbox.id) editorNoteId = null;
+  renderList();
+  renderEditor();
+  showStatus('Added to Inbox', 2500);
+}
+
+window.notesApi.onCapture(captureToInbox);
+
+// --- changes made outside the app -------------------------------------------
+
+/**
+ * Files in the notes folder changed by something else — a sync tool, an
+ * editor on another machine. They are taken as they are, except for the note
+ * being written in this moment, whose unsaved words are not to be lost to a
+ * file that arrived while they were typed.
+ */
+function applyExternal(changes: ExternalChanges): void {
+  let touched = 0;
+  const keep = dirty ? ui.selectedId : null;
+  for (const id of changes.removed) {
+    if (id === keep || !notes.some((n) => n.id === id)) continue;
+    notes = removeNote(notes, id);
+    touched++;
+  }
+  for (const note of changes.upserts) {
+    if (note.id === keep) continue;
+    const i = notes.findIndex((n) => n.id === note.id);
+    if (i < 0) notes = [note, ...notes];
+    else if (notes[i].body === note.body && (notes[i].title ?? '') === (note.title ?? '') && notes[i].pinned === note.pinned && notes[i].updatedAt === note.updatedAt) continue;
+    else notes = notes.map((n) => (n.id === note.id ? note : n));
+    touched++;
+    if (note.id === ui.selectedId) editorNoteId = null;
+  }
+  if (touched === 0) return;
+  if (ui.selectedId && !notes.some((n) => n.id === ui.selectedId)) ui.selectedId = sortByEdited(notes)[0]?.id ?? null;
+  renderList();
+  renderEditor();
+  showStatus(touched === 1 ? 'A note changed on disk' : `${touched} notes changed on disk`, 3000);
+}
+
+window.notesApi.onExternalChange(applyExternal);
+
 // --- the command registry ---------------------------------------------------
 
 /**
@@ -1925,13 +2885,29 @@ const ACTIONS: Action[] = [
     label: 'Find a note',
     group: 'Notes',
     chord: 'ctrl+k',
-    also: ['ctrl+f'],
     terms: 'search filter',
     run: () => {
       if (ui.sidebarHidden) toggleSidebar();
       el.search.focus();
       el.search.select();
     },
+  },
+  {
+    id: 'trash',
+    label: 'Deleted notes…',
+    hint: 'What was deleted in the last month, to look at or put back',
+    group: 'Notes',
+    chord: 'ctrl+shift+backspace',
+    terms: 'trash bin undelete restore recover',
+    run: () => toggleTrash(),
+  },
+  {
+    id: 'folder',
+    label: 'Open the notes folder',
+    hint: 'One markdown file per note; put the folder in OneDrive or git to keep them elsewhere too',
+    group: 'Notes',
+    terms: 'files explorer markdown sync backup',
+    run: () => void window.notesApi.openNotesFolder().catch((err) => console.error('[notes] could not open the folder', err)),
   },
   { id: 'prev', label: 'Previous note', group: 'Notes', chord: 'ctrl+arrowup', run: () => step(-1) },
   { id: 'next', label: 'Next note', group: 'Notes', chord: 'ctrl+arrowdown', run: () => step(1) },
@@ -2035,6 +3011,42 @@ const ACTIONS: Action[] = [
     terms: 'todo checkbox tick',
     run: toggleTaskHere,
   },
+  {
+    id: 'undo',
+    label: 'Undo',
+    hint: 'A run of typing is one step; a replace or a restore is one too',
+    group: 'Writing',
+    chord: 'ctrl+z',
+    enabled: () => document.activeElement === el.editor,
+    run: undoEdit,
+  },
+  {
+    id: 'redo',
+    label: 'Redo',
+    group: 'Writing',
+    chord: 'ctrl+y',
+    also: ['ctrl+shift+z'],
+    enabled: () => document.activeElement === el.editor,
+    run: redoEdit,
+  },
+  {
+    id: 'find-in-note',
+    label: 'Find in this note',
+    hint: 'Enter and Shift+Enter step through the matches; Esc lands on the current one',
+    group: 'Writing',
+    chord: 'ctrl+f',
+    terms: 'search within match',
+    run: () => openFind(false),
+  },
+  {
+    id: 'replace-in-note',
+    label: 'Replace in this note',
+    hint: 'Find with a replace field; Enter replaces one match, Ctrl+Enter every one',
+    group: 'Writing',
+    chord: 'ctrl+h',
+    terms: 'substitute rename all regex',
+    run: () => openFind(true),
+  },
 
   {
     id: 'preview',
@@ -2044,6 +3056,26 @@ const ACTIONS: Action[] = [
     enabled: hasNote,
     on: () => ui.preview,
     run: togglePreview,
+  },
+  {
+    id: 'live',
+    label: 'Live formatting',
+    hint: 'Headings, bold, code and lists take their shape as you write them',
+    group: 'View',
+    chord: 'ctrl+shift+m',
+    terms: 'markdown render inline wysiwyg markers',
+    on: () => ui.liveFormat,
+    run: toggleLiveFormat,
+  },
+  {
+    id: 'outline',
+    label: 'Outline',
+    hint: 'The note’s headings beside it, to jump by; shown once a note has two',
+    group: 'View',
+    chord: 'ctrl+shift+l',
+    terms: 'headings contents toc navigate',
+    on: () => ui.outline,
+    run: toggleOutline,
   },
   {
     id: 'focus',
@@ -2281,6 +3313,10 @@ function onEscape(): void {
     togglePalette(false);
   } else if (!el.exportMenu.hidden) {
     closeExportMenu(true);
+  } else if (!el.findBar.hidden) {
+    closeFind(true);
+  } else if (!el.trashSheet.hidden) {
+    toggleTrash(false);
   } else if (!el.historySheet.hidden) {
     toggleHistory(false);
   } else if (!el.layoutSheet.hidden) {
@@ -2333,16 +3369,21 @@ window.setInterval(() => {
 async function init(): Promise<void> {
   const file = await window.notesApi.load();
   notes = file.notes;
+  loaded = true;
   if (ui.selectedId && !notes.some((n) => n.id === ui.selectedId)) ui.selectedId = null;
   if (!ui.selectedId) ui.selectedId = sortByEdited(notes)[0]?.id ?? null;
   renderKeyGroups();
   applySidebar();
   applyLayout();
   applyWriting();
+  el.outlineShow.checked = ui.outline;
+  el.liveFormat.checked = ui.liveFormat;
   renderList();
   renderEditor();
   if (selected()) focusEditor();
   else el.search.focus();
+  // Quick notes taken before the notes were read are filed now.
+  for (const text of captureQueue.splice(0)) captureToInbox(text);
   // The tray's New note item, and the settings the main process is acting on.
   window.notesApi.onNewNote(() => newNote());
   try {

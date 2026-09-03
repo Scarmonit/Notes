@@ -6,11 +6,24 @@ import { IPC } from '../shared/channels';
 import type { ExportRequest, Note, NotesFile } from '../shared/types';
 import type { Settings } from '../shared/settings';
 import { installAssetProtocol, pickAttachments, registerAssetScheme, saveAttachment, sweepOrphans } from './attachments';
+import { destroyCapture, hideCapture, showCapture, toggleCapture } from './capture';
 import { installContextMenu } from './context-menu';
 import { exportNote } from './export';
-import { getSnapshot, keepNow, listHistory, record } from './history-store';
+import { forgetHistory, getSnapshot, keepNow, listHistory, record } from './history-store';
 import { pickImports } from './import';
-import { loadNotes, saveNotes } from './notes-store';
+import {
+  expireTrash,
+  getTrashed,
+  listTrash,
+  loadNotes,
+  notesDir,
+  purgeTrashed,
+  restoreFromTrash,
+  saveNotes,
+  stopWatching,
+  trashedIds,
+  watchNotes,
+} from './notes-store';
 import { loadSettings, saveSettings, settings } from './settings';
 import { applyHotkey, createTray, destroyTray, showWindow, toggleWindow } from './tray';
 
@@ -61,6 +74,12 @@ function createWindow(): BrowserWindow {
   });
 
   win.once('ready-to-show', () => win.show());
+  // The quick-note box is a window too, so 'window-all-closed' would wait on
+  // it; the notes window going away is what ends the app.
+  win.on('closed', () => {
+    mainWin = null;
+    app.quit();
+  });
 
   installContextMenu(win);
 
@@ -133,6 +152,19 @@ function windowFor(event: Electron.IpcMainInvokeEvent): BrowserWindow {
   return win;
 }
 
+/** The notes window, once it exists. The capture box and the tray talk to it. */
+let mainWin: BrowserWindow | null = null;
+
+/** Registers both system-wide chords; returns which of them could not be. */
+function applyHotkeys(): { hotkeyFailed: boolean; captureHotkeyFailed: boolean } {
+  const s = settings();
+  const summon = applyHotkey('summon', s.hotkey, () => {
+    if (mainWin) toggleWindow(mainWin);
+  });
+  const capture = applyHotkey('capture', s.captureHotkey, toggleCapture);
+  return { hotkeyFailed: s.hotkey !== null && !summon, captureHotkeyFailed: s.captureHotkey !== null && !capture };
+}
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
@@ -142,18 +174,34 @@ if (!app.requestSingleInstanceLock()) {
   Menu.setApplicationMenu(null);
 
   app.on('second-instance', () => {
-    const win = BrowserWindow.getAllWindows()[0];
-    if (win) showWindow(win);
+    if (mainWin) showWindow(mainWin);
   });
 
-  ipcMain.handle(IPC.notesLoad, () => loadNotes());
+  let housekept = false;
+  ipcMain.handle(IPC.notesLoad, async (event) => {
+    const file = await loadNotes();
+    // The folder exists now, so it can be watched; and the trash can be
+    // emptied of what has waited long enough. Once per launch, behind the load.
+    if (!housekept) {
+      housekept = true;
+      const win = windowFor(event);
+      watchNotes((changes) => {
+        if (!win.isDestroyed()) win.webContents.send(IPC.externalChange, changes);
+      });
+      void expireTrash()
+        .then((gone) => Promise.all(gone.map(forgetHistory)))
+        .catch((err) => console.error('[notes] emptying the trash failed', err));
+    }
+    return file;
+  });
   ipcMain.handle(IPC.notesSave, async (_event, file: NotesFile) => {
     await saveNotes(file);
     // Both run behind the save, never in front of it: neither the snapshot
     // ring nor the attachment sweep may delay or endanger the write itself.
-    void record(file.notes);
+    void record(file.notes, trashedIds());
     void sweepOrphans(file).catch((err) => console.error('[notes] attachment sweep failed', err));
   });
+  ipcMain.handle(IPC.openFolder, () => shell.openPath(notesDir()).then(() => undefined));
   ipcMain.handle(IPC.attach, (_event, bytes: Uint8Array, name: string) => saveAttachment(bytes, name));
   ipcMain.handle(IPC.pickAttachments, (event) => pickAttachments(windowFor(event)));
   ipcMain.handle(IPC.pickImports, (event) => pickImports(windowFor(event)));
@@ -161,29 +209,49 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle(IPC.historyList, (_event, noteId: string) => listHistory(noteId));
   ipcMain.handle(IPC.historyGet, (_event, noteId: string, at: number) => getSnapshot(noteId, at));
   ipcMain.handle(IPC.historyKeep, (_event, note: Note) => keepNow(note));
+  ipcMain.handle(IPC.trashList, () => listTrash());
+  ipcMain.handle(IPC.trashGet, (_event, id: string) => getTrashed(id));
+  ipcMain.handle(IPC.trashRestore, (_event, id: string) => restoreFromTrash(id));
+  ipcMain.handle(IPC.trashPurge, async (_event, id: string) => {
+    const gone = await purgeTrashed(id);
+    if (gone) await forgetHistory(id);
+    return gone;
+  });
   ipcMain.handle(IPC.copyText, (_event, text: string) => clipboard.writeText(text));
   ipcMain.handle(IPC.settingsGet, () => settings());
-  ipcMain.handle(IPC.settingsSet, async (event, next: Settings) => {
+  ipcMain.handle(IPC.settingsSet, async (_event, next: Settings) => {
     const stored = await saveSettings(next);
-    const win = windowFor(event);
-    const ok = applyHotkey(stored.hotkey, () => toggleWindow(win));
-    return { ...stored, hotkeyFailed: stored.hotkey !== null && !ok };
+    return { ...stored, ...applyHotkeys() };
   });
+
+  // The quick-note box hands its text to the notes window, which owns the
+  // notes, and goes away either way.
+  ipcMain.handle(IPC.captureSend, (_event, text: string) => {
+    hideCapture();
+    if (mainWin && !mainWin.isDestroyed() && typeof text === 'string' && text.trim()) mainWin.webContents.send(IPC.captured, text);
+  });
+  ipcMain.handle(IPC.captureDismiss, () => hideCapture());
 
   void app.whenReady().then(async () => {
     installAssetProtocol();
     await loadSettings();
     const win = createWindow();
-    createTray(win, () => {
-      showWindow(win);
-      win.webContents.send(IPC.newNote);
+    mainWin = win;
+    createTray(win, {
+      newNote: () => {
+        showWindow(win);
+        win.webContents.send(IPC.newNote);
+      },
+      quickNote: showCapture,
     });
-    applyHotkey(settings().hotkey, () => toggleWindow(win));
+    applyHotkeys();
   });
 
   app.on('window-all-closed', () => app.quit());
   app.on('will-quit', () => {
     globalShortcut.unregisterAll();
+    stopWatching();
+    destroyCapture();
     destroyTray();
   });
 }

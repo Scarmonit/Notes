@@ -4,9 +4,9 @@ import path from 'node:path';
 import { acceleratorOf } from '../shared/keys';
 
 /**
- * The tray icon and the system-wide hotkey: the two ways the app can be
- * reached while its window is not in front. Both are optional conveniences,
- * so every failure here is logged and shrugged off rather than thrown.
+ * The tray icon and the system-wide hotkeys: the ways the app can be reached
+ * while its window is not in front. All are optional conveniences, so every
+ * failure here is logged and shrugged off rather than thrown.
  */
 
 /** The app icon on disk. Packaged builds carry it as an extra resource. */
@@ -32,7 +32,12 @@ export function toggleWindow(win: BrowserWindow): void {
   else showWindow(win);
 }
 
-export function createTray(win: BrowserWindow, onNewNote: () => void): void {
+export interface TrayActions {
+  newNote: () => void;
+  quickNote: () => void;
+}
+
+export function createTray(win: BrowserWindow, actions: TrayActions): void {
   if (tray) return;
   const file = iconPath();
   const image = file ? nativeImage.createFromPath(file) : nativeImage.createEmpty();
@@ -45,7 +50,8 @@ export function createTray(win: BrowserWindow, onNewNote: () => void): void {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: 'Show Notes', click: () => showWindow(win) },
-      { label: 'New note', click: onNewNote },
+      { label: 'New note', click: actions.newNote },
+      { label: 'Quick note', click: actions.quickNote },
       { type: 'separator' },
       { label: 'Quit Notes', click: () => app.quit() },
     ]),
@@ -59,27 +65,35 @@ export function destroyTray(): void {
   tray = null;
 }
 
-let registered: string | null = null;
+/** Which of the app's system-wide chords is being set. */
+export type HotkeySlot = 'summon' | 'capture';
+
+const registered = new Map<HotkeySlot, string>();
 
 /**
- * Registers the summon hotkey, replacing whatever was registered before.
- * Returns false when the chord is unusable or another app already owns it,
- * which the settings UI reports rather than failing silently.
+ * Registers one of the system-wide chords, replacing whatever that slot held
+ * before. Returns false when the chord is unusable or another app already
+ * owns it, which the settings UI reports rather than failing silently.
  */
-export function applyHotkey(chord: string | null, run: () => void): boolean {
-  if (registered) {
-    globalShortcut.unregister(registered);
-    registered = null;
+export function applyHotkey(slot: HotkeySlot, chord: string | null, run: () => void): boolean {
+  const previous = registered.get(slot);
+  if (previous) {
+    globalShortcut.unregister(previous);
+    registered.delete(slot);
   }
   if (!chord) return true;
   const accelerator = acceleratorOf(chord);
   if (!accelerator) return false;
+  // The two slots must not fight over one chord; the later one loses.
+  for (const [other, acc] of registered) {
+    if (other !== slot && acc === accelerator) return false;
+  }
   try {
     if (!globalShortcut.register(accelerator, run)) return false;
   } catch (err) {
     console.error('[notes] could not register the global shortcut', err);
     return false;
   }
-  registered = accelerator;
+  registered.set(slot, accelerator);
   return true;
 }

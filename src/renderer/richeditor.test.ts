@@ -15,6 +15,11 @@ import {
   serializeEditor,
   setChipWidth,
   textBefore,
+  docOf,
+  offsetOf,
+  posAt,
+  rangeBetween,
+  readEditor,
 } from './richeditor';
 
 const NAME = 'deadbeef12ab34cd.png';
@@ -177,7 +182,8 @@ describe('lines', () => {
     const div = editor();
     renderEditor(div, `a\n![x](note-asset://${NAME})\nb`);
     const img = div.querySelector('img') as HTMLImageElement;
-    expect(lineIndexAt(div, { node: div, offset: Array.from(div.childNodes).indexOf(img) })).toBe(1);
+    const doc = docOf(div);
+    expect(lineIndexAt(div, { node: doc, offset: Array.from(doc.childNodes).indexOf(img) })).toBe(1);
   });
 });
 
@@ -279,7 +285,7 @@ describe('textBefore', () => {
   it('keeps trailing newlines so the caret line can be judged', () => {
     const div = editor();
     renderEditor(div, 'one\ntwo\n');
-    const text = div.firstChild as Text;
+    const text = docOf(div).firstChild as Text;
     expect(textBefore(div, { node: text, offset: 8 })).toBe('one\ntwo\n');
     expect(textBefore(div, { node: text, offset: 5 })).toBe('one\nt');
     expect(textBefore(div, { node: div, offset: 0 })).toBe('');
@@ -338,5 +344,52 @@ describe('note links', () => {
     renderEditor(root, '[[ ]] and [[open');
     expect(root.querySelector('.inline-link')).toBe(null);
     expect(serializeEditor(root)).toBe('[[ ]] and [[open');
+  });
+});
+
+describe('segments and posAt', () => {
+  it('maps every offset of a plain text to the text node', () => {
+    const div = editor();
+    renderEditor(div, 'ab\ncd');
+    const { text, segments } = readEditor(div);
+    expect(text).toBe('ab\ncd');
+    expect(segments).toHaveLength(1);
+    const p = posAt(segments, 4);
+    expect(p).toEqual({ node: docOf(div).firstChild, offset: 4 });
+  });
+
+  it('maps offsets around chips to positions beside them, and inside text before beside a block', () => {
+    const div = editor();
+    renderEditor(div, `a\n![x](note-asset://${NAME})\nb`);
+    const { segments, text } = readEditor(div);
+    const img = div.querySelector('img') as HTMLImageElement;
+    const doc = docOf(div);
+    const imgAt = text.indexOf('![');
+    // Before the picture: the end of the text node before it, not "beside the img".
+    expect(posAt(segments, imgAt)).toEqual({ node: doc.firstChild, offset: 2 });
+    // Inside its markdown: after the picture.
+    expect(posAt(segments, imgAt + 3)).toEqual({ node: doc, offset: Array.from(doc.childNodes).indexOf(img) + 1 });
+    expect(rangeBetween(div, segments, 0, 1)?.toString()).toBe('a');
+  });
+
+  it('prefers plain text over a formatting wrapper on a boundary', () => {
+    const div = editor();
+    div.innerHTML = 'a <span class="md-strong"><span class="md-mark">**</span>b<span class="md-mark">**</span></span> c';
+    const { text, segments } = readEditor(div);
+    expect(text).toBe('a **b** c');
+    const after = posAt(segments, 7) as { node: Node; offset: number };
+    expect(after.node).toBe(div.lastChild);
+    expect(after.offset).toBe(0);
+    const before = posAt(segments, 2) as { node: Node; offset: number };
+    expect(before.node).toBe(div.firstChild);
+    expect(before.offset).toBe(2);
+    expect(offsetOf(div, { node: div.lastChild as Node, offset: 1 })).toBe(8);
+  });
+
+  it('reads back the markdown through formatting wrappers unchanged', () => {
+    const div = editor();
+    div.innerHTML = '<span class="md-h md-h2"><span class="md-mark"># </span>Title</span><br>plain <span class="md-em"><span class="md-mark">*</span>i<span class="md-mark">*</span></span>';
+    expect(serializeEditor(div)).toBe('# Title\nplain *i*');
+    expect(lineSpans(div)).toHaveLength(2);
   });
 });

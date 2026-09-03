@@ -16,7 +16,7 @@ function lines(body: string): string[] {
 }
 
 /** Strip leading markdown block markers and inline emphasis so the list reads as plain text. */
-function plain(line: string): string {
+export function plainText(line: string): string {
   return line
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(LINK, '$1')
@@ -34,14 +34,14 @@ export function titleOf(note: Pick<Note, 'body' | 'title'>): string {
   const explicit = note.title?.trim();
   if (explicit) return explicit;
   const first = lines(note.body)[0];
-  return (first && plain(first)) || 'Untitled';
+  return (first && plainText(first)) || 'Untitled';
 }
 
 /** The body after the title line (or all of it when the title is explicit), collapsed, for the sidebar row. */
 export function snippetOf(note: Pick<Note, 'body' | 'title'>, max = 90): string {
   const rest = lines(note.body)
     .slice(note.title?.trim() ? 0 : 1)
-    .map(plain)
+    .map(plainText)
     .filter(Boolean)
     .join(' ');
   return rest.length > max ? `${rest.slice(0, max - 1).trimEnd()}…` : rest;
