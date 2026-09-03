@@ -30,3 +30,20 @@ describe('parseNotesFile', () => {
     expect(() => parseNotesFile('not json')).toThrow();
   });
 });
+
+describe('pinned notes', () => {
+  it('keeps pinned only when it is exactly true', () => {
+    const text = JSON.stringify({
+      version: 1,
+      notes: [
+        { id: 'a', body: '', createdAt: 1, updatedAt: 1, pinned: true },
+        { id: 'b', body: '', createdAt: 1, updatedAt: 1, pinned: 'yes' },
+        { id: 'c', body: '', createdAt: 1, updatedAt: 1 },
+      ],
+    });
+    const notes = parseNotesFile(text).notes;
+    expect(notes[0].pinned).toBe(true);
+    expect('pinned' in notes[1]).toBe(false);
+    expect('pinned' in notes[2]).toBe(false);
+  });
+});

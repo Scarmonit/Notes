@@ -7,8 +7,8 @@ export function newId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export function createNote(now = Date.now()): Note {
-  return { id: newId(), body: '', createdAt: now, updatedAt: now };
+export function createNote(now = Date.now(), body = ''): Note {
+  return { id: newId(), body, createdAt: now, updatedAt: now };
 }
 
 function lines(body: string): string[] {
@@ -55,17 +55,58 @@ export function wordCount(body: string): number {
   return words ? words.length : 0;
 }
 
+/** Pinned notes first, then most recently edited. */
 export function sortByEdited(notes: Note[]): Note[] {
-  return [...notes].sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+  return [...notes].sort(
+    (a, b) => Number(b.pinned === true) - Number(a.pinned === true) || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id),
+  );
 }
 
-/** Every whitespace-separated term must appear somewhere in the note, case-insensitively. */
-export function searchNotes(notes: Note[], query: string): Note[] {
+/** Pins or unpins one note. The edit time is untouched: pinning is not writing. */
+export function togglePin(notes: Note[], id: string): Note[] {
+  return notes.map((n) => {
+    if (n.id !== id) return n;
+    const { pinned, ...rest } = n;
+    return pinned ? rest : { ...rest, pinned: true };
+  });
+}
+
+// A tag is #word at the start of a line or after whitespace, starting with a
+// letter so "#1" and "#123" stay plain text, and never "# Heading".
+const TAG = /(?:^|(?<=\s))#(\p{L}[\p{L}\p{N}_-]*)/gu;
+
+/** The tags written in a note, lower-cased, unique, in order of appearance. */
+export function tagsOf(body: string): string[] {
+  const out: string[] = [];
+  for (const m of body.matchAll(TAG)) {
+    const tag = m[1].toLowerCase();
+    if (!out.includes(tag)) out.push(tag);
+  }
+  return out;
+}
+
+/** Every tag across the notes with how many notes carry it, most used first. */
+export function allTags(notes: Note[]): Array<{ tag: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const n of notes) for (const t of tagsOf(n.body)) counts.set(t, (counts.get(t) ?? 0) + 1);
+  return [...counts]
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+}
+
+/**
+ * Every whitespace-separated term must appear somewhere in the note,
+ * case-insensitively. A term written as #name matches only notes tagged with
+ * something that starts with it, and `tag` narrows to notes carrying exactly it.
+ */
+export function searchNotes(notes: Note[], query: string, tag: string | null = null): Note[] {
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-  if (terms.length === 0) return notes;
+  if (terms.length === 0 && !tag) return notes;
   return notes.filter((n) => {
+    const tags = tagsOf(n.body);
+    if (tag && !tags.includes(tag)) return false;
     const hay = n.body.toLowerCase();
-    return terms.every((t) => hay.includes(t));
+    return terms.every((t) => (t.length > 1 && t.startsWith('#') ? tags.some((x) => x.startsWith(t.slice(1))) : hay.includes(t)));
   });
 }
 

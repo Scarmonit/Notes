@@ -2,6 +2,7 @@ import { assetNameFromUrl } from '../shared/assets';
 import type { ExportKind, ExportRequest, Note, NotesFile } from '../shared/types';
 import { renderMarkdown } from './markdown';
 import {
+  allTags,
   createNote,
   neighborOf,
   removeNote,
@@ -9,6 +10,7 @@ import {
   snippetOf,
   sortByEdited,
   titleOf,
+  togglePin,
   updateBody,
   wordCount,
 } from './notes';
@@ -41,6 +43,7 @@ const el = {
   pane: $('pane'),
   search: $<HTMLInputElement>('search'),
   newBtn: $<HTMLButtonElement>('new'),
+  tags: $('tags'),
   list: $('list'),
   count: $('count'),
   helpBtn: $<HTMLButtonElement>('help'),
@@ -54,6 +57,7 @@ const el = {
   exportWrap: $('export-wrap'),
   exportBtn: $<HTMLButtonElement>('export'),
   exportMenu: $('export-menu'),
+  pinBtn: $<HTMLButtonElement>('pin'),
   deleteBtn: $<HTMLButtonElement>('delete'),
   editorWrap: $('editor-wrap'),
   editor: $<HTMLDivElement>('editor'),
@@ -99,10 +103,13 @@ const ui = loadUi();
 
 let notes: Note[] = [];
 let query = '';
+/** A tag chosen in the sidebar narrows the list until cleared. */
+let tagFilter: string | null = null;
 /** Which note the textarea currently holds, so re-renders never clobber the caret. */
 let editorNoteId: string | null = null;
 
-const visibleNotes = (): Note[] => searchNotes(sortByEdited(notes), query);
+const visibleNotes = (): Note[] => searchNotes(sortByEdited(notes), query, tagFilter);
+const filtering = (): boolean => query.trim() !== '' || tagFilter !== null;
 const selected = (): Note | null => notes.find((n) => n.id === ui.selectedId) ?? null;
 
 // --- persistence ------------------------------------------------------------
@@ -160,20 +167,65 @@ window.notesApi.onFlushRequest(() => {
 
 // --- rendering --------------------------------------------------------------
 
+const PIN_SVG =
+  '<svg class="pin-mark" viewBox="0 0 12 12" aria-label="Pinned" role="img"><path d="M7.5 1.5 10.5 4.5 8.6 5.2 6.9 8.4 5.4 6.9 2 10.5 1.5 10 5.1 6.6 3.6 5.1 6.8 3.4Z" fill="currentColor"/></svg>';
+
+function renderTags(): void {
+  const tags = allTags(notes);
+  if (tagFilter && !tags.some((t) => t.tag === tagFilter)) tagFilter = null;
+  el.tags.hidden = tags.length === 0;
+  el.tags.replaceChildren();
+  for (const { tag, count } of tags) {
+    const chip = document.createElement('button');
+    chip.className = 'tag u';
+    chip.type = 'button';
+    chip.setAttribute('aria-pressed', String(tag === tagFilter));
+    chip.title = tag === tagFilter ? 'Show all notes' : `Only notes tagged #${tag}`;
+    const name = document.createElement('span');
+    name.textContent = `#${tag}`;
+    const n = document.createElement('span');
+    n.className = 'tag-count';
+    n.textContent = String(count);
+    chip.append(name, n);
+    chip.addEventListener('click', () => setTagFilter(tag === tagFilter ? null : tag));
+    el.tags.append(chip);
+  }
+}
+
+function setTagFilter(tag: string | null): void {
+  tagFilter = tag;
+  const vis = visibleNotes();
+  // Keep the current note when it still shows; otherwise land on the first.
+  if (vis.length > 0 && !vis.some((n) => n.id === ui.selectedId)) select(vis[0].id);
+  else renderList();
+}
+
+function emptyListMessage(): HTMLElement {
+  const msg = document.createElement('div');
+  msg.className = 'list-empty';
+  const q = query.trim();
+  if (notes.length === 0) {
+    msg.innerHTML = 'Nothing here yet.<span class="u">Press <kbd>Ctrl</kbd> <kbd>N</kbd> to start a note</span>';
+  } else if (q) {
+    msg.textContent = 'No notes match that.';
+    const hint = document.createElement('span');
+    hint.className = 'u';
+    hint.innerHTML = 'Press <kbd>Enter</kbd> to start a note titled ';
+    const title = document.createElement('b');
+    title.textContent = `“${q}”`;
+    hint.append(title);
+    msg.append(hint);
+  } else {
+    msg.textContent = `No notes tagged #${tagFilter ?? ''}.`;
+  }
+  return msg;
+}
+
 function renderList(): void {
+  renderTags();
   const vis = visibleNotes();
   el.list.replaceChildren();
-
-  if (vis.length === 0) {
-    const msg = document.createElement('div');
-    msg.className = 'list-empty';
-    if (notes.length === 0) {
-      msg.innerHTML = 'Nothing here yet.<span class="u">Press <kbd>Ctrl</kbd> <kbd>N</kbd> to start a note</span>';
-    } else {
-      msg.textContent = 'No notes match that.';
-    }
-    el.list.append(msg);
-  }
+  if (vis.length === 0) el.list.append(emptyListMessage());
 
   const now = Date.now();
   for (const n of vis) {
@@ -188,7 +240,10 @@ function renderList(): void {
 
     const t = document.createElement('div');
     t.className = 'item-title';
-    t.textContent = title;
+    if (n.pinned) t.innerHTML = PIN_SVG;
+    const tt = document.createElement('span');
+    tt.textContent = title;
+    t.append(tt);
 
     const meta = document.createElement('div');
     meta.className = 'item-meta';
@@ -210,7 +265,7 @@ function renderList(): void {
   }
 
   el.count.textContent =
-    query.trim() && notes.length > 0
+    filtering() && notes.length > 0
       ? `${vis.length} of ${notes.length}`
       : `${notes.length} ${notes.length === 1 ? 'note' : 'notes'}`;
 }
@@ -238,6 +293,9 @@ function renderEditor(): void {
   el.empty.hidden = has;
   el.previewToggle.disabled = !has;
   el.exportBtn.disabled = !has;
+  el.pinBtn.disabled = !has;
+  el.pinBtn.setAttribute('aria-pressed', String(n?.pinned === true));
+  el.pinBtn.textContent = n?.pinned ? 'Unpin' : 'Pin';
   el.deleteBtn.disabled = !has;
   renderMeta();
   if (!n) {
@@ -302,17 +360,38 @@ function selectedItemIntoView(): void {
   el.list.querySelector<HTMLElement>('.item.selected')?.scrollIntoView({ block: 'nearest' });
 }
 
-function newNote(): void {
-  const n = createNote();
+/** Starts a note, optionally seeded with a first line, and puts the caret at its end. */
+function newNote(seed = ''): void {
+  const n = createNote(Date.now(), seed);
   notes = [n, ...notes];
   scheduleSave();
   if (query) {
     query = '';
     el.search.value = '';
   }
+  tagFilter = null;
   if (ui.preview) ui.preview = false;
   select(n.id);
   focusEditor();
+}
+
+/** A note whose title is what was typed into the search box. */
+function createFromSearch(): void {
+  const title = query.trim();
+  if (!title) return;
+  newNote(`${title}\n`);
+  showStatus(`Started “${title}”`, 2000);
+}
+
+function togglePinSelected(): void {
+  const n = selected();
+  if (!n) return;
+  notes = togglePin(notes, n.id);
+  scheduleSave();
+  renderList();
+  renderEditor();
+  selectedItemIntoView();
+  showStatus(selected()?.pinned ? 'Pinned' : 'Unpinned', 1500);
 }
 
 /** Move the selection up or down the visible list, keeping focus where it is. */
@@ -894,7 +973,10 @@ el.search.addEventListener('keydown', (e) => {
     step(e.key === 'ArrowDown' ? 1 : -1);
   } else if (e.key === 'Enter') {
     e.preventDefault();
-    focusEditor();
+    // Search or create: what you typed becomes the title when nothing matches
+    // (or whenever Shift is held), so finding and starting are one motion.
+    if (query.trim() && (e.shiftKey || visibleNotes().length === 0)) createFromSearch();
+    else focusEditor();
   }
 });
 
@@ -931,9 +1013,10 @@ el.list.addEventListener('keydown', (e) => {
 
 // --- buttons ----------------------------------------------------------------
 
-el.newBtn.addEventListener('click', newNote);
+el.newBtn.addEventListener('click', () => newNote());
 el.previewToggle.addEventListener('click', togglePreview);
 el.attachBtn.addEventListener('click', () => void pickImages());
+el.pinBtn.addEventListener('click', togglePinSelected);
 el.deleteBtn.addEventListener('click', armDelete);
 el.toggleSidebar.addEventListener('click', toggleSidebar);
 el.helpBtn.addEventListener('click', () => toggleHelp(true));
@@ -960,6 +1043,8 @@ function onEscape(): void {
       query = '';
       el.search.value = '';
       renderList();
+    } else if (tagFilter) {
+      setTagFilter(null);
     } else {
       focusList();
     }
@@ -987,6 +1072,10 @@ document.addEventListener('keydown', (e) => {
       case 'i':
         e.preventDefault();
         void pickImages();
+        return;
+      case 'p':
+        e.preventDefault();
+        togglePinSelected();
         return;
     }
   }

@@ -1,7 +1,7 @@
 {
   "name": "notes",
   "productName": "Notes",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Minimal keyboard-friendly markdown notes",
   "main": ".vite/build/main.js",
   "private": true,

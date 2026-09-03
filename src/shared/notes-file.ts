@@ -32,7 +32,9 @@ export function parseNotesFile(text: string): NotesFile {
   for (const entry of doc.notes) {
     if (!isNote(entry) || seen.has(entry.id)) continue;
     seen.add(entry.id);
-    notes.push({ id: entry.id, body: entry.body, createdAt: entry.createdAt, updatedAt: entry.updatedAt });
+    const note: Note = { id: entry.id, body: entry.body, createdAt: entry.createdAt, updatedAt: entry.updatedAt };
+    if ((entry as { pinned?: unknown }).pinned === true) note.pinned = true;
+    notes.push(note);
   }
   return { version: 1, notes };
 }

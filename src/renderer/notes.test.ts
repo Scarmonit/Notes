@@ -7,6 +7,9 @@ import {
   searchNotes,
   snippetOf,
   sortByEdited,
+  tagsOf,
+  allTags,
+  togglePin,
   titleOf,
   updateBody,
   wordCount,
@@ -138,5 +141,50 @@ describe('sized attachments', () => {
   it('count only the alt text as words', () => {
     expect(wordCount({ body: `hello ${tag} world` }.body)).toBe(4);
     expect(wordCount('<img src="note-asset://deadbeef.png" width="320">')).toBe(0);
+  });
+});
+
+describe('pinning', () => {
+  it('sorts pinned notes first, then by edit time', () => {
+    const list = [note('a', '', 1), { ...note('b', '', 3) }, { ...note('c', '', 2), pinned: true }];
+    expect(sortByEdited(list).map((n) => n.id)).toEqual(['c', 'b', 'a']);
+  });
+  it('toggles without touching the edit time', () => {
+    const on = togglePin([note('a', 'x', 5)], 'a');
+    expect(on[0]).toEqual({ ...note('a', 'x', 5), pinned: true });
+    const off = togglePin(on, 'a');
+    expect(off[0]).toEqual(note('a', 'x', 5));
+    expect('pinned' in off[0]).toBe(false);
+  });
+});
+
+describe('createNote with a body', () => {
+  it('seeds the body', () => {
+    expect(createNote(1, 'Title\n').body).toBe('Title\n');
+  });
+});
+
+describe('tags', () => {
+  it('finds #tags at line starts and after spaces, lower-cased and unique', () => {
+    expect(tagsOf('#Work plan\nsee #work and #home-office, #v2_draft')).toEqual(['work', 'home-office', 'v2_draft']);
+  });
+  it('ignores headings, numbers, urls and mid-word hashes', () => {
+    expect(tagsOf('# Heading\n#1 and #123\nhttps://x.com/#anchor\nC#')).toEqual([]);
+  });
+  it('counts tags across notes, most used first', () => {
+    const list = [note('a', '#x #y', 1), note('b', '#y', 2), note('c', 'none', 3)];
+    expect(allTags(list)).toEqual([
+      { tag: 'y', count: 2 },
+      { tag: 'x', count: 1 },
+    ]);
+  });
+  it('searches tags with #terms and narrows by an exact tag', () => {
+    const list = [note('a', 'milk #shop', 1), note('b', '#shopping list', 2), note('c', 'shop talk', 3)];
+    expect(searchNotes(list, '#shop').map((n) => n.id)).toEqual(['a', 'b']);
+    expect(searchNotes(list, '#shopping').map((n) => n.id)).toEqual(['b']);
+    expect(searchNotes(list, 'milk #shop').map((n) => n.id)).toEqual(['a']);
+    expect(searchNotes(list, '', 'shop').map((n) => n.id)).toEqual(['a']);
+    expect(searchNotes(list, 'list', 'shop')).toEqual([]);
+    expect(searchNotes(list, '#').map((n) => n.id)).toEqual(['a', 'b']);
   });
 });

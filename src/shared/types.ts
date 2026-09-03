@@ -4,6 +4,8 @@ export interface Note {
   body: string;
   createdAt: number;
   updatedAt: number;
+  /** Pinned notes sort above the rest, whatever their edit time. */
+  pinned?: boolean;
 }
 
 /** On-disk shape of notes.json in the app's userData folder. */
