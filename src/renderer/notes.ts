@@ -19,6 +19,8 @@ function lines(body: string): string[] {
 function plain(line: string): string {
   return line
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/<img\b[^<>]*\balt\s*=\s*"([^"]*)"[^<>]*>/gi, '$1')
+    .replace(/<img\b[^<>]*>/gi, '')
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/^[\s#>*\-+]+/, '')
     .replace(/^\d+\.\s+/, '')
@@ -44,7 +46,11 @@ export function snippetOf(note: Pick<Note, 'body'>, max = 90): string {
 /** Words are runs of letters or digits, so markdown markers like "#" and "-" do not count. */
 export function wordCount(body: string): number {
   // Link and image targets are not prose.
-  const prose = body.replace(/!\[([^\]]*)\]\([^)]*\)/g, ' $1 ').replace(/\]\([^)]*\)/g, ']');
+  const prose = body
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, ' $1 ')
+    .replace(/<img\b[^<>]*\balt\s*=\s*"([^"]*)"[^<>]*>/gi, ' $1 ')
+    .replace(/<img\b[^<>]*>/gi, ' ')
+    .replace(/\]\([^)]*\)/g, ']');
   const words = prose.match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu);
   return words ? words.length : 0;
 }

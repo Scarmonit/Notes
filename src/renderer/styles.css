@@ -375,10 +375,13 @@ kbd {
 }
 
 .text {
+  position: relative;
   flex: 1;
   min-width: 0;
   height: 100%;
   border-left: 1px solid var(--margin-rule);
+  /* The resize handle and drop line are overlaid; keep them inside the page. */
+  overflow: hidden;
 }
 .text.swap {
   animation: swap-in 120ms ease-out;
@@ -429,14 +432,70 @@ kbd {
   box-shadow: 0 0 0 1px var(--line);
   user-select: none;
 }
+/* A resized image keeps the width the writer chose, up to the column. */
+.inline-img[width] {
+  max-width: 100%;
+  max-height: none;
+}
 /* The browser outlines a selected non-editable node; make it read as chosen. */
 .editor .inline-img::selection {
   background: transparent;
 }
-.inline-img.cm-selected,
-.editor:focus-within .inline-img:focus {
+.inline-img.is-selected {
   outline: 2px solid var(--blue);
   outline-offset: 2px;
+}
+.inline-img.dragging {
+  opacity: 0.35;
+}
+
+/* Corner handle on the selected image: drag to resize. */
+.img-handle {
+  position: absolute;
+  z-index: 3;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 4px;
+  background: var(--blue);
+  box-shadow: 0 0 0 2px var(--ink);
+  cursor: nwse-resize;
+  touch-action: none;
+}
+.img-handle:hover,
+.text.resizing .img-handle {
+  transform: scale(1.15);
+}
+.img-size {
+  position: absolute;
+  z-index: 3;
+  transform: translate(-100%, -100%);
+  margin: -8px 0 0 -10px;
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: var(--raised);
+  color: var(--paper-dim);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.text.resizing .editor {
+  cursor: nwse-resize;
+  user-select: none;
+}
+
+/* Where a dragged image will land. */
+.drop-line {
+  position: absolute;
+  z-index: 3;
+  left: 28px;
+  right: 36px;
+  height: 2px;
+  margin-top: -1px;
+  border-radius: 1px;
+  background: var(--blue);
+  box-shadow: 0 0 0 1px var(--ink);
+  pointer-events: none;
 }
 
 .preview {
@@ -489,6 +548,9 @@ kbd {
   .editor,
   .preview {
     padding: 14px 28px 45vh;
+  }
+  .drop-line {
+    right: 28px;
   }
 }
 

@@ -41,3 +41,11 @@ describe('renderMarkdown', () => {
     expect(html).toContain('rel="noopener noreferrer"');
   });
 });
+
+describe('sized attachments', () => {
+  it('keeps the width on an attached <img> tag', () => {
+    const html = renderMarkdown('<img src="note-asset://deadbeef.png" alt="garden" width="320">');
+    expect(html).toContain('src="note-asset://deadbeef.png"');
+    expect(html).toContain('width="320"');
+  });
+});

@@ -128,3 +128,15 @@ describe('createNote', () => {
     expect(a).toMatchObject({ body: '', createdAt: 5, updatedAt: 5 });
   });
 });
+
+describe('sized attachments', () => {
+  const tag = '<img src="note-asset://deadbeef.png" alt="the garden" width="320">';
+  it('use the alt text as title and snippet', () => {
+    expect(titleOf({ body: `${tag}\nsecond line` })).toBe('the garden');
+    expect(snippetOf({ body: `first\n${tag}` })).toBe('the garden');
+  });
+  it('count only the alt text as words', () => {
+    expect(wordCount({ body: `hello ${tag} world` }.body)).toBe(4);
+    expect(wordCount('<img src="note-asset://deadbeef.png" width="320">')).toBe(0);
+  });
+});

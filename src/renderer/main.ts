@@ -13,7 +13,20 @@ import {
   wordCount,
 } from './notes';
 import { markdownToText } from './plaintext';
-import { imageChipHtml, markEmpty, renderEditor as renderEditorDom, serializeEditor } from './richeditor';
+import {
+  MIN_IMAGE_WIDTH,
+  chipsOf,
+  imageChipHtml,
+  isChip,
+  lineIndexAt,
+  lineSpans,
+  markEmpty,
+  moveImageBy,
+  moveImageToLine,
+  renderEditor as renderEditorDom,
+  serializeEditor,
+  setChipWidth,
+} from './richeditor';
 import stylesText from './styles.css?inline';
 import { absoluteTime, relativeTime } from './time';
 
@@ -45,6 +58,9 @@ const el = {
   editorWrap: $('editor-wrap'),
   editor: $<HTMLDivElement>('editor'),
   preview: $('preview'),
+  imgHandle: $('img-handle'),
+  imgSize: $('img-size'),
+  dropLine: $('drop-line'),
   empty: $('empty'),
   helpSheet: $('help-sheet'),
 };
@@ -247,6 +263,7 @@ function renderEditor(): void {
       ? renderMarkdown(n.body)
       : '<p class="preview-empty">Nothing to preview yet.</p>';
   }
+  syncChipUi();
 }
 
 function applySidebar(): void {
@@ -490,6 +507,11 @@ document.addEventListener('dragenter', (e) => {
 });
 document.addEventListener('dragover', (e) => {
   e.preventDefault();
+  if (dragChip) {
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    showDropLine(dropTargetAt(e.clientX, e.clientY));
+    return;
+  }
   if (hasFiles(e) && e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
 });
 document.addEventListener('dragleave', (e) => {
@@ -503,8 +525,217 @@ document.addEventListener('drop', (e) => {
   e.preventDefault();
   dragDepth = 0;
   el.pane.classList.remove('dropping');
+  if (dragChip) {
+    // One of our own images being moved to another line, not a file from outside.
+    const chip = dragChip;
+    const target = dropTargetAt(e.clientX, e.clientY);
+    chip.classList.remove('dragging');
+    dragChip = null;
+    showDropLine(null);
+    if (target) moveChipToLine(chip, target.line);
+    else selectChip(chip);
+    return;
+  }
   const files = Array.from(e.dataTransfer?.files ?? []);
   if (files.length > 0) void attachFiles(files);
+});
+
+// --- images: select, resize, move -------------------------------------------
+
+/** The image chip the selection wraps exactly, if any. */
+function selectedChip(): HTMLImageElement | null {
+  if (el.editor.hidden) return null;
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount !== 1) return null;
+  const r = sel.getRangeAt(0);
+  if (r.startContainer !== r.endContainer || r.endOffset - r.startOffset !== 1) return null;
+  const node = r.startContainer.childNodes[r.startOffset];
+  return isChip(node) && el.editor.contains(node) ? node : null;
+}
+
+function selectChip(chip: HTMLImageElement): void {
+  el.editor.focus();
+  const range = document.createRange();
+  range.selectNode(chip);
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+  syncChipUi();
+}
+
+/** Drops the caret just after a node, leaving nothing selected. */
+function caretAfter(node: Node): void {
+  const range = document.createRange();
+  range.setStartAfter(node);
+  range.collapse(true);
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+}
+
+/** Keeps the selected-chip outline and the resize handle in step with the selection. */
+function syncChipUi(): void {
+  const chip = selectedChip();
+  for (const c of chipsOf(el.editor)) c.classList.toggle('is-selected', c === chip);
+  positionHandle(chip);
+}
+
+function positionHandle(chip: HTMLImageElement | null): void {
+  if (!chip) {
+    el.imgHandle.hidden = true;
+    el.imgSize.hidden = true;
+    return;
+  }
+  const text = el.text.getBoundingClientRect();
+  const r = chip.getBoundingClientRect();
+  el.imgHandle.style.left = `${r.right - text.left}px`;
+  el.imgHandle.style.top = `${r.bottom - text.top}px`;
+  el.imgHandle.hidden = false;
+  if (!el.imgSize.hidden) {
+    el.imgSize.style.left = `${r.right - text.left}px`;
+    el.imgSize.style.top = `${r.bottom - text.top}px`;
+    el.imgSize.textContent = `${Math.round(r.width)} × ${Math.round(r.height)}`;
+  }
+}
+
+/** The widest an image can be: the editor's text column. */
+function maxImageWidth(): number {
+  const cs = getComputedStyle(el.editor);
+  return Math.max(MIN_IMAGE_WIDTH, el.editor.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight));
+}
+
+let resizing: { chip: HTMLImageElement; startX: number; startW: number } | null = null;
+
+el.imgHandle.addEventListener('pointerdown', (e) => {
+  const chip = selectedChip();
+  if (!chip || e.button !== 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  el.imgHandle.setPointerCapture(e.pointerId);
+  resizing = { chip, startX: e.clientX, startW: chip.getBoundingClientRect().width };
+  el.text.classList.add('resizing');
+  el.imgSize.hidden = false;
+  positionHandle(chip);
+});
+
+el.imgHandle.addEventListener('pointermove', (e) => {
+  if (!resizing) return;
+  const w = Math.min(maxImageWidth(), Math.max(MIN_IMAGE_WIDTH, resizing.startW + (e.clientX - resizing.startX)));
+  setChipWidth(resizing.chip, w);
+  positionHandle(resizing.chip);
+});
+
+function endResize(): void {
+  if (!resizing) return;
+  const chip = resizing.chip;
+  resizing = null;
+  el.text.classList.remove('resizing');
+  el.imgSize.hidden = true;
+  commitEditor();
+  selectChip(chip);
+}
+el.imgHandle.addEventListener('pointerup', endResize);
+el.imgHandle.addEventListener('pointercancel', endResize);
+
+el.editor.addEventListener('click', (e) => {
+  if (isChip(e.target)) selectChip(e.target);
+});
+
+// Double-click puts an image back at its natural size.
+el.editor.addEventListener('dblclick', (e) => {
+  if (!isChip(e.target)) return;
+  e.preventDefault();
+  setChipWidth(e.target, null);
+  commitEditor();
+  selectChip(e.target);
+});
+
+document.addEventListener('selectionchange', syncChipUi);
+el.editor.addEventListener('scroll', () => positionHandle(selectedChip()));
+window.addEventListener('resize', () => positionHandle(selectedChip()));
+
+/** Re-renders the editor from a moved body and leaves the moved image selected. */
+function applyMove(moved: { body: string; index: number }): void {
+  const n = selected();
+  if (!n || moved.body === n.body) return;
+  renderEditorDom(el.editor, moved.body);
+  commitEditor();
+  const chip = chipsOf(el.editor)[moved.index];
+  if (chip) {
+    selectChip(chip);
+    chip.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+function moveChipBy(chip: HTMLImageElement, delta: -1 | 1): void {
+  const body = serializeEditor(el.editor);
+  applyMove(moveImageBy(body, chipsOf(el.editor).indexOf(chip), delta));
+}
+
+function moveChipToLine(chip: HTMLImageElement, line: number): void {
+  const body = serializeEditor(el.editor);
+  applyMove(moveImageToLine(body, chipsOf(el.editor).indexOf(chip), line));
+}
+
+interface DropTarget {
+  /** Markdown line the image would be inserted before. */
+  line: number;
+  /** Where to draw the indicator, in viewport pixels. */
+  y: number;
+}
+
+const childIndex = (node: Node): number => Array.prototype.indexOf.call(node.parentNode?.childNodes ?? [], node);
+
+/** Which line a point over the editor would drop an image onto: above or below the line under it. */
+function dropTargetAt(x: number, y: number): DropTarget | null {
+  const hit = document.elementFromPoint(x, y);
+  if (!hit || !el.editor.contains(hit)) return null;
+  if (isChip(hit)) {
+    const r = hit.getBoundingClientRect();
+    const line = lineIndexAt(el.editor, { node: hit.parentNode as Node, offset: childIndex(hit) });
+    return y < r.top + r.height / 2 ? { line, y: r.top } : { line: line + 1, y: r.bottom };
+  }
+  const caret = document.caretRangeFromPoint(x, y);
+  if (!caret || !el.editor.contains(caret.startContainer)) return null;
+  const line = lineIndexAt(el.editor, { node: caret.startContainer, offset: caret.startOffset });
+  const span = lineSpans(el.editor)[line];
+  let rect: DOMRect | undefined;
+  if (span) {
+    const r = document.createRange();
+    r.setStart(span.start.node, span.start.offset);
+    r.setEnd(span.end.node, span.end.offset);
+    rect = r.getBoundingClientRect();
+  }
+  if (!rect || rect.height === 0) rect = caret.getClientRects()[0];
+  if (!rect || rect.height === 0) return { line, y };
+  return y < rect.top + rect.height / 2 ? { line, y: rect.top } : { line: line + 1, y: rect.bottom };
+}
+
+function showDropLine(target: DropTarget | null): void {
+  if (!target) {
+    el.dropLine.hidden = true;
+    return;
+  }
+  el.dropLine.style.top = `${target.y - el.text.getBoundingClientRect().top}px`;
+  el.dropLine.hidden = false;
+}
+
+let dragChip: HTMLImageElement | null = null;
+
+el.editor.addEventListener('dragstart', (e) => {
+  if (!isChip(e.target) || !e.dataTransfer) return;
+  dragChip = e.target;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('application/x-notes-image', e.target.dataset.asset ?? '');
+  e.target.classList.add('dragging');
+  positionHandle(null);
+});
+
+el.editor.addEventListener('dragend', () => {
+  dragChip?.classList.remove('dragging');
+  dragChip = null;
+  showDropLine(null);
+  syncChipUi();
 });
 
 // --- export -----------------------------------------------------------------
@@ -609,6 +840,19 @@ el.editor.addEventListener('beforeinput', (e) => {
 });
 
 el.editor.addEventListener('keydown', (e) => {
+  const chip = selectedChip();
+  if (chip) {
+    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      e.preventDefault();
+      moveChipBy(chip, e.key === 'ArrowUp' ? -1 : 1);
+      return;
+    }
+    // A selected picture should not vanish under the next keystroke the way
+    // selected text does: Enter and typing continue after it. Delete and
+    // Backspace still remove it.
+    const typing = e.key === 'Enter' || (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey);
+    if (typing) caretAfter(chip);
+  }
   // Tab indents by two spaces instead of leaving the editor; Escape is the way out.
   if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey) {
     e.preventDefault();
@@ -700,6 +944,11 @@ el.helpSheet.addEventListener('click', (e) => {
 // --- global keys ------------------------------------------------------------
 
 function onEscape(): void {
+  const chip = selectedChip();
+  if (chip) {
+    caretAfter(chip);
+    return;
+  }
   if (!el.exportMenu.hidden) {
     closeExportMenu(true);
   } else if (!el.helpSheet.hidden) {

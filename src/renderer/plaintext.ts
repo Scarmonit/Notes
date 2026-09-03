@@ -49,12 +49,21 @@ function inline(tokens: Token[] | undefined): string {
         case 'br':
           return '\n';
         case 'html':
-          return '';
+          return htmlImage((t as WithRaw).raw ?? '');
         default:
           return decode((t as WithRaw).raw ?? '');
       }
     })
     .join('');
+}
+
+/** "[image: alt]" for an <img> tag, or nothing for any other HTML. */
+function htmlImage(raw: string): string {
+  const tag = /<img\b([^<>]*)>/i.exec(raw);
+  if (!tag) return '';
+  const alt = /(?:^|\s)alt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i.exec(tag[1]);
+  const text = decode(alt?.[1] ?? alt?.[2] ?? alt?.[3] ?? '');
+  return text ? `[image: ${text}]` : '[image]';
 }
 
 function prefixLines(text: string, prefix: string): string {
@@ -69,8 +78,15 @@ function blocks(tokens: Token[], indent: string): string {
   for (const t of tokens) {
     switch (t.type) {
       case 'space':
-      case 'html':
         break;
+      case 'html': {
+        // A sized attachment is an <img> tag in the body; other HTML has no text form.
+        const text = htmlImage((t as WithRaw).raw ?? '');
+        if (text) out.push(`${indent}${text}
+
+`);
+        break;
+      }
       case 'heading':
         out.push(`${indent}${inline((t as Tokens.Heading).tokens)}\n\n`);
         break;

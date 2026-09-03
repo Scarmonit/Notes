@@ -36,3 +36,13 @@ describe('markdownToText', () => {
     expect(markdownToText('  \n\n ')).toBe('');
   });
 });
+
+describe('sized attachments', () => {
+  it('reads an <img> tag as an image line', () => {
+    const body = 'above\n\n<img src="note-asset://deadbeef.png" alt="the garden" width="320">\n\nbelow';
+    expect(markdownToText(body)).toBe('above\n\n[image: the garden]\n\nbelow\n');
+  });
+  it('reads an inline <img> tag inside a paragraph', () => {
+    expect(markdownToText('see <img src="note-asset://deadbeef.png" alt="" width="100"> here')).toBe('see [image] here\n');
+  });
+});

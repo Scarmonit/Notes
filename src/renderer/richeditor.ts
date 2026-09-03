@@ -1,4 +1,4 @@
-import { assetNameFromUrl, assetUrl } from '../shared/assets';
+import { assetNameFromUrl, assetUrl, isSafeAssetName } from '../shared/assets';
 
 /**
  * The editor is a contenteditable surface, not a textarea, so attached images
@@ -9,55 +9,180 @@ import { assetNameFromUrl, assetUrl } from '../shared/assets';
  * Only our own attachments (note-asset:// images) become picture chips. Every
  * other character, including all other markdown syntax, stays literal text,
  * so the surface reads as a plain writing area with images in it.
+ *
+ * An image at its natural size is stored as `![alt](note-asset://name)`. One
+ * the writer has resized is stored as an HTML tag, `<img src="note-asset://name"
+ * alt="alt" width="320">`, since markdown has no width syntax and the tag
+ * renders everywhere markdown does, width included.
  */
 
-// Matches an attached image: ![alt](note-asset://<hex>.<ext>)
-const IMAGE_MD = /!\[([^\]]*)\]\(note-asset:\/\/([a-f0-9]{8,32}\.(?:png|jpe?g|gif|webp|bmp))\)/gi;
+const NAME = '[a-f0-9]{8,32}\\.(?:png|jpe?g|gif|webp|bmp)';
+// Either form of an attached image, in one pass over the body.
+const IMAGE_TOKEN = new RegExp(`!\\[([^\\]]*)\\]\\(note-asset:\\/\\/(${NAME})\\)|<img\\b([^<>]*)>`, 'gi');
+
+export const MIN_IMAGE_WIDTH = 48;
+
+export interface ImageRef {
+  name: string;
+  alt: string;
+  /** Display width in CSS pixels, or null for the natural size. */
+  width: number | null;
+}
+
+const ENTITIES: Record<string, string> = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'" };
+const decodeEntities = (s: string): string => s.replace(/&(?:amp|lt|gt|quot|#39);/g, (m) => ENTITIES[m]);
 
 function escapeAttr(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+function attrOf(attrs: string, name: string): string | null {
+  const m = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`, 'i').exec(attrs);
+  return m ? decodeEntities(m[1] ?? m[2] ?? m[3] ?? '') : null;
+}
+
+/** Parses an image token match into a reference, or null when it is not one of our attachments. */
+function refOf(match: RegExpExecArray): ImageRef | null {
+  if (match[2] !== undefined) return { name: match[2], alt: match[1], width: null };
+  const attrs = match[3] ?? '';
+  const name = assetNameFromUrl(attrOf(attrs, 'src') ?? '');
+  if (!name) return null;
+  const width = parseWidth(attrOf(attrs, 'width'));
+  return { name, alt: attrOf(attrs, 'alt') ?? 'image', width };
+}
+
+function parseWidth(raw: string | null | undefined): number | null {
+  if (!raw) return null;
+  const n = Math.round(Number(raw));
+  return Number.isFinite(n) && n >= MIN_IMAGE_WIDTH ? n : null;
+}
+
+/** The markdown (or HTML, when sized) for one attached image. */
+export function imageMarkdown(ref: ImageRef): string {
+  if (ref.width === null) return `![${ref.alt}](${assetUrl(ref.name)})`;
+  return `<img src="${assetUrl(ref.name)}" alt="${escapeAttr(ref.alt)}" width="${ref.width}">`;
+}
+
+/** Every attached image in a body, in order, with the span of text each occupies. */
+export function imageTokens(body: string): Array<ImageRef & { start: number; end: number }> {
+  const out: Array<ImageRef & { start: number; end: number }> = [];
+  IMAGE_TOKEN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = IMAGE_TOKEN.exec(body)) !== null) {
+    const ref = refOf(match);
+    if (ref) out.push({ ...ref, start: match.index, end: match.index + match[0].length });
+  }
+  return out;
+}
+
 /** The HTML for one inline image chip, for insertion at the caret. */
 export function imageChipHtml(name: string, alt: string): string {
   const a = escapeAttr(alt || 'image');
-  return `<img class="inline-img" contenteditable="false" draggable="false" src="${assetUrl(name)}" alt="${a}" data-asset="${name}" data-alt="${a}">`;
+  return `<img class="inline-img" contenteditable="false" draggable="true" src="${assetUrl(name)}" alt="${a}" data-asset="${name}" data-alt="${a}">`;
 }
 
-function makeChip(name: string, alt: string): HTMLImageElement {
+function makeChip(ref: ImageRef): HTMLImageElement {
   const img = document.createElement('img');
   img.className = 'inline-img';
   img.contentEditable = 'false';
-  img.draggable = false;
-  img.src = assetUrl(name);
-  img.alt = alt || 'image';
-  img.dataset.asset = name;
-  img.dataset.alt = alt || 'image';
+  img.draggable = true;
+  img.src = assetUrl(ref.name);
+  img.alt = ref.alt || 'image';
+  img.dataset.asset = ref.name;
+  img.dataset.alt = ref.alt || 'image';
+  setChipWidth(img, ref.width);
   return img;
+}
+
+/** Sets a chip's display width, or restores its natural size with null. */
+export function setChipWidth(img: HTMLImageElement, width: number | null): void {
+  if (width === null) {
+    img.removeAttribute('width');
+    img.style.removeProperty('width');
+    return;
+  }
+  const w = Math.max(MIN_IMAGE_WIDTH, Math.round(width));
+  img.setAttribute('width', String(w));
+  img.style.width = `${w}px`;
+}
+
+export function chipWidth(img: HTMLImageElement): number | null {
+  return parseWidth(img.getAttribute('width'));
+}
+
+export function isChip(node: unknown): node is HTMLImageElement {
+  return node instanceof HTMLImageElement && node.classList.contains('inline-img');
+}
+
+/** The image chips in the editor, in document order. */
+export function chipsOf(root: HTMLElement): HTMLImageElement[] {
+  return Array.from(root.querySelectorAll<HTMLImageElement>('img.inline-img'));
 }
 
 /** Replaces the editor's contents with the DOM for `body`. Call on note switch. */
 export function renderEditor(root: HTMLElement, body: string): void {
   root.replaceChildren();
-  IMAGE_MD.lastIndex = 0;
   let last = 0;
-  let match: RegExpExecArray | null;
-  while ((match = IMAGE_MD.exec(body)) !== null) {
-    if (match.index > last) root.appendChild(document.createTextNode(body.slice(last, match.index)));
-    root.appendChild(makeChip(match[2], match[1]));
-    last = match.index + match[0].length;
+  for (const tok of imageTokens(body)) {
+    if (tok.start > last) root.appendChild(document.createTextNode(body.slice(last, tok.start)));
+    root.appendChild(makeChip(tok));
+    last = tok.end;
   }
   if (last < body.length) root.appendChild(document.createTextNode(body.slice(last)));
   markEmpty(root);
 }
 
-/** Reads the editor's DOM back out as a markdown body. */
-export function serializeEditor(root: HTMLElement): string {
+// --- reading the DOM --------------------------------------------------------
+
+export interface DomPos {
+  node: Node;
+  offset: number;
+}
+
+/** Where one markdown line starts and ends in the editor DOM. */
+export interface LineSpan {
+  start: DomPos;
+  end: DomPos;
+}
+
+interface Analysis {
+  /** The markdown body, exactly as serializeEditor returns it. */
+  text: string;
+  /** One span per line of `text`. */
+  lines: LineSpan[];
+}
+
+const indexIn = (node: Node): number => Array.prototype.indexOf.call(node.parentNode?.childNodes ?? [], node);
+
+/**
+ * Walks the editor once, producing the markdown text and, for every line of
+ * it, the DOM positions it starts and ends at. The two are computed together
+ * so they can never disagree about where a line break falls: a break is a
+ * newline character in a text node, a <br>, or the edge of a browser-made
+ * <div> line.
+ */
+function analyze(root: HTMLElement): Analysis {
   let out = '';
+  const lines: LineSpan[] = [];
+  let start: DomPos = { node: root, offset: 0 };
+  const breakAt = (end: DomPos, next: DomPos): void => {
+    lines.push({ start, end });
+    start = next;
+    out += '\n';
+  };
   const walk = (node: Node): void => {
     node.childNodes.forEach((child) => {
       if (child.nodeType === Node.TEXT_NODE) {
-        out += child.textContent ?? '';
+        const text = child.textContent ?? '';
+        let from = 0;
+        for (;;) {
+          const nl = text.indexOf('\n', from);
+          if (nl < 0) break;
+          out += text.slice(from, nl);
+          breakAt({ node: child, offset: nl }, { node: child, offset: nl + 1 });
+          from = nl + 1;
+        }
+        out += text.slice(from);
         return;
       }
       if (child.nodeType !== Node.ELEMENT_NODE) return;
@@ -65,16 +190,23 @@ export function serializeEditor(root: HTMLElement): string {
       switch (elm.tagName) {
         case 'IMG': {
           const name = elm.dataset.asset ?? assetNameFromUrl(elm.getAttribute('src') ?? '');
-          if (name) out += `![${elm.dataset.alt ?? elm.getAttribute('alt') ?? 'image'}](${assetUrl(name)})`;
+          if (name && isSafeAssetName(name)) {
+            const alt = elm.dataset.alt ?? elm.getAttribute('alt') ?? 'image';
+            out += imageMarkdown({ name, alt, width: parseWidth(elm.getAttribute('width')) });
+          }
           break;
         }
-        case 'BR':
-          out += '\n';
+        case 'BR': {
+          const i = indexIn(elm);
+          breakAt({ node: elm.parentNode as Node, offset: i }, { node: elm.parentNode as Node, offset: i + 1 });
           break;
+        }
         case 'DIV':
         case 'P':
           // A browser-created line: start it on a new line, then descend.
-          if (out.length > 0 && !out.endsWith('\n')) out += '\n';
+          if (out.length > 0 && !out.endsWith('\n')) {
+            breakAt({ node: elm.parentNode as Node, offset: indexIn(elm) }, { node: elm, offset: 0 });
+          }
           walk(elm);
           break;
         default:
@@ -83,12 +215,99 @@ export function serializeEditor(root: HTMLElement): string {
     });
   };
   walk(root);
+  lines.push({ start, end: { node: root, offset: root.childNodes.length } });
   // A contenteditable keeps a trailing <br> to make the last line visible;
   // that shows up as one extra newline, which is not part of the text.
-  return out.replace(/\n$/, '');
+  if (out.endsWith('\n')) {
+    out = out.slice(0, -1);
+    lines.pop();
+  }
+  return { text: out, lines };
+}
+
+/** Reads the editor's DOM back out as a markdown body. */
+export function serializeEditor(root: HTMLElement): string {
+  return analyze(root).text;
+}
+
+/** The DOM span of each markdown line, in order. */
+export function lineSpans(root: HTMLElement): LineSpan[] {
+  return analyze(root).lines;
+}
+
+/** Which markdown line a DOM position falls on. */
+export function lineIndexAt(root: HTMLElement, pos: DomPos): number {
+  const spans = lineSpans(root);
+  let index = 0;
+  for (let i = 1; i < spans.length; i++) {
+    const r = document.createRange();
+    r.setStart(spans[i].start.node, spans[i].start.offset);
+    r.collapse(true);
+    if (r.comparePoint(pos.node, pos.offset) >= 0) index = i;
+    else break;
+  }
+  return index;
 }
 
 /** Toggles the empty flag that drives the placeholder. */
 export function markEmpty(root: HTMLElement): void {
   root.classList.toggle('is-empty', serializeEditor(root) === '');
+}
+
+// --- moving an image between lines -----------------------------------------
+
+/**
+ * Lifts the `index`-th attached image out of wherever it sits and gives it a
+ * line of its own at `targetLine` (counted before the lift). A line left empty
+ * by the lift goes away, so the note does not gather blank lines as pictures
+ * move around. Returns the new body and the image's new index.
+ */
+export function moveImageToLine(body: string, index: number, targetLine: number): { body: string; index: number } {
+  const tokens = imageTokens(body);
+  const tok = tokens[index];
+  if (!tok) return { body, index };
+  const lines = body.split('\n');
+  const lineStarts: number[] = [];
+  for (let at = 0, i = 0; i < lines.length; i++) {
+    lineStarts.push(at);
+    at += lines[i].length + 1;
+  }
+  let from = 0;
+  while (from + 1 < lineStarts.length && lineStarts[from + 1] <= tok.start) from++;
+  const line = lines[from];
+  const col = tok.start - lineStarts[from];
+  const rest = line.slice(0, col) + line.slice(col + (tok.end - tok.start));
+  let target = Math.max(0, Math.min(lines.length, targetLine));
+  if (rest.trim() === '') {
+    lines.splice(from, 1);
+    if (target > from) target--;
+  } else {
+    lines[from] = rest;
+  }
+  const token = body.slice(tok.start, tok.end);
+  lines.splice(target, 0, token);
+  const next = lines.join('\n');
+  const at = lines.slice(0, target).reduce((n, l) => n + l.length + 1, 0);
+  const newIndex = imageTokens(next).findIndex((t) => t.start === at);
+  return { body: next, index: newIndex < 0 ? index : newIndex };
+}
+
+/** The line an image token sits on. */
+export function imageLine(body: string, index: number): number {
+  const tok = imageTokens(body)[index];
+  if (!tok) return -1;
+  return body.slice(0, tok.start).split('\n').length - 1;
+}
+
+/** Moves an image one line up or down. */
+export function moveImageBy(body: string, index: number, delta: -1 | 1): { body: string; index: number } {
+  const line = imageLine(body, index);
+  if (line < 0) return { body, index };
+  const tok = imageTokens(body)[index];
+  const own = body.split('\n')[line].trim() === body.slice(tok.start, tok.end);
+  // Alone on its line: swap with the neighbour. Sharing a line: step out onto
+  // a line of its own just above or below.
+  const target = delta < 0 ? (own ? line - 1 : line) : own ? line + 2 : line + 1;
+  if (target < 0) return { body, index };
+  return moveImageToLine(body, index, target);
 }
