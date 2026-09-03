@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   MIN_IMAGE_WIDTH,
   chipWidth,
+  isRule,
   lineIndexAt,
   lineSpans,
   moveImageBy,
@@ -9,6 +10,7 @@ import {
   renderEditor,
   serializeEditor,
   setChipWidth,
+  textBefore,
 } from './richeditor';
 
 const NAME = 'deadbeef12ab34cd.png';
@@ -229,5 +231,53 @@ describe('moveImageBy', () => {
   it('stops at the edges', () => {
     expect(moveImageBy(`${A}\ntwo`, 0, -1).body).toBe(`${A}\ntwo`);
     expect(moveImageBy(`one\n${A}`, 0, 1).body).toBe(`one\n${A}`);
+  });
+});
+
+describe('section rules', () => {
+  it.each(['a\n\n---\nb', '---', 'x\n---', 'one\n\n---\n\n---\n\ntwo'])('round-trips %j', (body) => {
+    const div = editor();
+    renderEditor(div, body);
+    expect(serializeEditor(div)).toBe(body);
+  });
+
+  it('renders a rule line as a non-editable hr', () => {
+    const div = editor();
+    renderEditor(div, 'a\n---\nb');
+    const hr = div.querySelector('hr.inline-rule') as HTMLHRElement;
+    expect(hr).toBeTruthy();
+    expect(hr.contentEditable).toBe('false');
+    expect(isRule(hr)).toBe(true);
+  });
+
+  it('leaves dashes that are not alone on a line as text', () => {
+    const div = editor();
+    for (const body of ['a --- b', '--', '- - -', '----x']) {
+      renderEditor(div, body);
+      expect(div.querySelector('hr')).toBeNull();
+      expect(serializeEditor(div)).toBe(body);
+    }
+  });
+
+  it('normalises *** and long dashes to --- when written back', () => {
+    const div = editor();
+    renderEditor(div, 'a\n*****\nb');
+    expect(serializeEditor(div)).toBe('a\n---\nb');
+  });
+
+  it('keeps image indices stable with rules in between', () => {
+    const body = `![a](note-asset://${NAME})\n---\n![b](note-asset://deadbeef99887766.jpg)`;
+    expect(moveImageToLine(body, 1, 0).body).toBe(`![b](note-asset://deadbeef99887766.jpg)\n![a](note-asset://${NAME})\n---`);
+  });
+});
+
+describe('textBefore', () => {
+  it('keeps trailing newlines so the caret line can be judged', () => {
+    const div = editor();
+    renderEditor(div, 'one\ntwo\n');
+    const text = div.firstChild as Text;
+    expect(textBefore(div, { node: text, offset: 8 })).toBe('one\ntwo\n');
+    expect(textBefore(div, { node: text, offset: 5 })).toBe('one\nt');
+    expect(textBefore(div, { node: div, offset: 0 })).toBe('');
   });
 });

@@ -28,15 +28,18 @@ function plain(line: string): string {
     .trim();
 }
 
-export function titleOf(note: Pick<Note, 'body'>): string {
+/** The explicit title, else the first line of the body, else "Untitled". */
+export function titleOf(note: Pick<Note, 'body' | 'title'>): string {
+  const explicit = note.title?.trim();
+  if (explicit) return explicit;
   const first = lines(note.body)[0];
   return (first && plain(first)) || 'Untitled';
 }
 
-/** The line after the title, collapsed, for the sidebar row. */
-export function snippetOf(note: Pick<Note, 'body'>, max = 90): string {
+/** The body after the title line (or all of it when the title is explicit), collapsed, for the sidebar row. */
+export function snippetOf(note: Pick<Note, 'body' | 'title'>, max = 90): string {
   const rest = lines(note.body)
-    .slice(1)
+    .slice(note.title?.trim() ? 0 : 1)
     .map(plain)
     .filter(Boolean)
     .join(' ');
@@ -105,9 +108,25 @@ export function searchNotes(notes: Note[], query: string, tag: string | null = n
   return notes.filter((n) => {
     const tags = tagsOf(n.body);
     if (tag && !tags.includes(tag)) return false;
-    const hay = n.body.toLowerCase();
+    const hay = `${n.title ?? ''}\n${n.body}`.toLowerCase();
     return terms.every((t) => (t.length > 1 && t.startsWith('#') ? tags.some((x) => x.startsWith(t.slice(1))) : hay.includes(t)));
   });
+}
+
+/** Sets or clears the explicit title of one note. A blank title means "use the first line". */
+export function updateTitle(notes: Note[], id: string, title: string, now = Date.now()): Note[] {
+  const clean = title.trim();
+  return notes.map((n) => {
+    if (n.id !== id || (n.title ?? '') === clean) return n;
+    const { title: _old, ...rest } = n;
+    return clean ? { ...rest, title: clean, updatedAt: now } : { ...rest, updatedAt: now };
+  });
+}
+
+/** What leaves the app on export: the explicit title as a heading above the body. */
+export function exportBody(note: Pick<Note, 'body' | 'title'>): string {
+  const explicit = note.title?.trim();
+  return explicit ? `# ${explicit}\n\n${note.body}` : note.body;
 }
 
 /** Replaces the body of one note; untouched when the text is identical so the timestamp holds. */

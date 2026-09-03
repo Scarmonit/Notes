@@ -17,8 +17,15 @@ import { assetNameFromUrl, assetUrl, isSafeAssetName } from '../shared/assets';
  */
 
 const NAME = '[a-f0-9]{8,32}\\.(?:png|jpe?g|gif|webp|bmp)';
-// Either form of an attached image, in one pass over the body.
-const IMAGE_TOKEN = new RegExp(`!\\[([^\\]]*)\\]\\(note-asset:\\/\\/(${NAME})\\)|<img\\b([^<>]*)>`, 'gi');
+// Either form of an attached image, or a section rule (---, *** or ___ alone
+// on a line, as markdown defines a horizontal rule), in one pass over the body.
+const TOKEN = new RegExp(
+  `!\\[([^\\]]*)\\]\\(note-asset:\\/\\/(${NAME})\\)|<img\\b([^<>]*)>|^[ \\t]{0,3}(-{3,}|\\*{3,}|_{3,})[ \\t]*$`,
+  'gim',
+);
+
+/** The markdown written back for a section rule. */
+export const RULE_MD = '---';
 
 export const MIN_IMAGE_WIDTH = 48;
 
@@ -63,16 +70,45 @@ export function imageMarkdown(ref: ImageRef): string {
   return `<img src="${assetUrl(ref.name)}" alt="${escapeAttr(ref.alt)}" width="${ref.width}">`;
 }
 
-/** Every attached image in a body, in order, with the span of text each occupies. */
-export function imageTokens(body: string): Array<ImageRef & { start: number; end: number }> {
-  const out: Array<ImageRef & { start: number; end: number }> = [];
-  IMAGE_TOKEN.lastIndex = 0;
+export type BodyToken = ({ kind: 'image' } & ImageRef | { kind: 'rule' }) & { start: number; end: number };
+
+/** Every image and section rule in a body, in order, with the span of text each occupies. */
+export function bodyTokens(body: string): BodyToken[] {
+  const out: BodyToken[] = [];
+  TOKEN.lastIndex = 0;
   let match: RegExpExecArray | null;
-  while ((match = IMAGE_TOKEN.exec(body)) !== null) {
+  while ((match = TOKEN.exec(body)) !== null) {
+    const span = { start: match.index, end: match.index + match[0].length };
+    if (match[4] !== undefined) {
+      out.push({ kind: 'rule', ...span });
+      continue;
+    }
     const ref = refOf(match);
-    if (ref) out.push({ ...ref, start: match.index, end: match.index + match[0].length });
+    if (ref) out.push({ kind: 'image', ...ref, ...span });
   }
   return out;
+}
+
+/** Every attached image in a body, in order, with the span of text each occupies. */
+export function imageTokens(body: string): Array<ImageRef & { start: number; end: number }> {
+  return bodyTokens(body).flatMap((t) => (t.kind === 'image' ? [t] : []));
+}
+
+/** The HTML for one section rule chip, for insertion at the caret. */
+export function ruleHtml(): string {
+  return '<hr class="inline-rule" contenteditable="false">';
+}
+
+/** A fresh section rule element. */
+export function makeRule(): HTMLHRElement {
+  const hr = document.createElement('hr');
+  hr.className = 'inline-rule';
+  hr.contentEditable = 'false';
+  return hr;
+}
+
+export function isRule(node: unknown): node is HTMLHRElement {
+  return node instanceof HTMLHRElement && node.classList.contains('inline-rule');
 }
 
 /** The HTML for one inline image chip, for insertion at the caret. */
@@ -123,9 +159,9 @@ export function chipsOf(root: HTMLElement): HTMLImageElement[] {
 export function renderEditor(root: HTMLElement, body: string): void {
   root.replaceChildren();
   let last = 0;
-  for (const tok of imageTokens(body)) {
+  for (const tok of bodyTokens(body)) {
     if (tok.start > last) root.appendChild(document.createTextNode(body.slice(last, tok.start)));
-    root.appendChild(makeChip(tok));
+    root.appendChild(tok.kind === 'rule' ? makeRule() : makeChip(tok));
     last = tok.end;
   }
   if (last < body.length) root.appendChild(document.createTextNode(body.slice(last)));
@@ -161,7 +197,7 @@ const indexIn = (node: Node): number => Array.prototype.indexOf.call(node.parent
  * newline character in a text node, a <br>, or the edge of a browser-made
  * <div> line.
  */
-function analyze(root: HTMLElement): Analysis {
+function analyze(root: HTMLElement, keepTrailing = false): Analysis {
   let out = '';
   const lines: LineSpan[] = [];
   let start: DomPos = { node: root, offset: 0 };
@@ -196,6 +232,9 @@ function analyze(root: HTMLElement): Analysis {
           }
           break;
         }
+        case 'HR':
+          out += RULE_MD;
+          break;
         case 'BR': {
           const i = indexIn(elm);
           breakAt({ node: elm.parentNode as Node, offset: i }, { node: elm.parentNode as Node, offset: i + 1 });
@@ -218,7 +257,7 @@ function analyze(root: HTMLElement): Analysis {
   lines.push({ start, end: { node: root, offset: root.childNodes.length } });
   // A contenteditable keeps a trailing <br> to make the last line visible;
   // that shows up as one extra newline, which is not part of the text.
-  if (out.endsWith('\n')) {
+  if (!keepTrailing && out.endsWith('\n')) {
     out = out.slice(0, -1);
     lines.pop();
   }
@@ -228,6 +267,16 @@ function analyze(root: HTMLElement): Analysis {
 /** Reads the editor's DOM back out as a markdown body. */
 export function serializeEditor(root: HTMLElement): string {
   return analyze(root).text;
+}
+
+/** The markdown from the start of the editor up to a DOM position, trailing newlines kept. */
+export function textBefore(root: HTMLElement, pos: DomPos): string {
+  const range = document.createRange();
+  range.setStart(root, 0);
+  range.setEnd(pos.node, pos.offset);
+  const holder = document.createElement('div');
+  holder.append(range.cloneContents());
+  return analyze(holder, true).text;
 }
 
 /** The DOM span of each markdown line, in order. */

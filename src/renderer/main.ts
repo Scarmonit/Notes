@@ -4,6 +4,7 @@ import { renderMarkdown } from './markdown';
 import {
   allTags,
   createNote,
+  exportBody,
   neighborOf,
   removeNote,
   searchNotes,
@@ -12,6 +13,7 @@ import {
   titleOf,
   togglePin,
   updateBody,
+  updateTitle,
   wordCount,
 } from './notes';
 import { markdownToText } from './plaintext';
@@ -20,14 +22,17 @@ import {
   chipsOf,
   imageChipHtml,
   isChip,
+  isRule,
   lineIndexAt,
   lineSpans,
   markEmpty,
   moveImageBy,
   moveImageToLine,
   renderEditor as renderEditorDom,
+  makeRule,
   serializeEditor,
   setChipWidth,
+  textBefore,
 } from './richeditor';
 import stylesText from './styles.css?inline';
 import { absoluteTime, relativeTime } from './time';
@@ -47,6 +52,12 @@ const el = {
   list: $('list'),
   count: $('count'),
   helpBtn: $<HTMLButtonElement>('help'),
+  layoutBtn: $<HTMLButtonElement>('layout'),
+  layoutSheet: $('layout-sheet'),
+  marginW: $<HTMLInputElement>('margin-w'),
+  marginWOut: $<HTMLOutputElement>('margin-w-out'),
+  marginShow: $<HTMLInputElement>('margin-show'),
+  title: $<HTMLInputElement>('title'),
   toggleSidebar: $<HTMLButtonElement>('toggle-sidebar'),
   edited: $('edited'),
   words: $('words'),
@@ -75,15 +86,24 @@ interface UiState {
   selectedId: string | null;
   preview: boolean;
   sidebarHidden: boolean;
+  /** Width of the marginalia column in px. */
+  marginW: number;
+  marginHidden: boolean;
 }
+
+const MARGIN_DEFAULT = 176;
+const MARGIN_MIN = 90;
+const MARGIN_MAX = 280;
 
 const UI_KEY = 'notes.ui';
 
 function loadUi(): UiState {
-  const fallback: UiState = { selectedId: null, preview: false, sidebarHidden: false };
+  const fallback: UiState = { selectedId: null, preview: false, sidebarHidden: false, marginW: MARGIN_DEFAULT, marginHidden: false };
   try {
     const raw = localStorage.getItem(UI_KEY);
-    return raw ? { ...fallback, ...(JSON.parse(raw) as Partial<UiState>) } : fallback;
+    const state = raw ? { ...fallback, ...(JSON.parse(raw) as Partial<UiState>) } : fallback;
+    state.marginW = Math.min(MARGIN_MAX, Math.max(MARGIN_MIN, Number(state.marginW) || MARGIN_DEFAULT));
+    return state;
   } catch {
     return fallback;
   }
@@ -307,6 +327,7 @@ function renderEditor(): void {
     renderEditorDom(el.editor, n.body);
     el.editor.scrollTop = 0;
     editorNoteId = n.id;
+    el.title.value = n.title ?? '';
     // Restart the short fade so switching notes reads as turning a page.
     el.text.classList.remove('swap');
     void el.text.offsetWidth;
@@ -326,6 +347,15 @@ function renderEditor(): void {
 
 function applySidebar(): void {
   el.app.classList.toggle('sidebar-hidden', ui.sidebarHidden);
+}
+
+function applyLayout(): void {
+  el.app.style.setProperty('--margin-w', `${ui.marginW}px`);
+  el.app.classList.toggle('margin-hidden', ui.marginHidden);
+  el.marginW.value = String(ui.marginW);
+  el.marginWOut.value = `${ui.marginW} px`;
+  el.marginShow.checked = !ui.marginHidden;
+  positionHandle(selectedChip());
 }
 
 // --- actions ----------------------------------------------------------------
@@ -360,9 +390,10 @@ function selectedItemIntoView(): void {
   el.list.querySelector<HTMLElement>('.item.selected')?.scrollIntoView({ block: 'nearest' });
 }
 
-/** Starts a note, optionally seeded with a first line, and puts the caret at its end. */
-function newNote(seed = ''): void {
-  const n = createNote(Date.now(), seed);
+/** Starts a note, optionally with a title, and puts the caret in the body. */
+function newNote(title = ''): void {
+  const n = createNote();
+  if (title.trim()) n.title = title.trim();
   notes = [n, ...notes];
   scheduleSave();
   if (query) {
@@ -379,7 +410,7 @@ function newNote(seed = ''): void {
 function createFromSearch(): void {
   const title = query.trim();
   if (!title) return;
-  newNote(`${title}\n`);
+  newNote(title);
   showStatus(`Started “${title}”`, 2000);
 }
 
@@ -621,18 +652,24 @@ document.addEventListener('drop', (e) => {
 
 // --- images: select, resize, move -------------------------------------------
 
-/** The image chip the selection wraps exactly, if any. */
-function selectedChip(): HTMLImageElement | null {
+/** The image or rule chip the selection wraps exactly, if any. */
+function selectedBlock(): HTMLElement | null {
   if (el.editor.hidden) return null;
   const sel = window.getSelection();
   if (!sel || sel.rangeCount !== 1) return null;
   const r = sel.getRangeAt(0);
   if (r.startContainer !== r.endContainer || r.endOffset - r.startOffset !== 1) return null;
   const node = r.startContainer.childNodes[r.startOffset];
-  return isChip(node) && el.editor.contains(node) ? node : null;
+  return (isChip(node) || isRule(node)) && el.editor.contains(node) ? node : null;
 }
 
-function selectChip(chip: HTMLImageElement): void {
+/** The image chip the selection wraps exactly, if any. */
+function selectedChip(): HTMLImageElement | null {
+  const block = selectedBlock();
+  return isChip(block) ? block : null;
+}
+
+function selectChip(chip: HTMLElement): void {
   el.editor.focus();
   const range = document.createRange();
   range.selectNode(chip);
@@ -654,9 +691,9 @@ function caretAfter(node: Node): void {
 
 /** Keeps the selected-chip outline and the resize handle in step with the selection. */
 function syncChipUi(): void {
-  const chip = selectedChip();
-  for (const c of chipsOf(el.editor)) c.classList.toggle('is-selected', c === chip);
-  positionHandle(chip);
+  const block = selectedBlock();
+  for (const c of el.editor.querySelectorAll('.inline-img, .inline-rule')) c.classList.toggle('is-selected', c === block);
+  positionHandle(isChip(block) ? block : null);
 }
 
 function positionHandle(chip: HTMLImageElement | null): void {
@@ -717,8 +754,74 @@ el.imgHandle.addEventListener('pointerup', endResize);
 el.imgHandle.addEventListener('pointercancel', endResize);
 
 el.editor.addEventListener('click', (e) => {
-  if (isChip(e.target)) selectChip(e.target);
+  if (isChip(e.target) || isRule(e.target)) selectChip(e.target);
 });
+
+// --- section dividers -------------------------------------------------------
+
+/** The caret as a DOM position, or null when it is not a collapsed point in the editor. */
+function caretPos(): { node: Node; offset: number } | null {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount !== 1 || !sel.isCollapsed) return null;
+  const r = sel.getRangeAt(0);
+  return el.editor.contains(r.startContainer) ? { node: r.startContainer, offset: r.startOffset } : null;
+}
+
+/**
+ * Puts a section rule at the caret on a line of its own, with a blank line
+ * above it. The blank line matters: in markdown, dashes directly under a line
+ * of text turn that line into a heading rather than drawing a rule.
+ */
+function insertDivider(): void {
+  ensureEditable();
+  if (!selectionInEditor()) caretToEnd();
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return;
+  // Built straight into the DOM: Chromium's insert commands merge whatever
+  // follows a non-editable block onto its line, so the newline after the rule
+  // would be lost and the next words would end up glued to the dashes.
+  const range = sel.getRangeAt(0);
+  range.deleteContents();
+  const before = textBefore(el.editor, { node: range.startContainer, offset: range.startOffset });
+  const pad = before === '' || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+  const frag = document.createDocumentFragment();
+  if (pad) frag.append(document.createTextNode(pad));
+  const tail = document.createTextNode('\n');
+  frag.append(makeRule(), tail);
+  range.insertNode(frag);
+  // At the very end of the note the newline would be the last character, which
+  // Chromium treats as the placeholder for the empty last line and overwrites
+  // with the next keystroke. Its own idiom is a trailing <br>; give it one.
+  let next = tail.nextSibling;
+  while (next && next.nodeType === Node.TEXT_NODE && next.textContent === '') next = next.nextSibling;
+  if (!next) tail.after(document.createElement('br'));
+  const after = document.createRange();
+  after.setStart(tail, 1);
+  after.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(after);
+  commitEditor();
+}
+
+/** When the line being finished is just ---, swap the dashes for a real rule. */
+function convertDashesOnEnter(): boolean {
+  const pos = caretPos();
+  if (!pos || pos.node.nodeType !== Node.TEXT_NODE) return false;
+  const before = textBefore(el.editor, pos);
+  const line = before.slice(before.lastIndexOf('\n') + 1);
+  if (!/^[ \t]{0,3}(?:-{3,}|\*{3,}|_{3,})[ \t]*$/.test(line)) return false;
+  const text = pos.node.textContent ?? '';
+  if (pos.offset < line.length || text.slice(pos.offset - line.length, pos.offset) !== line) return false;
+  const range = document.createRange();
+  range.setStart(pos.node, pos.offset - line.length);
+  range.setEnd(pos.node, pos.offset);
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+  document.execCommand('delete');
+  insertDivider();
+  return true;
+}
 
 // Double-click puts an image back at its natural size.
 el.editor.addEventListener('dblclick', (e) => {
@@ -843,10 +946,11 @@ async function runExport(kind: ExportKind): Promise<void> {
   closeExportMenu(false);
   focusEditor();
   const title = titleOf(n);
+  const body = exportBody(n);
   let request: ExportRequest;
-  if (kind === 'md') request = { kind, title, body: n.body };
-  else if (kind === 'txt') request = { kind, title, text: markdownToText(n.body) };
-  else request = { kind, title, html: renderMarkdown(n.body), css: stylesText, edited: `Edited ${absoluteTime(n.updatedAt)}` };
+  if (kind === 'md') request = { kind, title, body };
+  else if (kind === 'txt') request = { kind, title, text: markdownToText(body) };
+  else request = { kind, title, html: renderMarkdown(body), css: stylesText, edited: `Edited ${absoluteTime(n.updatedAt)}` };
 
   showStatus('Exporting…', 0);
   try {
@@ -914,14 +1018,14 @@ el.editor.addEventListener('input', commitEditor);
 el.editor.addEventListener('beforeinput', (e) => {
   if (e.inputType === 'insertParagraph') {
     e.preventDefault();
-    document.execCommand('insertLineBreak');
+    if (!convertDashesOnEnter()) document.execCommand('insertLineBreak');
   }
 });
 
 el.editor.addEventListener('keydown', (e) => {
-  const chip = selectedChip();
+  const chip = selectedBlock();
   if (chip) {
-    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    if (isChip(chip) && e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
       e.preventDefault();
       moveChipBy(chip, e.key === 'ArrowUp' ? -1 : 1);
       return;
@@ -952,6 +1056,64 @@ el.editor.addEventListener('keydown', (e) => {
       document.execCommand('insertText', false, '  ');
     }
   }
+});
+
+// --- title ------------------------------------------------------------------
+
+el.title.addEventListener('input', () => {
+  const n = selected();
+  if (!n) return;
+  notes = updateTitle(notes, n.id, el.title.value);
+  scheduleSave();
+  renderList();
+  renderMeta();
+});
+
+el.title.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (ui.preview) {
+      el.preview.focus();
+      return;
+    }
+    el.editor.focus();
+    const range = document.createRange();
+    range.selectNodeContents(el.editor);
+    range.collapse(true);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  }
+});
+
+function focusTitle(): void {
+  if (!selected()) newNote();
+  el.title.focus();
+  el.title.select();
+}
+
+// --- layout sheet -----------------------------------------------------------
+
+function toggleLayout(force?: boolean): void {
+  const open = force ?? el.layoutSheet.hidden;
+  el.layoutSheet.hidden = !open;
+  if (open) el.marginW.focus();
+  else focusEditor();
+}
+
+el.marginW.addEventListener('input', () => {
+  ui.marginW = Number(el.marginW.value);
+  saveUi();
+  applyLayout();
+});
+el.marginShow.addEventListener('change', () => {
+  ui.marginHidden = !el.marginShow.checked;
+  saveUi();
+  applyLayout();
+});
+el.layoutBtn.addEventListener('click', () => toggleLayout(true));
+el.layoutSheet.addEventListener('click', (e) => {
+  if (e.target === el.layoutSheet) toggleLayout(false);
 });
 
 // --- search -----------------------------------------------------------------
@@ -1034,6 +1196,8 @@ function onEscape(): void {
   }
   if (!el.exportMenu.hidden) {
     closeExportMenu(true);
+  } else if (!el.layoutSheet.hidden) {
+    toggleLayout(false);
   } else if (!el.helpSheet.hidden) {
     toggleHelp(false);
   } else if (armed) {
@@ -1048,7 +1212,7 @@ function onEscape(): void {
     } else {
       focusList();
     }
-  } else if (document.activeElement === el.editor || document.activeElement === el.preview) {
+  } else if (document.activeElement === el.editor || document.activeElement === el.preview || document.activeElement === el.title) {
     if (ui.sidebarHidden) toggleSidebar();
     focusList();
   }
@@ -1077,6 +1241,10 @@ document.addEventListener('keydown', (e) => {
         e.preventDefault();
         togglePinSelected();
         return;
+      case 'h':
+        e.preventDefault();
+        insertDivider();
+        return;
     }
   }
 
@@ -1096,6 +1264,14 @@ document.addEventListener('keydown', (e) => {
       case 'e':
         e.preventDefault();
         togglePreview();
+        return;
+      case 't':
+        e.preventDefault();
+        focusTitle();
+        return;
+      case ',':
+        e.preventDefault();
+        toggleLayout();
         return;
       case 's':
         e.preventDefault();
@@ -1140,6 +1316,7 @@ async function init(): Promise<void> {
   if (ui.selectedId && !notes.some((n) => n.id === ui.selectedId)) ui.selectedId = null;
   if (!ui.selectedId) ui.selectedId = sortByEdited(notes)[0]?.id ?? null;
   applySidebar();
+  applyLayout();
   renderList();
   renderEditor();
   if (selected()) focusEditor();

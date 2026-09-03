@@ -47,3 +47,20 @@ describe('pinned notes', () => {
     expect('pinned' in notes[2]).toBe(false);
   });
 });
+
+describe('titles', () => {
+  it('keeps a non-blank string title and drops anything else', () => {
+    const text = JSON.stringify({
+      version: 1,
+      notes: [
+        { id: 'a', body: '', createdAt: 1, updatedAt: 1, title: '  Plans ' },
+        { id: 'b', body: '', createdAt: 1, updatedAt: 1, title: '   ' },
+        { id: 'c', body: '', createdAt: 1, updatedAt: 1, title: 7 },
+      ],
+    });
+    const notes = parseNotesFile(text).notes;
+    expect(notes[0].title).toBe('Plans');
+    expect('title' in notes[1]).toBe(false);
+    expect('title' in notes[2]).toBe(false);
+  });
+});

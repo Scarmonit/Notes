@@ -442,12 +442,36 @@ kbd {
   }
 }
 
+/* The title sits above the words, in the display serif, and is optional. */
+.title {
+  display: block;
+  width: 100%;
+  padding: 34px 36px 0 28px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--paper);
+  font: 600 24px/1.25 var(--serif-display);
+  letter-spacing: -0.01em;
+  caret-color: var(--margin);
+}
+.title::placeholder {
+  color: var(--paper-faint);
+  font-weight: 400;
+  font-style: italic;
+}
+.text {
+  display: flex;
+  flex-direction: column;
+}
+
 .editor,
 .preview {
   display: block;
   width: 100%;
-  height: 100%;
-  padding: 40px 36px 45vh 28px;
+  flex: 1;
+  min-height: 0;
+  padding: 18px 36px 45vh 28px;
   font: 17px/1.75 var(--serif);
   color: var(--paper);
   overflow-y: auto;
@@ -481,6 +505,20 @@ kbd {
   box-shadow: 0 0 0 1px var(--line);
   user-select: none;
 }
+/* A section rule: --- on its own line, drawn as a hairline the writer can select. */
+.inline-rule {
+  display: block;
+  height: 1px;
+  margin: 14px 0;
+  border: 0;
+  background: var(--paper-faint);
+  opacity: 0.7;
+}
+.inline-rule.is-selected {
+  outline: 2px solid var(--blue);
+  outline-offset: 4px;
+}
+
 /* A resized image keeps the width the writer chose, up to the column. */
 .inline-img[width] {
   max-width: 100%;
@@ -578,6 +616,17 @@ kbd {
   margin: 0;
 }
 
+/* The margin can be narrowed or hidden from the Layout sheet. */
+.app.margin-hidden .marginalia {
+  display: none;
+}
+.app.margin-hidden .text {
+  border-left: 0;
+}
+.app.margin-hidden .page {
+  max-width: 76ch;
+}
+
 /* Narrow windows: the margin folds above the text and the rule goes away. */
 @media (max-width: 900px) {
   .page {
@@ -594,9 +643,12 @@ kbd {
   .text {
     border-left: 0;
   }
+  .title {
+    padding: 14px 28px 0;
+  }
   .editor,
   .preview {
-    padding: 14px 28px 45vh;
+    padding: 10px 28px 45vh;
   }
   .drop-line {
     right: 28px;
@@ -708,6 +760,43 @@ kbd {
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: var(--paper-dim);
+}
+
+/* --- layout sheet ------------------------------------------------------- */
+
+.foot-links {
+  display: flex;
+  gap: 6px;
+}
+.layout-card {
+  width: 360px;
+}
+.layout-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0;
+  color: var(--paper-dim);
+}
+.layout-row > span:first-child {
+  flex: 0 0 96px;
+}
+.layout-row input[type='range'] {
+  flex: 1;
+  accent-color: var(--blue);
+}
+.layout-row output {
+  flex: 0 0 44px;
+  text-align: right;
+  color: var(--paper);
+  font-variant-numeric: tabular-nums;
+}
+.layout-check {
+  cursor: default;
+}
+.layout-check input {
+  accent-color: var(--blue);
+  margin: 0;
 }
 
 /* --- shortcut sheet ----------------------------------------------------- */

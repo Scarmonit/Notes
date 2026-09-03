@@ -6,6 +6,8 @@ export interface Note {
   updatedAt: number;
   /** Pinned notes sort above the rest, whatever their edit time. */
   pinned?: boolean;
+  /** An explicit title. Without one, the first non-empty line of the body stands in. */
+  title?: string;
 }
 
 /** On-disk shape of notes.json in the app's userData folder. */

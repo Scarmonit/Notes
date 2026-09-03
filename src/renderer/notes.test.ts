@@ -10,6 +10,8 @@ import {
   tagsOf,
   allTags,
   togglePin,
+  updateTitle,
+  exportBody,
   titleOf,
   updateBody,
   wordCount,
@@ -186,5 +188,32 @@ describe('tags', () => {
     expect(searchNotes(list, '', 'shop').map((n) => n.id)).toEqual(['a']);
     expect(searchNotes(list, 'list', 'shop')).toEqual([]);
     expect(searchNotes(list, '#').map((n) => n.id)).toEqual(['a', 'b']);
+  });
+});
+
+describe('explicit titles', () => {
+  it('win over the first line for title and snippet', () => {
+    const n = { body: 'first line\nsecond', title: 'Plans' };
+    expect(titleOf(n)).toBe('Plans');
+    expect(snippetOf(n)).toBe('first line second');
+    expect(titleOf({ body: 'first', title: '  ' })).toBe('first');
+  });
+  it('are searchable', () => {
+    const list = [{ ...note('a', 'body only', 1), title: 'Zebra' }, note('b', 'no zebra here? yes zebra', 2)];
+    expect(searchNotes(list, 'zebra').map((n) => n.id)).toEqual(['a', 'b']);
+    expect(searchNotes(list, 'only').map((n) => n.id)).toEqual(['a']);
+  });
+  it('set, trim, clear and bump the edit time', () => {
+    const set = updateTitle([note('a', 'x', 1)], 'a', '  Plans ', 9);
+    expect(set[0]).toEqual({ ...note('a', 'x', 1), updatedAt: 9, title: 'Plans' });
+    const same = updateTitle(set, 'a', 'Plans', 20);
+    expect(same[0].updatedAt).toBe(9);
+    const cleared = updateTitle(set, 'a', '', 30);
+    expect(cleared[0]).toEqual({ ...note('a', 'x', 1), updatedAt: 30 });
+    expect('title' in cleared[0]).toBe(false);
+  });
+  it('go out as a heading on export', () => {
+    expect(exportBody({ body: 'text', title: 'Plans' })).toBe('# Plans\n\ntext');
+    expect(exportBody({ body: 'text' })).toBe('text');
   });
 });
