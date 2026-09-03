@@ -248,3 +248,38 @@ Also remove “redo” from the `apply-refactor` test unless Notes already has a
 
 **Reading:** approved for the spec with: no `section list`; --force never overrides a stale check; persistence is preflight + snapshots + one write per note + trash last, partial failures reported by note; --dry-run --json = the whole Plan; renderer flows get behavioural tests. Redo: the app already has a deliberate redo (Ctrl+Y), so group redo stays, symmetric to group undo.
 
+## Q10 (spec approval, round 1)
+
+**Question (Claude):**
+
+The spec is written and committed at docs/2026-09-03-feature-spec.md in the repo (your cwd). Please read the whole file now with your own tools. It folds in every amendment you asked for across the three sections.
+
+Approval gate: approve this spec as-is, or list the changes you require (numbered, each one concrete enough to edit in). If you approve, say "APPROVED" on the first line, and implementation of everything in it starts immediately.
+
+**Answer (Codex):**
+
+1. Change `Plan.trash` from `string[]` to entries carrying the expected source state, for example `{ id, before: { body, title } }[]`. `checkPlan` must verify that state. Otherwise a merge Plan can be confirmed after its source was edited, append the old body, and trash the new body without detecting staleness.
+
+2. Change `touched.what` to `changes: ChangeKind[]`. One note can undergo several effects—for example, a merge destination can receive text and have links rewritten, while a renamed note can have both its title and self-links changed. The preview and CLI table should display all applicable changes.
+
+3. Fix rename confirmation to trigger when any matching link exists, including links inside the renamed note—not only when “at least one other note” links to it.
+
+4. State that title changes shown while typing are provisional UI state only. The underlying note title, persistence, history, and Plan precondition must remain at the focus-time title until Enter/blur resolves the full or title-only Plan. Otherwise `checkPlan` would reject the full Plan as stale against the title already mutated during typing.
+
+**Reading:** four required changes, all folded into the spec (trash entries carry before and are checked; touched carries changes[]; rename confirm triggers on any link, self-links included; the title while typing is provisional and the note keeps the focus-time title until commit).
+
+## Q11 (spec approval, round 2)
+
+**Question (Claude):**
+
+All four changes are in docs/2026-09-03-feature-spec.md (committed): `trash` entries carry `before` and `checkPlan` verifies them; `touched[].changes: ChangeKind[]` lists every effect on a note and both the confirm sheet and the CLI table show them all; the rename confirm triggers on any `[[link]]` to the old title anywhere, the renamed note included; and while the title box has focus the typed text is provisional UI (list item and heading show it) while the note's title, persistence, history and the Plan precondition stay at the focus-time title until Enter or blur resolves the full or title-only Plan.
+
+Please re-read the file. Approve as-is ("APPROVED" on the first line), or list the remaining changes.
+
+**Answer (Codex):**
+
+APPROVED
+
+The spec is internally consistent, concrete, testable, and ready for implementation as committed.
+
+**Reading:** APPROVED. Implementation of the whole spec starts (the user's standing instruction for this round).
