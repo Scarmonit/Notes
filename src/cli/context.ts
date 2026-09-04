@@ -4,10 +4,12 @@ import { CliError, type Backend } from '../core/backend';
 import { EXIT } from '../core/ipc-protocol';
 import { defaultUserData, userDataDirArg } from '../core/paths';
 import { parseDueWindow } from '../core/due';
-import { applyFilter, parseSort, parseWhen, parseWords, SORT_KEYS, type Filter } from '../core/query';
+import { applyFilter, parseSort, parseWhen, parseWords, ROOT_ONLY, SORT_KEYS, type Filter } from '../core/query';
 import { resolveNote, resolveTrashed, type Resolution } from '../core/resolve';
 import { linksIn, snippetOf, tagsOf, titleOf, wordCount } from '../renderer/notes';
 import { taskProgress } from '../renderer/tasks';
+import { joinFolder, parseFolder, ROOT_FOLDER } from '../shared/folders';
+import { fileNameFor } from '../shared/notes-folder';
 import { viewNamed } from '../shared/settings';
 import type { Note, TrashedNote } from '../shared/types';
 import { readStdin } from './body';
@@ -151,10 +153,13 @@ export class Ctx {
       });
       return chosen;
     }
+    // Folders make two notes called Plan legal, so this is now an everyday
+    // answer rather than a mistake, and it gets a code of its own: a script
+    // can tell "there is no such note" from "say which one".
     throw new CliError(
-      `"${text}" matches ${r.candidates.length} ${what}s; be more specific or use the id`,
-      EXIT.notFound,
-      r.candidates.map((c) => ({ id: c.id, title: name(c) })),
+      `"${text}" matches ${r.candidates.length} ${what}s; be more specific, use the id, or name the folder it is in`,
+      EXIT.ambiguous,
+      r.candidates.map((c) => ({ id: c.id, title: name(c), path: 'folder' in c ? joinFolder((c as { folder?: string }).folder ?? ROOT_FOLDER, name(c)) : name(c) })),
     );
   }
 
@@ -195,6 +200,10 @@ export function describe(note: Note, all?: Note[]): Record<string, unknown> {
     id: note.id,
     title: titleOf(note),
     explicitTitle: note.title ?? null,
+    // Where it lives, and the file it lives in: `Work/Clients` and
+    // `Work/Clients/Hale.md`, both relative to the notes folder.
+    folder: note.folder ?? ROOT_FOLDER,
+    path: joinFolder(note.folder ?? ROOT_FOLDER, note.file ?? `${fileNameFor(titleOf(note))}.md`),
     pinned: note.pinned === true,
     created: iso(note.createdAt),
     updated: iso(note.updatedAt),
@@ -217,6 +226,7 @@ export function describe(note: Note, all?: Note[]): Record<string, unknown> {
 
 export interface FilterOpts {
   tag?: string[];
+  folder?: string;
   pinned?: boolean;
   untitled?: boolean;
   createdAfter?: string;
@@ -244,7 +254,7 @@ const collect = (value: string, previous: string[] = []): string[] => [...previo
  * and --reverse order a list, and a command's own flags are not filters.
  */
 export function hasFilterOpts(opts: FilterOpts): boolean {
-  const narrowing: Array<keyof FilterOpts> = ['tag', 'pinned', 'untitled', 'createdAfter', 'createdBefore', 'updatedAfter', 'updatedBefore', 'linksTo', 'linkedFrom', 'orphan', 'hasTasks', 'todo', 'done', 'due', 'limit'];
+  const narrowing: Array<keyof FilterOpts> = ['tag', 'folder', 'pinned', 'untitled', 'createdAfter', 'createdBefore', 'updatedAfter', 'updatedBefore', 'linksTo', 'linkedFrom', 'orphan', 'hasTasks', 'todo', 'done', 'due', 'limit'];
   return narrowing.some((key) => opts[key] !== undefined);
 }
 
@@ -252,6 +262,7 @@ export function hasFilterOpts(opts: FilterOpts): boolean {
 export function addFilterOptions(cmd: Command): Command {
   return cmd
     .option('-t, --tag <tag>', 'only notes carrying #tag (repeatable; nested tags count)', collect)
+    .option('-F, --folder <path>', 'only notes in this folder or one beneath it; / for the ones at the root')
     .option('--pinned', 'only pinned notes')
     .option('--no-pinned', 'only unpinned notes')
     .option('--untitled', 'only notes without an explicit title')
@@ -298,6 +309,14 @@ export async function filterFrom(ctx: Ctx, opts: FilterOpts, words: readonly str
   if (errors.length > 0) throw new CliError(errors[0], EXIT.usage);
   const filter: Filter = parsed;
   for (const tag of opts.tag ?? []) filter.tags.push(tag.replace(/^#/, '').toLowerCase());
+  if (opts.folder !== undefined) {
+    if (opts.folder === '/') filter.folder = ROOT_ONLY;
+    else {
+      const parsed = parseFolder(opts.folder);
+      if ('error' in parsed) throw new CliError(`--folder: ${parsed.error}`, EXIT.usage);
+      if (parsed.folder) filter.folder = parsed.folder;
+    }
+  }
   if (opts.todo) filter.hasTodo = true;
   if (opts.done) filter.hasDone = true;
   if (opts.due !== undefined) {

@@ -78,7 +78,7 @@ export async function handle(deps: ServerDeps, message: Message): Promise<Messag
         capabilities: { tools: { listChanged: false }, resources: { listChanged: false, subscribe: false } },
         serverInfo: { name: SERVER_NAME, title: 'Notes', version: deps.version },
         instructions:
-          "These are the user's own notes, kept as markdown files by the Notes app. Search before reading, and read before changing. A note is named by its title, by a title prefix only it has, by an alias it answers to, or by its id. Links between notes are written [[Like this]], tags are #like-this, and a task is `- [ ] like this`, with `@2026-09-10` to schedule it. Deleting moves a note to a trash it can be brought back from for a month.",
+          "These are the user's own notes, kept as markdown files by the Notes app. Search before reading, and read before changing. A note is named by its title, by a title prefix only it has, by an alias it answers to, or by its id. Links between notes are written [[Like this]], tags are #like-this, and a task is `- [ ] like this`, with `@2026-09-10` to schedule it. Notes are filed in folders — real directories, one per note — which say where a note lives, while #tags say what is true about it; two notes in different folders may share a title, and [[Work/Plan]] is how a link says which one it means. Deleting moves a note to a trash it can be brought back from for a month.",
       });
     }
     case 'notifications/initialized':
@@ -87,7 +87,7 @@ export async function handle(deps: ServerDeps, message: Message): Promise<Messag
     case 'ping':
       return reply({});
     case 'tools/list':
-      // Nine tools fit in one page, so no cursor is ever handed back; a client
+      // Twelve tools fit in one page, so no cursor is ever handed back; a client
       // that sends one anyway is answered rather than refused.
       return reply({
         tools: TOOLS.map((t) => ({
@@ -140,7 +140,9 @@ export async function handle(deps: ServerDeps, message: Message): Promise<Messag
             uri: `notes://${encodeURIComponent(n.id)}`,
             name: titleOf(n),
             title: titleOf(n),
-            description: snippetOf(n, 120),
+            // Where it lives, then what it says: two notes may share a title
+            // now, and the folder is what tells them apart in a flat listing.
+            description: n.folder ? `${n.folder} — ${snippetOf(n, 100)}` : snippetOf(n, 120),
             mimeType: 'text/markdown',
             size: Buffer.byteLength(n.body, 'utf8'),
             annotations: { audience: ['assistant'], lastModified: new Date(n.updatedAt).toISOString() },

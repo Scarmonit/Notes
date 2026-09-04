@@ -211,6 +211,12 @@ export class AppBackend implements Backend {
   get = (id: string) => this.call('note.get', { id });
   status = (id: string) => this.call('note.status', { id });
   fileOf = (id: string) => this.call('note.file', { id }).then((r) => r.path);
+  folderList = () => this.call('folder.list', {}).then((r) => r.folders);
+  folderCreate = (folder: string) => this.call('folder.create', { folder }).then((r) => r.folder);
+  folderRename = (folder: string, name: string) => this.call('folder.rename', { folder, name }).then((r) => r.folder);
+  folderMove = (folder: string, into: string) => this.call('folder.move', { folder, into }).then((r) => r.folder);
+  folderDelete = (folder: string) => this.call('folder.delete', { folder }).then(() => undefined);
+  noteMove = (id: string, folder: string) => this.call('note.move', { id, folder }).then((r) => r.path);
   put = (note: Note, options?: { force?: boolean; expectUpdatedAt?: number }) => this.call('note.put', { note, force: options?.force, expectUpdatedAt: options?.expectUpdatedAt });
   remove = (id: string, options?: { force?: boolean }) => this.call('note.remove', { id, force: options?.force }).then((r) => r.removed);
   inbox = (text: string) => this.call('inbox', { text }).then((r) => r.id);

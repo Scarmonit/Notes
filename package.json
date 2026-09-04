@@ -1,7 +1,7 @@
 {
   "name": "notes",
   "productName": "Notes",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "description": "Keyboard-first markdown notes for Windows, with tabs and split panes",
   "main": ".vite/build/main.js",
   "private": true,

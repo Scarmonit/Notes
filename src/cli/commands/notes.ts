@@ -6,6 +6,7 @@ import { parseWords } from '../../core/query';
 import { expandTemplate, templateNamed, templatesOf } from '../../core/templates';
 import { createNote, snippetOf, tagsOf, titleOf, updateBody, updateTitle, wordCount } from '../../renderer/notes';
 import { taskProgress } from '../../renderer/tasks';
+import { folderKey, parseFolder, ROOT_FOLDER } from '../../shared/folders';
 import type { Note } from '../../shared/types';
 import { AppBackend } from '../client';
 import { addFilterOptions, describe, filteredNotes, hasFilterOpts, type Ctx, type FilterOpts } from '../context';
@@ -20,12 +21,14 @@ const LIST_COLUMNS: Column[] = [
   { key: 'pinned', label: '', format: (v) => (v ? '*' : ' ') },
   { key: 'id', label: 'id', format: (v) => String(v).slice(0, 8), style: 'dim' },
   { key: 'updatedAt', label: 'edited', format: (v) => relative(Number(v)), style: 'dim' },
+  { key: 'folder', label: 'folder', format: (v) => (v ? String(v) : '/'), style: 'dim' },
   { key: 'title', label: 'title', style: 'bold' },
   { key: 'snippet', label: '', shrink: true, style: 'dim' },
 ];
 
 const PLAIN_COLUMNS: Column[] = [
   { key: 'id', label: 'id' },
+  { key: 'folder', label: 'folder', format: (v) => (v ? String(v) : '/') },
   { key: 'title', label: 'title' },
   { key: 'updated', label: 'updated' },
   { key: 'tags', label: 'tags', format: (v) => (v as string[]).join(',') },
@@ -44,6 +47,21 @@ function matchLine(note: Note, terms: string[]): { line: number; text: string } 
     if (terms.some((t) => lower.includes(t))) return { line: i + 1, text: oneLine(lines[i]) };
   }
   return null;
+}
+
+/**
+ * The folder a `--folder` means, which must already be there. Making one is
+ * `notes folder new`: a typo should not quietly scatter notes into folders
+ * nobody meant to have.
+ */
+export async function wantFolder(ctx: Ctx, typed: string): Promise<string> {
+  const parsed = parseFolder(typed === '/' ? '' : typed);
+  if ('error' in parsed) throw new CliError(parsed.error, EXIT.usage);
+  if (!parsed.folder) return ROOT_FOLDER;
+  const folders = await (await ctx.backend()).folderList();
+  const found = folders.find((f) => folderKey(f) === folderKey(parsed.folder));
+  if (!found) throw new CliError('There is no folder called ' + parsed.folder + '; make it with: notes folder new ' + parsed.folder, EXIT.notFound);
+  return found;
 }
 
 /** Puts a note through the backend, turning a busy refusal into the hint the person needs. */
@@ -91,8 +109,9 @@ export function register(program: Command, use: () => Ctx): void {
       .option('--tags <a,b>', 'tags to write on the last line, as #a #b')
       .option('--pin', 'pin the note')
       .option('-T, --template <name>', 'start from a template (a note tagged #template); {{title}}, {{date}} and {{time}} are filled in')
+      .option('-F, --folder <path>', 'the folder to file it in, which must already exist; / is the root')
       .option('-o, --open', 'open it in the window'),
-  ).action(async (title: string | undefined, words: string[], opts: BodyOpts & { tags?: string; pin?: boolean; template?: string; open?: boolean }) => {
+  ).action(async (title: string | undefined, words: string[], opts: BodyOpts & { tags?: string; pin?: boolean; template?: string; folder?: string; open?: boolean }) => {
     const c = ctx();
     const dash = words.includes('-') || title === '-';
     const text = words.filter((w) => w !== '-').join(' ');
@@ -116,6 +135,7 @@ export function register(program: Command, use: () => Ctx): void {
     const note = createNote(Date.now(), body);
     if (explicitTitle) note.title = explicitTitle;
     if (opts.pin) note.pinned = true;
+    if (opts.folder !== undefined) note.folder = await wantFolder(c, opts.folder);
     const saved = await save(c, note);
     if (opts.open) await (await c.backend(true)).open({ id: saved.id });
     c.out.value(describe(saved), () => saved.id);

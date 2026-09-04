@@ -17,6 +17,22 @@ export interface Note {
    * `aliases: [Doggo, Woofer]`, which is where Obsidian keeps them too.
    */
   aliases?: string[];
+  /**
+   * Where the note lives: its folder inside the notes folder, `/`-separated,
+   * empty for the root. The store fills this in from the file's own path and
+   * never writes it into the front matter — the filesystem is the only thing
+   * that says where a note is, so a move made in Explorer needs no agreement
+   * from the app. Moving a note is its own operation, so a `folder` sent back
+   * with a save is read as description rather than instruction.
+   */
+  folder?: string;
+  /**
+   * The name of the file the note is in, inside that folder — usually the
+   * title made safe for Windows, but `Plan 2.md` when another note in the
+   * same folder got there first. Filled in by the store beside `folder`, and
+   * never written into the file: it is the file's own name.
+   */
+  file?: string;
 }
 
 /**
@@ -29,11 +45,32 @@ export interface NotesFile {
   version: 1;
   notes: Note[];
   /**
+   * Every folder in the notebook, root-relative, empty ones included — which
+   * is why it cannot be worked out from the notes. Sent with a load; a save
+   * has no business changing it, so the store ignores it there.
+   */
+  folders?: string[];
+  /**
    * The `seq` of the last change from outside the caller has taken in. A
    * note the store found after that is missing from the list only because
    * the caller has not heard of it yet, not because it was deleted.
    */
   seen?: number;
+}
+
+/**
+ * What came of a folder command. The folders as they now stand come back with
+ * every one of them, so the rail never has to ask a second time and can never
+ * show a tree the disk has moved on from.
+ */
+export interface FolderResult {
+  ok: boolean;
+  /** The folder the command ended at: the one made, renamed, moved, or filed into. */
+  folder: string;
+  /** Every folder in the notebook now. */
+  folders: string[];
+  /** What happened, in a sentence, or why it did not. */
+  message: string;
 }
 
 /** What came of asking Notes to keep the markdown somewhere else. */
@@ -109,6 +146,20 @@ export interface NotesApi {
   onExternalChange(fn: (changes: ExternalChanges) => void): void;
   /** Opens the notes folder in Explorer. */
   openNotesFolder(): Promise<void>;
+  /** Opens Explorer with one note's own file picked out. */
+  showNoteFile(id: string): Promise<boolean>;
+  /** Every folder in the notebook, empty ones included. */
+  listFolders(): Promise<string[]>;
+  /** Makes a folder, and every folder above it. */
+  createFolder(folder: string): Promise<FolderResult>;
+  /** Changes a folder's own name, leaving it where it is. */
+  renameFolder(folder: string, name: string): Promise<FolderResult>;
+  /** Puts a folder, and everything in it, inside another. */
+  moveFolder(folder: string, into: string): Promise<FolderResult>;
+  /** Removes a folder that holds nothing. */
+  deleteFolder(folder: string): Promise<FolderResult>;
+  /** Files a note in another folder. */
+  moveNote(id: string, folder: string): Promise<FolderResult>;
   /** Where the markdown files are now. */
   notesFolder(): Promise<string>;
   /** The web clipper's bookmarklet, or null while the receiver is not listening. */

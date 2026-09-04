@@ -35,8 +35,27 @@
         <p id="search-ops" class="search-ops u" hidden></p>
         <!-- Saved searches: a name for a question the box can already ask. -->
         <div id="views" class="views" role="group" aria-label="Saved searches" hidden></div>
-        <div id="tags" class="tags" role="group" aria-label="Tags" hidden></div>
+        <!-- Folders: where a note lives. Above the list, because the list is
+             what is in the folder that is chosen. Always there, even with no
+             folders yet: a feature whose only surface is hidden until you find
+             the palette reads as a feature that is not there. -->
+        <section id="folders" class="rail" aria-label="Folders">
+          <div class="rail-head">
+            <span class="rail-name u">Folders</span>
+            <button id="folder-add" class="rail-add" type="button" title="New folder…" aria-label="New folder…">+</button>
+          </div>
+          <div id="folder-tree" class="folder-tree" role="group" aria-label="Folders"></div>
+        </section>
         <div id="list" class="list" role="listbox" aria-label="Notes" tabindex="-1"></div>
+        <!-- Tags: what is true about a note, as against the folder it is in.
+             Below the list, folded away until a tag is being filtered by. -->
+        <section id="tag-rail" class="rail" aria-label="Tags" hidden>
+          <button id="tags-fold" class="rail-head rail-fold" type="button" aria-expanded="false" aria-controls="tags">
+            <span class="rail-name u">Tags</span>
+            <span class="rail-chev" aria-hidden="true">›</span>
+          </button>
+          <div id="tags" class="tags" role="group" aria-label="Tags" hidden></div>
+        </section>
         <div class="sidebar-foot">
           <span id="count" class="count u"></span>
           <span class="foot-links">
@@ -62,6 +81,9 @@
               </svg>
             </button>
             <div class="pane-meta">
+              <!-- Where this note lives. Informational: it says the folder and
+                   goes there when clicked, and never files the note itself. -->
+              <button data-el="where" class="where no-drag" type="button" hidden></button>
               <span data-el="status" class="status u" aria-live="polite"></span>
             </div>
             <!-- The commands for this pane's note, built from the one registry in

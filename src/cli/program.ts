@@ -3,6 +3,7 @@ import { CliError } from '../core/backend';
 import { EXIT, IpcError, type ExitCode } from '../core/ipc-protocol';
 import { register as registerApp } from './commands/app';
 import { register as registerFiles } from './commands/files';
+import { register as registerFolders } from './commands/folders';
 import { register as registerHistory } from './commands/history';
 import { register as registerNotes } from './commands/notes';
 import { register as registerRefactor } from './commands/refactor';
@@ -114,6 +115,7 @@ export function buildProgram(options: ProgramOptions = {}): BuiltProgram {
     });
 
   registerNotes(program, use);
+  registerFolders(program, use);
   registerTagsLinks(program, use);
   registerRefactor(program, use);
   registerTrash(program, use);
@@ -146,7 +148,7 @@ export function buildProgram(options: ProgramOptions = {}): BuiltProgram {
       }
       if (err instanceof CliError) {
         writeErr(`error: ${err.message}\n`);
-        if (err.candidates) for (const c of err.candidates) writeErr(`  ${c.id.slice(0, 8)}  ${c.title}\n`);
+        if (err.candidates) for (const c of err.candidates) writeErr(`  ${c.id.slice(0, 8)}  ${c.title}${c.path ? `  ${c.path}` : ''}\n`);
         return err.exit;
       }
       if (err instanceof IpcError) {

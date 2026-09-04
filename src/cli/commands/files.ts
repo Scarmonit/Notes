@@ -14,7 +14,7 @@ import type { ExportKind, Note } from '../../shared/types';
 import stylesText from '../../renderer/styles.css?inline';
 import katexText from '../../renderer/generated/katex.css?inline';
 import { addFilterOptions, describe, filteredNotes, hasFilterOpts, type Ctx, type FilterOpts } from '../context';
-import { save } from './notes';
+import { save, wantFolder } from './notes';
 
 /** Files in and out: attachments, import, export. */
 
@@ -95,8 +95,10 @@ export function register(program: Command, use: () => Ctx): void {
     .description('make notes from markdown and text files (a leading # heading becomes the title)')
     .argument('<files...>', '.md, .markdown, .txt files')
     .option('--tags <a,b>', 'tags to add to every imported note')
-    .action(async (files: string[], opts: { tags?: string }) => {
+    .option('-F, --folder <path>', 'the folder to file them in, which must already exist; / is the root')
+    .action(async (files: string[], opts: { tags?: string; folder?: string }) => {
       const c = ctx();
+      const folder = opts.folder === undefined ? null : await wantFolder(c, opts.folder);
       const made: Note[] = [];
       for (const file of files) {
         if (!isTextFile(file)) throw new CliError(`${file} is not a markdown or text file`, EXIT.usage);
@@ -119,6 +121,7 @@ export function register(program: Command, use: () => Ctx): void {
         }
         const note = createNote(Date.now(), body);
         if (imported.title) note.title = imported.title;
+        if (folder !== null) note.folder = folder;
         made.push(await save(c, note));
       }
       c.out.value(

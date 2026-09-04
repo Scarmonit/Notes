@@ -6,6 +6,8 @@ import { resolveNote } from '../core/resolve';
 import { insert, planRename } from '../core/refactor';
 import { allTags, backlinksOf, createNote, linksIn, noteForLink, snippetOf, sortByEdited, tagsOf, titleOf, updateBody, updateTitle } from '../renderer/notes';
 import { taskProgress } from '../renderer/tasks';
+import { folderKey, folderMatches, joinFolder, parseFolder, ROOT_FOLDER } from '../shared/folders';
+import { fileNameFor } from '../shared/notes-folder';
 import type { Note } from '../shared/types';
 
 /**
@@ -74,7 +76,13 @@ async function noteFor(backend: Backend, selector: string, notes?: Note[]): Prom
 }
 
 const line = (n: Note): string => `${titleOf(n)} — ${n.id} — edited ${new Date(n.updatedAt).toISOString()}`;
-const stub = (n: Note): Record<string, unknown> => ({ id: n.id, title: titleOf(n), updated: new Date(n.updatedAt).toISOString() });
+const stub = (n: Note): Record<string, unknown> => ({ id: n.id, title: titleOf(n), updated: new Date(n.updatedAt).toISOString(), ...whereOf(n) });
+
+/** Where a note lives: its folder, and the file it is in, both from the notebook. */
+const whereOf = (n: Note): { folder: string; path: string } => ({
+  folder: n.folder ?? ROOT_FOLDER,
+  path: joinFolder(n.folder ?? ROOT_FOLDER, n.file ?? `${fileNameFor(titleOf(n))}.md`),
+});
 
 /** A note as an assistant should read it: what it is called, what it says, and what it is joined to. */
 function describeNote(notes: Note[], n: Note): Answer {
@@ -86,6 +94,7 @@ function describeNote(notes: Note[], n: Note): Answer {
     `# ${titleOf(n)}`,
     `id: ${n.id}`,
     n.aliases?.length ? `also known as: ${n.aliases.join(', ')}` : '',
+    `folder: ${n.folder ? n.folder : '/'}`,
     `created: ${new Date(n.createdAt).toISOString()}`,
     `updated: ${new Date(n.updatedAt).toISOString()}`,
     tags.length ? `tags: ${tags.map((t) => `#${t}`).join(' ')}` : '',
@@ -98,6 +107,7 @@ function describeNote(notes: Note[], n: Note): Answer {
     structured: {
       id: n.id,
       title: titleOf(n),
+      ...whereOf(n),
       aliases: n.aliases ?? [],
       created: new Date(n.createdAt).toISOString(),
       updated: new Date(n.updatedAt).toISOString(),
@@ -122,9 +132,17 @@ const NOTE_STUB = {
     id: { type: 'string' },
     title: { type: 'string' },
     updated: { type: 'string', description: 'ISO 8601.' },
+    folder: { type: 'string', description: 'The folder it is filed in, from the notebook root. Empty for the root itself.' },
+    path: { type: 'string', description: 'The markdown file it is in, from the notebook root.' },
   },
-  required: ['id', 'title', 'updated'],
+  required: ['id', 'title', 'updated', 'folder', 'path'],
 } as const;
+
+/** The folder a tool is asked to file something in. */
+const FOLDER_ARG = {
+  type: 'string',
+  description: 'The folder to file it in, from the notebook root, such as Work/Clients. It must already exist — make one with notes_create_folder. Empty or absent means the root.',
+};
 
 /** An object schema that refuses arguments it did not ask for, so a misspelt one is not swallowed. */
 const shape = (properties: Record<string, unknown>, required?: string[]): Record<string, unknown> => ({
@@ -134,6 +152,22 @@ const shape = (properties: Record<string, unknown>, required?: string[]): Record
   additionalProperties: false,
 });
 
+/**
+ * The folder an argument asks for, as it is spelt on disk. A folder that is
+ * not there is a refusal rather than a folder made on the way: an assistant
+ * mistyping a path should not quietly leave a folder behind.
+ */
+async function wantedFolder(backend: Backend, typed: string | undefined): Promise<string> {
+  const asked = (typed ?? '').trim();
+  if (!asked || asked === '/') return ROOT_FOLDER;
+  const parsed = parseFolder(asked);
+  if ('error' in parsed) throw new ToolError(parsed.error);
+  const folders = await backend.folderList();
+  const found = folders.find((f) => folderKey(f) === folderKey(parsed.folder));
+  if (!found) throw new ToolError(`There is no folder called ${parsed.folder}. The folders are: ${folders.join(', ') || 'none yet'}.`);
+  return found;
+}
+
 /** What a tool that writes says back: which note it was, and whether the words changed. */
 const WROTE = shape({ id: { type: 'string' }, title: { type: 'string' } }, ['id', 'title']);
 
@@ -142,7 +176,7 @@ export const TOOLS: Tool[] = [
     name: 'notes_search',
     title: 'Search notes',
     description:
-      "Find notes in the user's Notes app. The query is the same grammar the app's own search box takes: plain words (every one must appear), \"a phrase\", -excluded, #tag, and operators — todo: done: due:today due:week tag:wow pinned: untitled: created:>7d updated:<2026-01-01 links:Plan orphan: sort:title limit:20 and /regex/. An empty query lists everything, most recently edited first. Returns one line per note with its title, id and the start of its words; notes_read gets the whole of one. Long results are cut at `limit`; ask again with `offset` for the rest.",
+      "Find notes in the user's Notes app. The query is the same grammar the app's own search box takes: plain words (every one must appear), \"a phrase\", -excluded, #tag, and operators — todo: done: due:today due:week tag:wow folder:Work pinned: untitled: created:>7d updated:<2026-01-01 links:Plan orphan: sort:title limit:20 and /regex/. folder:Work matches that folder and every folder beneath it; folder:/ matches only the notes at the root. An empty query lists everything, most recently edited first. Returns one line per note with its title, id and the start of its words; notes_read gets the whole of one. Long results are cut at `limit`; ask again with `offset` for the rest.",
     inputSchema: shape({
       query: { type: 'string', description: 'Words and operators. Empty for everything.' },
       limit: { type: 'number', description: 'At most this many notes (1–200, default 25).', minimum: 1, maximum: 200 },
@@ -200,13 +234,15 @@ export const TOOLS: Tool[] = [
         aliases: { type: 'array', items: { type: 'string' } },
         created: { type: 'string' },
         updated: { type: 'string' },
+        folder: { type: 'string', description: 'The folder it is filed in, from the notebook root. Empty for the root itself.' },
+        path: { type: 'string', description: 'The markdown file it is in, from the notebook root.' },
         tags: { type: 'array', items: { type: 'string' } },
         links_to: { type: 'array', items: { type: 'string' }, description: 'The [[names]] it links to, whether or not a note answers to them yet.' },
         linked_from: { type: 'array', items: NOTE_STUB },
         tasks: shape({ done: { type: 'number' }, total: { type: 'number' } }, ['done', 'total']),
         body: { type: 'string', description: 'The markdown, as written.' },
       },
-      ['id', 'title', 'created', 'updated', 'tags', 'links_to', 'linked_from', 'tasks', 'body'],
+      ['id', 'title', 'created', 'updated', 'folder', 'path', 'tags', 'links_to', 'linked_from', 'tasks', 'body'],
     ),
     readOnly: true,
     destructive: false,
@@ -225,10 +261,11 @@ export const TOOLS: Tool[] = [
       {
         title: { type: 'string', description: 'The title. Without one the first line of the body stands in.' },
         body: { type: 'string', description: 'The markdown.' },
+        folder: FOLDER_ARG,
       },
       ['body'],
     ),
-    outputSchema: WROTE,
+    outputSchema: shape({ id: { type: 'string' }, title: { type: 'string' }, folder: { type: 'string' }, path: { type: 'string' } }, ['id', 'title', 'folder', 'path']),
     readOnly: false,
     destructive: false,
     idempotent: false,
@@ -236,8 +273,10 @@ export const TOOLS: Tool[] = [
       const made = createNote(Date.now(), str(args, 'body'));
       const title = maybe(args, 'title')?.trim();
       if (title) made.title = title;
+      const folder = await wantedFolder(backend, maybe(args, 'folder'));
+      if (folder) made.folder = folder;
       const saved = await backend.put(made);
-      return { text: `Started "${titleOf(saved)}" (${saved.id}).`, structured: { id: saved.id, title: titleOf(saved) } };
+      return { text: `Started "${titleOf(saved)}" (${saved.id})${folder ? ` in ${folder}` : ''}.`, structured: { id: saved.id, title: titleOf(saved), ...whereOf({ ...saved, folder }) } };
     },
   },
   {
@@ -392,6 +431,81 @@ export const TOOLS: Tool[] = [
       const structured = { tags: tags.map((t) => ({ tag: t.tag, count: t.count })) };
       if (tags.length === 0) return { text: 'No tags yet.', structured };
       return { text: tags.map((t) => `#${t.tag} — ${t.count} ${t.count === 1 ? 'note' : 'notes'}`).join('\n'), structured };
+    },
+  },
+  {
+    name: 'notes_list_folders',
+    title: 'The folders in the notebook',
+    description:
+      "Every folder the user's notes are filed in, empty ones included, with how many notes are in each. A folder is a real directory: a note lives in exactly one, and that is what a folder answers — where a note lives, as against the #tags that say what is true about it. The root, where an unfiled note sits, is written as an empty folder.",
+    inputSchema: shape({}),
+    outputSchema: shape(
+      {
+        folders: {
+          type: 'array',
+          items: shape(
+            {
+              folder: { type: 'string', description: 'The path from the notebook root, such as Work/Clients.' },
+              notes: { type: 'number', description: 'Notes filed directly here.' },
+              total: { type: 'number', description: 'Notes here and in every folder beneath it.' },
+            },
+            ['folder', 'notes', 'total'],
+          ),
+        },
+      },
+      ['folders'],
+    ),
+    readOnly: true,
+    destructive: false,
+    idempotent: true,
+    async run(backend) {
+      const [folders, notes] = await Promise.all([backend.folderList(), backend.notes()]);
+      const rows = folders.map((folder) => ({
+        folder,
+        notes: notes.filter((n) => (n.folder ?? ROOT_FOLDER) === folder).length,
+        total: notes.filter((n) => folderMatches(n.folder ?? ROOT_FOLDER, folder)).length,
+      }));
+      const atRoot = notes.filter((n) => (n.folder ?? ROOT_FOLDER) === ROOT_FOLDER).length;
+      const structured = { folders: rows };
+      if (rows.length === 0) return { text: `No folders yet; all ${notes.length} notes are at the root.`, structured };
+      return {
+        text: [`${atRoot} ${atRoot === 1 ? 'note' : 'notes'} at the root.`, ...rows.map((r) => `${r.folder} — ${r.notes} here, ${r.total} counting what is beneath`)].join('\n'),
+        structured,
+      };
+    },
+  },
+  {
+    name: 'notes_create_folder',
+    title: 'Make a folder',
+    description: 'Makes a folder in the notebook, and every folder above it. A path from the root, such as Work/Clients/Hale. A folder that is already there is left as it is.',
+    inputSchema: shape({ folder: { type: 'string', description: 'The path from the notebook root.' } }, ['folder']),
+    outputSchema: shape({ folder: { type: 'string' } }, ['folder']),
+    readOnly: false,
+    destructive: false,
+    idempotent: true,
+    async run(backend, args) {
+      const parsed = parseFolder(str(args, 'folder'));
+      if ('error' in parsed) throw new ToolError(parsed.error);
+      if (!parsed.folder) throw new ToolError('Give the folder a name.');
+      const made = await backend.folderCreate(parsed.folder);
+      return { text: `Made ${made}.`, structured: { folder: made } };
+    },
+  },
+  {
+    name: 'notes_move',
+    title: 'File a note in a folder',
+    description:
+      'Moves a note into another folder. Its title, its id, its [[links]] and its history all stay as they are — only where it lives changes. Moving is its own tool rather than a field on notes_update, because a note changing place is not the same event as its words changing.',
+    inputSchema: shape({ note: SELECTOR, folder: FOLDER_ARG }, ['note', 'folder']),
+    outputSchema: shape({ id: { type: 'string' }, title: { type: 'string' }, folder: { type: 'string' }, path: { type: 'string' } }, ['id', 'title', 'folder', 'path']),
+    readOnly: false,
+    destructive: false,
+    idempotent: true,
+    async run(backend, args) {
+      const note = await noteFor(backend, str(args, 'note'));
+      const folder = await wantedFolder(backend, maybe(args, 'folder'));
+      const path = await backend.noteMove(note.id, folder);
+      return { text: `"${titleOf(note)}" is now at ${path}.`, structured: { id: note.id, title: titleOf(note), folder, path } };
     },
   },
   {

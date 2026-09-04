@@ -128,8 +128,30 @@ export async function startIpcServer(deps: ServerDeps): Promise<IpcServer> {
         return { root: p.root, notes: p.notes, trash: p.trash, history: p.history, attachments: p.attachments, settings: p.settings };
       }
       case 'note.file': {
-        const name = deps.store.fileNameOf((params as Params<'note.file'>).id);
-        return { path: name ? path.join(deps.store.notesDir, name) : null };
+        const rel = deps.store.fileNameOf((params as Params<'note.file'>).id);
+        return { path: rel ? path.join(deps.store.notesDir, ...rel.split('/')) : null };
+      }
+      // The folders are the disk's, so the main process answers for them
+      // itself: the command line can file a note while the window is busy,
+      // and both go through the one store either way.
+      case 'folder.list':
+        return { folders: await deps.store.listFolders() };
+      case 'folder.create':
+        return { folder: await deps.store.createFolder((params as Params<'folder.create'>).folder) };
+      case 'folder.rename': {
+        const p2 = params as Params<'folder.rename'>;
+        return { folder: await deps.store.renameFolder(p2.folder, p2.name) };
+      }
+      case 'folder.move': {
+        const p2 = params as Params<'folder.move'>;
+        return { folder: await deps.store.moveFolder(p2.folder, p2.into) };
+      }
+      case 'folder.delete':
+        await deps.store.deleteFolder((params as Params<'folder.delete'>).folder);
+        return { deleted: true };
+      case 'note.move': {
+        const p2 = params as Params<'note.move'>;
+        return { path: await deps.store.moveNote(p2.id, p2.folder) };
       }
       case 'trash.list':
         return deps.store.listTrash();

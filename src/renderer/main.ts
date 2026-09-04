@@ -2,7 +2,20 @@ import { assetNameFromUrl } from '../shared/assets';
 import { cleanAliases } from '../shared/notes-folder';
 import { chordOf, isCommandChord, keyLabel } from '../shared/keys';
 import { DEFAULT_SETTINGS, viewNamed, withView, type Settings } from '../shared/settings';
-import type { CliStatus, ExportKind, ExportRequest, ImportedFile, Note, NotesFile } from '../shared/types';
+import {
+  folderKey,
+  folderLabel,
+  folderMatches,
+  folderName,
+  folderTree,
+  normalizeFolder,
+  parentFolder,
+  parseFolder,
+  ROOT_FOLDER,
+  ROOT_LABEL,
+  type FolderNode,
+} from '../shared/folders';
+import type { CliStatus, ExportKind, ExportRequest, FolderResult, ImportedFile, Note, NotesFile } from '../shared/types';
 import { keyMap, matchActions, menuModel, pillActions, type Action, type Match } from './actions';
 import { toggleFence } from './fences';
 import { findMatches, matchFrom, replaceAll, replaceOne, validQuery, type FindMatch, type FindOptions } from './find';
@@ -20,7 +33,9 @@ import {
   linkParts,
   neighborOf,
   noteForLink,
+  qualifiedLink,
   removeNote,
+  resolveLink,
   searchNotes,
   snippetOf,
   sortByEdited,
@@ -36,6 +51,7 @@ import {
 } from './notes';
 import { markdownToText } from './plaintext';
 import { embedsFrom } from '../core/embeds';
+import { rewriteLinks } from '../core/refactor';
 import { unlinkedMentions, type Mention } from '../core/mentions';
 import { addTab, keepTabs, nthTab, showTab, shutTab, stepTab as stepTabStrip, type TabStrip } from './tabs';
 import {
@@ -109,6 +125,7 @@ function paneEls(root: HTMLElement) {
   return {
     toggleSidebar: q<HTMLButtonElement>('toggleSidebar'),
     status: q('status'),
+    where: q<HTMLButtonElement>('where'),
     controls: q('controls'),
     tabs: q('tabs'),
     editorWrap: q('editorWrap'),
@@ -157,6 +174,10 @@ const el = {
   search: $<HTMLInputElement>('search'),
   newBtn: $<HTMLButtonElement>('new'),
   tags: $('tags'),
+  tagRail: $('tag-rail'),
+  tagsFold: $<HTMLButtonElement>('tags-fold'),
+  folderTree: $('folder-tree'),
+  folderAdd: $<HTMLButtonElement>('folder-add'),
   views: $('views'),
   list: $('list'),
   count: $('count'),
@@ -227,6 +248,9 @@ const el = {
   },
   get status(): HTMLElement {
     return here().els.status;
+  },
+  get where(): HTMLButtonElement {
+    return here().els.where;
   },
   get controls(): HTMLElement {
     return here().els.controls;
@@ -346,6 +370,13 @@ interface UiState {
   /** The panes the window had, left to right, and which one held the focus. */
   panes: PaneShape[];
   paneAt: number;
+  /**
+   * The folder being browsed. One sidebar, so this belongs to the window
+   * rather than to a pane, whatever a pane happens to be showing.
+   */
+  folder: string;
+  /** Whether the tag rail is unfolded. */
+  tags: boolean;
 }
 
 /** What there is to remember about a pane: the notes open in it, and which of them is showing. */
@@ -391,6 +422,8 @@ function loadUi(): UiState {
     recent: [],
     panes: [],
     paneAt: 0,
+    folder: ROOT_FOLDER,
+    tags: false,
   };
   try {
     const raw = localStorage.getItem(UI_KEY);
@@ -400,6 +433,8 @@ function loadUi(): UiState {
     state.recent = parseRecent(state.recent);
     state.panes = (Array.isArray(state.panes) ? state.panes : []).map(parsePane).filter((p): p is PaneShape => p !== null);
     state.paneAt = Number.isInteger(state.paneAt) ? Math.max(0, state.paneAt) : 0;
+    state.folder = typeof state.folder === 'string' ? normalizeFolder(state.folder) : ROOT_FOLDER;
+    state.tags = state.tags === true;
     return state;
   } catch {
     return fallback;
@@ -800,6 +835,20 @@ let notes: Note[] = [];
 let query = '';
 /** A tag chosen in the sidebar narrows the list until cleared. */
 let tagFilter: string | null = null;
+/** Whether the tag rail below the list is unfolded. */
+let tagsOpen = false;
+/** Every folder in the notebook, empty ones included: the tree, as it is on disk. */
+let folders: string[] = [];
+/**
+ * The folder being browsed. The root — "All notes" — is the whole notebook,
+ * and any other folder is itself and everything beneath it, the way a tag
+ * stands for the tags nested inside it.
+ *
+ * This is state of its own rather than words typed into the search box: you
+ * browse from branch to branch while a query stands, and choosing a folder
+ * must not throw the question away.
+ */
+let folderScope = ROOT_FOLDER;
 /** Which note the textarea currently holds, so re-renders never clobber the caret. */
 let editorNoteId: string | null = null;
 
@@ -809,13 +858,16 @@ let editorNoteId: string | null = null;
  * `due:today`, `links:Plan`, `/regex/` — is read by the same grammar the
  * command line uses, so the two never disagree about what a query means.
  */
+/** The notes in the folder being browsed, and in the folders inside it. */
+const inScope = (list: Note[]): Note[] => (folderScope ? list.filter((n) => folderMatches(n.folder ?? ROOT_FOLDER, folderScope)) : list);
 const visibleNotes = (): Note[] => {
-  if (!hasOperators(query)) return searchNotes(sortByEdited(notes), query, tagFilter);
+  const here = inScope(sortByEdited(notes));
+  if (!hasOperators(query)) return searchNotes(here, query, tagFilter);
   const filter = parseQuery(query);
   if (tagFilter) filter.tags.push(tagFilter);
-  return applyFilter(sortByEdited(notes), filter);
+  return applyFilter(here, filter);
 };
-const filtering = (): boolean => query.trim() !== '' || tagFilter !== null;
+const filtering = (): boolean => query.trim() !== '' || tagFilter !== null || folderScope !== ROOT_FOLDER;
 const selected = (): Note | null => notes.find((n) => n.id === ui.selectedId) ?? null;
 
 // --- persistence ------------------------------------------------------------
@@ -903,6 +955,74 @@ const PIN_SVG =
   '<svg class="pin-mark" viewBox="0 0 12 12" aria-label="Pinned" role="img"><path d="M7.5 1.5 10.5 4.5 8.6 5.2 6.9 8.4 5.4 6.9 2 10.5 1.5 10 5.1 6.6 3.6 5.1 6.8 3.4Z" fill="currentColor"/></svg>';
 
 /**
+ * The folder rail: the notebook's own tree, above the list, because the list
+ * is what is in the folder that is chosen.
+ *
+ * It always has a root row — "All notes" — and it is drawn even when there is
+ * nothing else, so a notebook with no folders yet still says that folders are
+ * a thing it has. A branch is unfolded while it is on the way to the folder
+ * being browsed, exactly as the tag rail unfolds, so the rail needs no
+ * control of its own.
+ */
+function renderFolders(): void {
+  const tree = folderTree(
+    folders,
+    notes.map((n) => n.folder ?? ROOT_FOLDER),
+  );
+  const known = new Set<string>();
+  const gather = (nodes: FolderNode[]): void => {
+    for (const node of nodes) {
+      known.add(node.folder);
+      gather(node.children);
+    }
+  };
+  gather(tree);
+  // The folder being browsed has gone — deleted here, or in Explorer. Back to
+  // the whole notebook rather than to a view of nothing.
+  if (folderScope && !known.has(folderScope)) folderScope = ROOT_FOLDER;
+  el.folderTree.replaceChildren();
+  el.folderTree.append(folderRow({ folder: ROOT_FOLDER, label: ROOT_LABEL, count: notes.length, own: 0, children: [] }, 0));
+  drawFolders(tree, 0);
+}
+
+function drawFolders(nodes: FolderNode[], depth: number): void {
+  for (const node of nodes) {
+    el.folderTree.append(folderRow(node, depth + 1));
+    // Unfolded while it is on the way to the folder being browsed, and when it
+    // is the one being browsed: choosing a folder is how you open it.
+    if (folderMatches(folderScope, node.folder)) drawFolders(node.children, depth + 1);
+  }
+}
+
+function folderRow(node: FolderNode, depth: number): HTMLButtonElement {
+  const on = node.folder === folderScope;
+  const row = document.createElement('button');
+  row.className = 'folder';
+  row.type = 'button';
+  row.dataset.folder = node.folder;
+  row.setAttribute('aria-pressed', String(on));
+  row.style.paddingLeft = `${6 + depth * 11}px`;
+  const name = document.createElement('span');
+  name.className = 'folder-name';
+  name.textContent = node.label;
+  const count = document.createElement('span');
+  count.className = 'folder-count u';
+  count.textContent = String(node.count);
+  row.append(name, count);
+  row.title = node.folder ? `${folderLabel(node.folder)} — ${node.count} ${node.count === 1 ? 'note' : 'notes'}` : 'Every note in the notebook';
+  row.addEventListener('click', () => browseFolder(node.folder));
+  return row;
+}
+
+/** Browses a folder: the list narrows to it, and the query and the tag stand. */
+function browseFolder(folder: string): void {
+  folderScope = folder;
+  ui.folder = folder;
+  saveUi();
+  renderList();
+}
+
+/**
  * The tag rail, as a tree: #wow/commands sits under #wow, and a tag is only
  * unfolded while it is on the way to the one being filtered by. Choosing a
  * tag both filters by it and reveals what is nested inside it, so the rail
@@ -919,7 +1039,12 @@ function renderTags(): void {
   };
   gather(tree);
   if (tagFilter && !known.has(tagFilter)) tagFilter = null;
-  el.tags.hidden = tree.length === 0;
+  el.tagRail.hidden = tree.length === 0;
+  // Open while a tag is being filtered by, whatever was last chosen: the rail
+  // may not say it is showing everything while it is not.
+  const open = tagsOpen || tagFilter !== null;
+  el.tagsFold.setAttribute('aria-expanded', String(open));
+  el.tags.hidden = !open;
   el.tags.replaceChildren();
   drawTags(tree, 0);
 }
@@ -1050,7 +1175,7 @@ function emptyListMessage(): HTMLElement {
     const hint = document.createElement('span');
     hint.className = 'u';
     if (hasOperators(q)) {
-      hint.textContent = 'Operators: todo: done: due:today tag: pinned: created:>7d links: sort:title /regex/';
+      hint.textContent = 'Operators: todo: done: due:today tag: folder: pinned: created:>7d links: sort:title /regex/';
     } else {
       hint.innerHTML = 'Press <kbd>Enter</kbd> to start a note titled ';
       const title = document.createElement('b');
@@ -1059,14 +1184,23 @@ function emptyListMessage(): HTMLElement {
       hint.append(title);
     }
     msg.append(hint);
+  } else if (tagFilter) {
+    msg.textContent = `No notes tagged #${tagFilter}.`;
   } else {
-    msg.textContent = `No notes tagged #${tagFilter ?? ''}.`;
+    // An empty folder is a place waiting to be filled, not a search that
+    // found nothing, so it says how to put something in it.
+    msg.textContent = `Nothing in ${folderLabel(folderScope)} yet.`;
+    const hint = document.createElement('span');
+    hint.className = 'u';
+    hint.innerHTML = 'Press <kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>M</kbd> to file a note here';
+    msg.append(hint);
   }
   return msg;
 }
 
 function renderList(): void {
   renderViews();
+  renderFolders();
   renderTags();
   const vis = visibleNotes();
   // Rebuilding the rows removes the one that has focus, and focus would fall
@@ -1076,6 +1210,9 @@ function renderList(): void {
   if (vis.length === 0) el.list.append(emptyListMessage());
 
   const now = Date.now();
+  // Whether the folder being browsed has folders inside it: only then is a
+  // note's own folder worth printing on its row.
+  const nested = vis.some((n) => (n.folder ?? ROOT_FOLDER) !== folderScope);
   for (const n of vis) {
     const isSelected = n.id === ui.selectedId;
     const title = shownTitle(n);
@@ -1106,6 +1243,19 @@ function renderList(): void {
     snip.className = 'item-snippet';
     snip.textContent = snippetOf(n);
     meta.append(time, snip);
+    // Where it sits, but only when the scope has folders inside it and the
+    // note is in one of them: in a folder with nothing under it the answer
+    // would be the same on every row, and two notes called Plan need telling
+    // apart without the title having to shrink to make room.
+    const where = n.folder ?? ROOT_FOLDER;
+    if (nested && where !== folderScope) {
+      const at = document.createElement('span');
+      // Sentence case, not the uppercase of a label: a folder is something
+      // somebody named, and shouting it would crowd out the title.
+      at.className = 'item-where';
+      at.textContent = folderLabel(folderScope && where.startsWith(`${folderScope}/`) ? where.slice(folderScope.length + 1) : where);
+      meta.append(at);
+    }
 
     item.append(t, meta);
     item.addEventListener('click', () => {
@@ -1120,6 +1270,20 @@ function renderList(): void {
       ? `${vis.length} of ${notes.length}`
       : `${notes.length} ${notes.length === 1 ? 'note' : 'notes'}`;
   if (hadFocus) focusList();
+}
+
+/**
+ * Where the note in this pane lives, said quietly in the header. It is a
+ * statement, not a control: clicking it goes to that folder in the rail, and
+ * filing the note anywhere is a command of its own, so an idle click on a
+ * label can never move a note.
+ */
+function renderWhere(n: Note | null): void {
+  const where = n?.folder ?? ROOT_FOLDER;
+  el.where.hidden = n === null;
+  if (!n) return;
+  el.where.textContent = folderLabel(where);
+  el.where.title = `${folderLabel(where)} — show this folder`;
 }
 
 function renderMeta(): void {
@@ -1158,6 +1322,7 @@ function renderPane(): void {
   el.editorWrap.hidden = !has;
   el.empty.hidden = has;
   syncControls();
+  renderWhere(n);
   renderMeta();
   if (!n) {
     editorNoteId = null;
@@ -1349,15 +1514,58 @@ function openLink(target: string): void {
   const hash = target.indexOf('#');
   const name = (hash > 0 && !noteForLink(notes, target.trim()) ? target.slice(0, hash) : target).trim();
   if (!name) return;
-  const hit = noteForLink(notes, name);
-  if (hit) {
-    if (query || tagFilter) clearFilters();
-    select(hit.id);
-    focusEditor();
+  const hit = resolveLink(notes, name);
+  if (hit.kind === 'one') {
+    goToLinked(hit.note.id);
+    return;
+  }
+  // Folders make two notes called Plan legal, so the link can no longer say
+  // which. The app will not guess: it asks, and then writes the answer into
+  // the link, so the question is asked once.
+  if (hit.kind === 'many') {
+    askWhichNote(name, hit.notes);
     return;
   }
   newNote(name);
   showStatus(`Started “${name}”`, 2500);
+}
+
+/** Opens a note a link landed on, past whatever the sidebar was narrowed to. */
+function goToLinked(id: string): void {
+  if (filtering()) clearFilters();
+  select(id);
+  focusEditor();
+}
+
+/**
+ * Which of the notes a name answers to was meant. Choosing one settles the
+ * link as well as following it: the link is rewritten to `[[Work/Plan]]`, the
+ * spelling that means that note and no other, so the same question is not
+ * asked again. The same move the app already makes when a typed name turns
+ * out to be some note's alias and it writes `[[Dog|Doggo]]`.
+ */
+function askWhichNote(name: string, found: Note[]): void {
+  const rows: PickItem[] = found.map((n) => ({
+    label: shownTitle(n),
+    hint: folderLabel(n.folder ?? ROOT_FOLDER),
+    run: () => {
+      settleLink(name, qualifiedLink(notes, n));
+      goToLinked(n.id);
+    },
+  }));
+  openPicker(`Which “${name}”?`, rows);
+}
+
+/** Rewrites every `[[was]]` in the note on screen to `[[now]]`, aliases kept. */
+function settleLink(was: string, now: string): void {
+  const n = selected();
+  if (!n || was === now) return;
+  const { body, count } = rewriteLinks(n.body, was, now);
+  if (count === 0) return;
+  notes = updateBody(notes, n.id, body);
+  editorNoteId = null;
+  scheduleSave();
+  showStatus(`The link now reads [[${now}]]`, 4000);
 }
 
 /** A finished [[link]] just before the caret. */
@@ -1396,6 +1604,7 @@ function clearFilters(): void {
   query = '';
   el.search.value = '';
   tagFilter = null;
+  folderScope = ROOT_FOLDER;
 }
 
 /**
@@ -3471,6 +3680,37 @@ el.list.addEventListener('keydown', (e) => {
 
 el.newBtn.addEventListener('click', () => newNote());
 onPane('toggleSidebar', 'click', toggleSidebar);
+el.folderAdd.addEventListener('click', () => void newFolder());
+el.tagsFold.addEventListener('click', () => {
+  tagsOpen = !tagsOpen;
+  ui.tags = tagsOpen;
+  saveUi();
+  renderTags();
+});
+// The breadcrumb goes to the folder; it never files the note there.
+onPane('where', 'click', () => {
+  const n = selected();
+  if (!n) return;
+  browseFolder(n.folder ?? ROOT_FOLDER);
+  focusFolders();
+});
+// The tree, with the arrow keys: up and down walk the rows that are showing,
+// and left goes to the folder above without having to find it.
+el.folderTree.addEventListener('keydown', (e) => {
+  const key = (e as KeyboardEvent).key;
+  if (key !== 'ArrowDown' && key !== 'ArrowUp' && key !== 'ArrowLeft') return;
+  const rows = Array.from(el.folderTree.querySelectorAll<HTMLButtonElement>('.folder'));
+  const at = rows.indexOf(document.activeElement as HTMLButtonElement);
+  if (at < 0) return;
+  e.preventDefault();
+  if (key === 'ArrowLeft') {
+    const up = parentFolder(rows[at].dataset.folder ?? ROOT_FOLDER);
+    browseFolder(up);
+    focusFolders();
+    return;
+  }
+  rows[Math.min(rows.length - 1, Math.max(0, at + (key === 'ArrowDown' ? 1 : -1)))]?.focus();
+});
 el.helpBtn.addEventListener('click', () => toggleHelp(true));
 el.helpSheet.addEventListener('click', (e) => {
   if (e.target === el.helpSheet) toggleHelp(false);
@@ -3923,7 +4163,6 @@ function decorateAfterInput(): void {
   }
 }
 
-
 /** The marks last revealed, so they can be hidden again without a search. */
 let revealed: Element[] = [];
 let revealedLines = '';
@@ -4164,13 +4403,29 @@ function applyExternal(changes: ExternalChanges): void {
     if (note.id === keep) continue;
     const i = notes.findIndex((n) => n.id === note.id);
     if (i < 0) notes = [note, ...notes];
-    else if (notes[i].body === note.body && (notes[i].title ?? '') === (note.title ?? '') && notes[i].pinned === note.pinned && notes[i].updatedAt === note.updatedAt) continue;
+    else if (
+      notes[i].body === note.body &&
+      (notes[i].title ?? '') === (note.title ?? '') &&
+      notes[i].pinned === note.pinned &&
+      notes[i].updatedAt === note.updatedAt &&
+      (notes[i].folder ?? ROOT_FOLDER) === (note.folder ?? ROOT_FOLDER)
+    )
+      continue;
     else notes = notes.map((n) => (n.id === note.id ? note : n));
     touched++;
     if (note.id === ui.selectedId) editorNoteId = null;
     forgetDrawn(note.id);
   }
   if (touched === 0) return;
+  // A note may have arrived in a folder nobody here has heard of, or left the
+  // last one in another; the tree is the disk's to say, so ask it again.
+  void window.notesApi
+    .listFolders()
+    .then((now) => {
+      folders = now;
+      renderList();
+    })
+    .catch((err) => console.error('[notes] could not read the folders', err));
   // Through select(), so the note taken away is left the way any other is:
   // `notes open --wait` told, the provisional title and the Back stack settled.
   if (ui.selectedId && !notes.some((n) => n.id === ui.selectedId)) select(sortByEdited(notes)[0]?.id ?? null);
@@ -4180,6 +4435,134 @@ function applyExternal(changes: ExternalChanges): void {
 }
 
 window.notesApi.onExternalChange(applyExternal);
+
+// --- folders: the commands ---------------------------------------------------
+
+/**
+ * Every folder there is, as choices, deepest path spelt out in full so the
+ * picker's fuzzy match can be typed at: "wo/cl" finds Work / Clients. The root
+ * is a choice like any other, because filing a note at the root is filing it.
+ */
+function folderChoices(run: (folder: string) => void, skip: (folder: string) => boolean = () => false): PickItem[] {
+  const rows: PickItem[] = [{ label: `${ROOT_LABEL} (root)`, run: () => run(ROOT_FOLDER) }];
+  for (const folder of folders) {
+    if (skip(folder)) continue;
+    const here = notes.filter((n) => folderMatches(n.folder ?? ROOT_FOLDER, folder)).length;
+    rows.push({ label: folderLabel(folder), hint: `${here} ${here === 1 ? 'note' : 'notes'}`, run: () => run(folder) });
+  }
+  return rows;
+}
+
+/** What a folder command said, and the tree as it now stands. */
+function tookFolders(result: FolderResult): boolean {
+  folders = result.folders;
+  if (!result.ok) {
+    showStatus(result.message, 5000);
+    renderList();
+    return false;
+  }
+  showStatus(result.message, 3000);
+  return true;
+}
+
+/** Types a folder path; refuses one Windows will not keep, and says why. */
+async function askFolderPath(label: string, initial: string): Promise<string | null> {
+  const typed = await refactorUi.prompt(label, initial);
+  if (typed === null) return null;
+  const parsed = parseFolder(typed);
+  if ('error' in parsed) {
+    showStatus(parsed.error, 5000);
+    return null;
+  }
+  return parsed.folder;
+}
+
+async function newFolder(): Promise<void> {
+  keepCaret();
+  // Beneath the folder being browsed, which is where "new folder" means here.
+  const under = folderScope ? `${folderScope}/` : '';
+  const folder = await askFolderPath('New folder, as a path from the notebook: Work/Clients', under);
+  returnToEditor();
+  if (folder === null || !folder) return;
+  if (!tookFolders(await window.notesApi.createFolder(folder))) return;
+  browseFolder(folder);
+}
+
+function moveNoteToFolder(): void {
+  const n = selected();
+  if (!n) return;
+  const at = n.folder ?? ROOT_FOLDER;
+  const file = async (folder: string, make = false): Promise<void> => {
+    if (folder === at) return;
+    if (make && !tookFolders(await window.notesApi.createFolder(folder))) return;
+    if (!tookFolders(await window.notesApi.moveNote(n.id, folder))) return;
+    renderList();
+    renderEditor();
+  };
+  const rows = folderChoices((folder) => void file(folder)).map((row) =>
+    row.label === folderLabel(at) || (at === ROOT_FOLDER && row.label.startsWith(ROOT_LABEL)) ? { ...row, hint: 'where it is now', disabled: true } : row,
+  );
+  openPicker(`Where does “${shownTitle(n)}” live?`, rows, undefined, {
+    // A path nobody has made yet is a choice too: filing a note somewhere new
+    // is the commonest reason to want a folder at all.
+    typed: (raw) => {
+      const parsed = parseFolder(raw);
+      if ('error' in parsed || !parsed.folder) return null;
+      if (folders.some((f) => folderKey(f) === folderKey(parsed.folder))) return null;
+      return { label: `Make ${folderLabel(parsed.folder)} and move it there`, run: () => void file(parsed.folder, true) };
+    },
+  });
+}
+
+async function showNoteFile(): Promise<void> {
+  const n = selected();
+  if (!n) return;
+  const shown = await window.notesApi.showNoteFile(n.id);
+  if (!shown) showStatus('That note has not been written to disk yet', 3000);
+}
+
+async function renameThisFolder(): Promise<void> {
+  const folder = folderScope;
+  if (!folder) return;
+  keepCaret();
+  const typed = await refactorUi.prompt(`Rename ${folderLabel(folder)} to`, folderName(folder));
+  returnToEditor();
+  if (typed === null || !typed.trim()) return;
+  const result = await window.notesApi.renameFolder(folder, typed.trim());
+  if (!tookFolders(result)) return;
+  browseFolder(result.folder);
+}
+
+function moveThisFolder(): void {
+  const folder = folderScope;
+  if (!folder) return;
+  const into = async (parent: string): Promise<void> => {
+    const result = await window.notesApi.moveFolder(folder, parent);
+    if (!tookFolders(result)) return;
+    browseFolder(result.folder);
+    renderEditor();
+  };
+  // Not into itself, not into anything it holds, and not back where it is.
+  openPicker(
+    `Where does ${folderLabel(folder)} go?`,
+    folderChoices((parent) => void into(parent), (f) => folderMatches(f, folder) || folderKey(f) === folderKey(parentFolder(folder))),
+  );
+}
+
+async function deleteThisFolder(): Promise<void> {
+  const folder = folderScope;
+  if (!folder) return;
+  const result = await window.notesApi.deleteFolder(folder);
+  if (!tookFolders(result)) return;
+  browseFolder(result.folder);
+}
+
+/** The folder rail, with the keyboard: the row being browsed, or the root. */
+function focusFolders(): void {
+  const rows = Array.from(el.folderTree.querySelectorAll<HTMLButtonElement>('.folder'));
+  const at = rows.find((r) => r.getAttribute('aria-pressed') === 'true') ?? rows[0];
+  at?.focus();
+}
 
 // --- a picker: the palette's shape, for choosing from a list ------------------
 
@@ -4879,6 +5262,15 @@ const ACTIONS: Action[] = [
     run: () => void pickImports(),
   },
   {
+    id: 'folder-new',
+    label: 'New folder…',
+    hint: 'A real folder on disk; type a path like Work/Clients to make the whole way down',
+    group: 'Notes',
+    menuSection: 'Create',
+    terms: 'directory make create place file filing',
+    run: () => void newFolder(),
+  },
+  {
     id: 'find',
     label: 'Find a note',
     group: 'Notes',
@@ -5014,6 +5406,27 @@ const ACTIONS: Action[] = [
     run: armDelete,
   },
   {
+    id: 'note-move',
+    label: 'Move this note…',
+    hint: 'Files it in another folder, keeping its name, its links and its history',
+    group: 'Notes',
+    menuSection: 'This note',
+    chord: 'ctrl+alt+m',
+    terms: 'file filing folder put away refile relocate',
+    enabled: () => hasNote(),
+    run: () => void moveNoteToFolder(),
+  },
+  {
+    id: 'note-show',
+    label: 'Show this note in Explorer',
+    hint: 'Opens the folder it lives in with its own file picked out',
+    group: 'Notes',
+    menuSection: 'This note',
+    terms: 'reveal file explorer where disk path',
+    enabled: () => hasNote(),
+    run: () => void showNoteFile(),
+  },
+  {
     id: 'tab-new',
     label: 'Open a note in a new tab…',
     hint: 'Keeps this one open beside it; Ctrl and a number goes to the nth tab',
@@ -5085,6 +5498,36 @@ const ACTIONS: Action[] = [
     terms: 'view saved search remove delete',
     enabled: () => settings.views.length > 0,
     run: forgetView,
+  },
+  {
+    id: 'folder-rename',
+    label: 'Rename this folder…',
+    hint: 'Changes the name of the folder being browsed, leaving it where it is',
+    group: 'Notes',
+    menuSection: 'Folders',
+    terms: 'directory name',
+    enabled: () => folderScope !== ROOT_FOLDER,
+    run: () => void renameThisFolder(),
+  },
+  {
+    id: 'folder-move',
+    label: 'Move this folder…',
+    hint: 'Puts the folder being browsed, and everything in it, inside another',
+    group: 'Notes',
+    menuSection: 'Folders',
+    terms: 'directory reparent nest',
+    enabled: () => folderScope !== ROOT_FOLDER,
+    run: () => void moveThisFolder(),
+  },
+  {
+    id: 'folder-delete',
+    label: 'Delete this folder',
+    hint: 'Only an empty one: no folder command ever takes a note with it',
+    group: 'Notes',
+    menuSection: 'Folders',
+    terms: 'directory remove',
+    enabled: () => folderScope !== ROOT_FOLDER,
+    run: () => void deleteThisFolder(),
   },
   {
     id: 'due',
@@ -5402,6 +5845,16 @@ const ACTIONS: Action[] = [
     terms: 'pane move focus left',
     enabled: () => panes.length > 1,
     run: () => stepPane(-1),
+  },
+  {
+    id: 'folders-go',
+    label: 'Go to folders',
+    hint: 'Puts the focus in the folder rail, where the arrow keys walk the tree',
+    group: 'Window',
+    menuSection: 'Workspace',
+    chord: 'ctrl+alt+f',
+    terms: 'tree rail sidebar browse where',
+    run: focusFolders,
   },
   {
     id: 'layout',
@@ -6390,6 +6843,10 @@ window.notesApi.onCliRequest(async (method, params) => {
 async function init(): Promise<void> {
   const file = await window.notesApi.load();
   notes = file.notes;
+  folders = file.folders ?? [];
+  // The folder that was being browsed, unless it has gone since.
+  folderScope = folders.some((f) => folderKey(f) === folderKey(ui.folder)) ? ui.folder : ROOT_FOLDER;
+  tagsOpen = ui.tags;
   loaded = true;
   if (ui.selectedId && !notes.some((n) => n.id === ui.selectedId)) ui.selectedId = null;
   if (!ui.selectedId) ui.selectedId = sortByEdited(notes)[0]?.id ?? null;

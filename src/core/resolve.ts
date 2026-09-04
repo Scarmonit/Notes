@@ -1,4 +1,5 @@
 import { linkKey, titleOf } from '../renderer/notes';
+import { folderKey, joinFolder, normalizeFolder, ROOT_FOLDER } from '../shared/folders';
 import { fileNameFor } from '../shared/notes-folder';
 import type { Note, TrashedNote } from '../shared/types';
 
@@ -60,14 +61,32 @@ function resolveNamed<T extends Named>(items: T[], selector: string): Resolution
   return pick(fuzzy) ?? { kind: 'none' };
 }
 
-/** A live note by any of the ways of naming one. */
+/**
+ * A live note by any of the ways of naming one, and — since folders — by where
+ * it is: a selector with a slash in it is a path from the notes folder, with
+ * the `.md` optional. `notes show Work/Clients/Hale` names one note however
+ * many others are also called Hale.
+ *
+ * The path reading is tried first and the ordinary one still follows it, so a
+ * note whose title has a slash in it is still findable by that title.
+ */
 export function resolveNote(notes: Note[], selector: string): Resolution<Note> {
+  const raw = selector.trim();
+  if (raw.includes('/') || raw.includes('\\')) {
+    const want = folderKey(normalizeFolder(raw).replace(/\.md$/i, ''));
+    const byPath = notes.filter((n) => folderKey(joinFolder(n.folder ?? ROOT_FOLDER, titleFile(n))) === want);
+    if (byPath.length === 1) return { kind: 'one', note: byPath[0] };
+    if (byPath.length > 1) return { kind: 'many', candidates: byPath };
+  }
   const named = notes.map((n) => ({ id: n.id, title: titleOf(n), note: n }));
   const r = resolveNamed(named, selector);
   if (r.kind === 'one') return { kind: 'one', note: r.note.note };
   if (r.kind === 'many') return { kind: 'many', candidates: r.candidates.map((c) => c.note) };
   return r;
 }
+
+/** A note's own filename without its extension: what a path names it by. */
+const titleFile = (note: Note): string => (note.file ?? `${fileNameFor(titleOf(note))}.md`).replace(/\.md$/i, '');
 
 /** A trashed note, by id, id prefix or title. */
 export function resolveTrashed(items: TrashedNote[], selector: string): Resolution<TrashedNote> {

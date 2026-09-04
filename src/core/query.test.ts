@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import type { Note } from '../shared/types';
-import { applyFilter, EMPTY_FILTER, hasOperators, parseQuery, parseSort, parseTerms, parseWhen, parseWords } from './query';
+import { applyFilter, EMPTY_FILTER, hasOperators, OPERATORS, parseQuery, parseSort, parseTerms, parseWhen, parseWords } from './query';
 import { resolveNote } from './resolve';
 
 const note = (id: string, body: string, extra: Partial<Note> = {}): Note => ({ id, body, createdAt: 1000, updatedAt: 2000, ...extra });
@@ -162,5 +162,38 @@ describe('0.13.1 regressions', () => {
     expect(parseWords(['-tag:work'], now).excludeTags).toEqual(['work']);
     expect(parseQuery('-due:today', now).errors[0]).toMatch(/^-due: cannot/);
     expect(parseQuery('-sort:title', now).sort).toBeUndefined();
+  });
+});
+
+describe('folder:', () => {
+  const at = (id: string, folder: string): Note => ({ id, body: id, createdAt: 1, updatedAt: 1, folder });
+  const notes = [at('root', ''), at('work', 'Work'), at('hale', 'Work/Clients/Hale'), at('home', 'Home')];
+  const ids = (q: string): string[] =>
+    applyFilter(notes, parseQuery(q))
+      .map((n) => n.id)
+      .sort();
+
+  it('holds the folder and everything beneath it, the way tag: does', () => {
+    expect(ids('folder:Work')).toEqual(['hale', 'work']);
+    expect(ids('folder:Work/Clients')).toEqual(['hale']);
+    // Windows does not tell folders apart by case, so neither does the search.
+    expect(ids('folder:work')).toEqual(['hale', 'work']);
+  });
+
+  it('asks for the notes at the root with a slash, which no folder path can spell', () => {
+    expect(ids('folder:/')).toEqual(['root']);
+  });
+
+  it('narrows what is already narrowed, rather than replacing it', () => {
+    expect(ids('folder:Work sort:title')).toEqual(['hale', 'work']);
+    expect(ids('folder:Nowhere')).toEqual([]);
+  });
+
+  it('refuses a folder Windows would not keep, and says so', () => {
+    expect(parseQuery('folder:a?b').errors[0]).toContain('folder:');
+  });
+
+  it('is in the legend the search box prints, so it can be found without being known', () => {
+    expect(OPERATORS.some((o) => o.op.startsWith('folder:'))).toBe(true);
   });
 });

@@ -19,6 +19,13 @@ const api: NotesApi = {
     ipcRenderer.on(IPC.externalChange, (_event, changes: ExternalChanges) => fn(changes));
   },
   openNotesFolder: () => ipcRenderer.invoke(IPC.openFolder),
+  showNoteFile: (id) => ipcRenderer.invoke(IPC.showNoteFile, id),
+  listFolders: () => ipcRenderer.invoke(IPC.foldersList),
+  createFolder: (folder) => ipcRenderer.invoke(IPC.folderCreate, folder),
+  renameFolder: (folder, name) => ipcRenderer.invoke(IPC.folderRename, folder, name),
+  moveFolder: (folder, into) => ipcRenderer.invoke(IPC.folderMove, folder, into),
+  deleteFolder: (folder) => ipcRenderer.invoke(IPC.folderDelete, folder),
+  moveNote: (id, folder) => ipcRenderer.invoke(IPC.noteMove, id, folder),
   notesFolder: () => ipcRenderer.invoke(IPC.notesFolder),
   clipperBookmarklet: () => ipcRenderer.invoke(IPC.clipperBookmarklet),
   pickNotesFolder: () => ipcRenderer.invoke(IPC.pickNotesFolder),

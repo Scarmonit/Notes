@@ -22,6 +22,19 @@ export interface Backend {
   status(id: string): Promise<NoteStatus>;
   /** The file a note is stored in, or null when it has not been written yet. */
   fileOf(id: string): Promise<string | null>;
+
+  /** Every folder in the notebook, root-relative, empty ones included. */
+  folderList(): Promise<string[]>;
+  /** Makes a folder and every folder above it; resolves to the one it made. */
+  folderCreate(folder: string): Promise<string>;
+  /** Changes a folder's own name; resolves to its new path. */
+  folderRename(folder: string, name: string): Promise<string>;
+  /** Puts a folder inside another; resolves to its new path. */
+  folderMove(folder: string, into: string): Promise<string>;
+  /** Removes a folder that holds nothing. */
+  folderDelete(folder: string): Promise<void>;
+  /** Files a note in another folder; resolves to its path inside the notes folder. */
+  noteMove(id: string, folder: string): Promise<string>;
   /**
    * Creates or replaces a note. Throws `busy` while the note is being typed
    * in, or when `expectUpdatedAt` is given and the note has changed since it
@@ -80,8 +93,8 @@ export interface Backend {
 /** An error that already knows which exit code it deserves. */
 export class CliError extends Error {
   readonly exit: ExitCode;
-  readonly candidates?: Array<{ id: string; title: string }>;
-  constructor(message: string, exit: ExitCode = EXIT.failure, candidates?: Array<{ id: string; title: string }>) {
+  readonly candidates?: Array<{ id: string; title: string; path?: string }>;
+  constructor(message: string, exit: ExitCode = EXIT.failure, candidates?: Array<{ id: string; title: string; path?: string }>) {
     super(message);
     this.name = 'CliError';
     this.exit = exit;

@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { installCli, layoutFor, shimStatus, uninstallCli } from '../core/shim';
 import { IPC } from '../shared/channels';
-import type { CliStatus, ExportRequest, Note, NotesFile } from '../shared/types';
+import { folderLabel, parentFolder } from '../shared/folders';
+import type { CliStatus, ExportRequest, FolderResult, Note, NotesFile } from '../shared/types';
 import type { Settings } from '../shared/settings';
 import { attachments, installAssetProtocol, pickAttachments, registerAssetScheme, saveAttachment, sweepOrphans } from './attachments';
 import { destroyCapture, hideCapture, showCapture, toggleCapture } from './capture';
@@ -17,9 +18,16 @@ import { pickImports } from './import';
 import { createReminders, type Reminders } from './reminders';
 import { startIpcServer, type IpcServer } from './ipc-server';
 import {
+  createFolder,
+  deleteFolder,
   expireTrash,
   getTrashed,
+  keptIds,
+  listFolders,
   listTrash,
+  moveFolder,
+  moveNote,
+  renameFolder,
   trashBodies,
   drain,
   loadNotes,
@@ -29,7 +37,6 @@ import {
   saveNotes,
   stopWatching,
   store,
-  trashedIds,
   watchNotes,
 } from './notes-store';
 import { loadSettings, saveSettings, settings, settingsStore } from './settings';
@@ -41,6 +48,21 @@ import { applyHotkey, createTray, destroyTray, releaseHotkeys, showWindow, toggl
 const squirrelLaunch = handleSquirrelEvent();
 
 const BG = '#121722';
+
+/**
+ * One folder command, answered the same way whichever it was: what it ended
+ * at, every folder there is now, and a sentence. A refusal is an answer too —
+ * a folder name Windows will not keep is the user's to fix, not a crash for
+ * the window to catch.
+ */
+async function folderResult(run: () => Promise<string>, said: (folder: string) => string): Promise<FolderResult> {
+  try {
+    const folder = await run();
+    return { ok: true, folder, folders: await listFolders(), message: said(folder) };
+  } catch (err) {
+    return { ok: false, folder: '', folders: await listFolders().catch(() => []), message: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 /** The scheme launchers can use: notes://open?id=…, notes://new?text=…, notes://inbox?text=… */
 const URI_SCHEME = 'notes';
@@ -185,7 +207,7 @@ async function persist(file: NotesFile): Promise<void> {
   reminders?.update(file.notes);
   // Both run behind the save, never in front of it: neither the snapshot
   // ring nor the attachment sweep may delay or endanger the write itself.
-  void record(file.notes, trashedIds());
+  void record(file.notes, keptIds());
   void sweepOrphans(file, trashBodies).catch((err) => console.error('[notes] attachment sweep failed', err));
 }
 
@@ -302,6 +324,14 @@ if (squirrelLaunch) {
         if (!win.isDestroyed()) win.webContents.send(IPC.externalChange, changes);
         reminders?.applyChanges(changes);
       });
+      // Everything the store does, not only what the watcher notices: the
+      // command line can file a note in another folder while the window is
+      // open, and the file moves without its text changing, so the watcher
+      // has nothing to report. The window compares before it takes anything
+      // in, so its own writes come back to it as nothing at all.
+      store.onChange((changes) => {
+        if (!win.isDestroyed()) win.webContents.send(IPC.externalChange, changes);
+      });
       void expireTrash()
         .then((gone) => Promise.all(gone.map(forgetHistory)))
         .catch((err) => console.error('[notes] emptying the trash failed', err));
@@ -312,6 +342,46 @@ if (squirrelLaunch) {
   });
   ipcMain.handle(IPC.notesSave, (_event, file: NotesFile) => persist(file));
   ipcMain.handle(IPC.openFolder, () => shell.openPath(notesDir()).then(() => undefined));
+  ipcMain.handle(IPC.showNoteFile, (_event, id: string) => {
+    const rel = store.fileNameOf(id);
+    if (!rel) return false;
+    // Explorer with the file itself picked out, rather than the folder it is
+    // in: the question "where does this note live" is about the note.
+    shell.showItemInFolder(path.join(notesDir(), ...rel.split('/')));
+    return true;
+  });
+  ipcMain.handle(IPC.foldersList, () => listFolders());
+  ipcMain.handle(IPC.folderCreate, (_event, folder: string) => folderResult(() => createFolder(folder), (made) => `Made ${folderLabel(made)}`));
+  ipcMain.handle(IPC.folderRename, (_event, folder: string, name: string) =>
+    folderResult(
+      () => renameFolder(folder, name),
+      (now) => `Renamed to ${folderLabel(now)}`,
+    ),
+  );
+  ipcMain.handle(IPC.folderMove, (_event, folder: string, into: string) =>
+    folderResult(
+      () => moveFolder(folder, into),
+      (now) => `Moved to ${folderLabel(now)}`,
+    ),
+  );
+  ipcMain.handle(IPC.folderDelete, (_event, folder: string) =>
+    folderResult(
+      async () => {
+        await deleteFolder(folder);
+        return parentFolder(folder);
+      },
+      () => `Deleted ${folderLabel(folder)}`,
+    ),
+  );
+  ipcMain.handle(IPC.noteMove, (_event, id: string, folder: string) =>
+    folderResult(
+      async () => {
+        await moveNote(id, folder);
+        return folder;
+      },
+      (now) => `Filed in ${folderLabel(now)}`,
+    ),
+  );
   ipcMain.handle(IPC.notesFolder, () => currentNotesFolder());
   ipcMain.handle(IPC.clipperBookmarklet, () => (clipper ? bookmarklet(clipper.port, clipper.token) : null));
   ipcMain.handle(IPC.pickNotesFolder, async (event) => {

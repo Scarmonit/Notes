@@ -1,3 +1,4 @@
+import type { Dirent } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { isNoteFileName } from '../shared/notes-folder';
@@ -10,13 +11,26 @@ import { isNoteFileName } from '../shared/notes-folder';
  * the same thing, so the doing of it is here and the deciding is theirs.
  */
 
-/** How many markdown files a folder holds; 0 when it does not exist. */
+/**
+ * How many markdown files a folder holds, counting the folders inside it; 0
+ * when it does not exist. Notes live in a tree now, so a notebook that looks
+ * empty at the top may hold a hundred notes one folder down — and taking it
+ * for empty is how two notebooks get merged into one.
+ */
 export async function countNotes(dir: string): Promise<number> {
+  let found = 0;
+  let entries: Dirent[];
   try {
-    return (await fs.readdir(dir)).filter(isNoteFileName).length;
+    entries = await fs.readdir(dir, { withFileTypes: true });
   } catch {
     return 0;
   }
+  for (const entry of entries) {
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      if (!entry.name.startsWith('.')) found += await countNotes(path.join(dir, entry.name));
+    } else if (entry.isFile() && isNoteFileName(entry.name)) found++;
+  }
+  return found;
 }
 
 /** Moves a file, falling back to a copy when the two folders are on different drives. */
@@ -30,27 +44,39 @@ async function moveFile(from: string, to: string): Promise<void> {
 }
 
 /**
- * Moves the files a folder holds into another, making it first. A missing
- * source folder is nothing to do; a name already taken in the target is left
- * alone, because a file that is already there is not this one's to replace.
+ * Moves the files a folder holds into another, making it first, and the
+ * folders inside it with them: a notebook is a tree, and half of it left
+ * behind is not a notebook that moved.
+ *
+ * A missing source folder is nothing to do; a name already taken in the target
+ * is left alone, because a file that is already there is not this one's to
+ * replace. A folder whose name is taken is not skipped but walked into, so two
+ * trees meeting at `Work` merge rather than one being abandoned.
  */
 export async function moveInto(from: string, to: string, keep: (name: string) => boolean): Promise<number> {
   if (path.resolve(from) === path.resolve(to)) return 0;
-  let names: string[];
+  let entries: Dirent[];
   try {
-    names = await fs.readdir(from);
+    entries = await fs.readdir(from, { withFileTypes: true });
   } catch {
     return 0;
   }
-  const wanted = names.filter(keep);
-  if (wanted.length === 0) return 0;
+  const dirs = entries.filter((e) => e.isDirectory() && !e.isSymbolicLink() && !e.name.startsWith('.'));
+  const files = entries.filter((e) => e.isFile() && keep(e.name));
+  if (dirs.length === 0 && files.length === 0) return 0;
   await fs.mkdir(to, { recursive: true });
   const taken = new Set(await fs.readdir(to).catch(() => []));
   let moved = 0;
-  for (const name of wanted) {
-    if (taken.has(name)) continue;
-    await moveFile(path.join(from, name), path.join(to, name));
+  for (const file of files) {
+    if (taken.has(file.name)) continue;
+    await moveFile(path.join(from, file.name), path.join(to, file.name));
     moved++;
+  }
+  for (const dir of dirs) {
+    moved += await moveInto(path.join(from, dir.name), path.join(to, dir.name), keep);
+    // The folder itself goes too, once what was in it has: an empty one left
+    // behind would read as a place someone made in the new notebook.
+    await fs.rmdir(path.join(from, dir.name)).catch(() => undefined);
   }
   return moved;
 }

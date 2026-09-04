@@ -76,8 +76,20 @@ export function createFileBackend(root: string, options: FileBackendOptions): Ba
     status: async (): Promise<NoteStatus> => ({ open: false, dirty: false }),
     fileOf: async (id) => {
       await all();
-      const name = store.fileNameOf(id);
-      return name ? path.join(paths.notes, name) : null;
+      const rel = store.fileNameOf(id);
+      return rel ? path.join(paths.notes, ...rel.split('/')) : null;
+    },
+
+    folderList: () => store.listFolders(),
+    folderCreate: (folder) => store.createFolder(folder),
+    folderRename: (folder, name) => store.renameFolder(folder, name),
+    folderMove: (folder, into) => store.moveFolder(folder, into),
+    folderDelete: (folder) => store.deleteFolder(folder),
+    noteMove: async (id, folder) => {
+      // The index is what knows where a note is; a store that has not read the
+      // folder yet knows nothing about any note.
+      await all();
+      return store.moveNote(id, folder);
     },
     put: async (note, options) => {
       const notes = await all();

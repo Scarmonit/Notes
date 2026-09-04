@@ -5,6 +5,15 @@ export const IPC = {
   flushReply: 'notes:flush-reply',
   externalChange: 'notes:external-change',
   openFolder: 'notes:open-folder',
+  /** Explorer, with one note's own file picked out. */
+  showNoteFile: 'notes:show-note-file',
+  /** The folders notes are filed in, and the five ways of changing them. */
+  foldersList: 'notes:folders-list',
+  folderCreate: 'notes:folder-create',
+  folderRename: 'notes:folder-rename',
+  folderMove: 'notes:folder-move',
+  folderDelete: 'notes:folder-delete',
+  noteMove: 'notes:note-move',
   /** The web clipper's bookmarklet, with this launch's port and token in it. */
   clipperBookmarklet: 'notes:clipper-bookmarklet',
   /** Choose where the markdown files live, and where they are now. */

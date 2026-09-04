@@ -17,6 +17,8 @@ import {
   linkMarkdown,
   linkParts,
   noteForLink,
+  qualifiedLink,
+  resolveLink,
   tagMatches,
   tagPath,
   tagTree,
@@ -339,5 +341,50 @@ describe('other names a note answers to', () => {
 
   it('leaves the note alone, timestamp included, when the names do not change', () => {
     expect(updateAliases([dog], 'a', ['Doggo', 'Woofer'])[0]).toBe(dog);
+  });
+});
+
+describe('links, once two notes may share a title', () => {
+  const at = (id: string, title: string, folder: string, aliases?: string[]): Note => ({ id, body: '', title, folder, createdAt: 1, updatedAt: 1, ...(aliases ? { aliases } : {}) });
+
+  it('lands nowhere when a name answers to more than one note, rather than guessing', () => {
+    const notes = [at('a', 'Plan', 'Work'), at('b', 'Plan', 'Home')];
+    const hit = resolveLink(notes, 'Plan');
+    expect(hit.kind).toBe('many');
+    expect(hit.kind === 'many' && hit.notes.map((n) => n.id)).toEqual(['a', 'b']);
+    // Which is why the old answer — the first one found — is no longer given.
+    expect(noteForLink(notes, 'Plan')).toBeNull();
+  });
+
+  it('means one note when a slash says which folder', () => {
+    const notes = [at('a', 'Plan', 'Work'), at('b', 'Plan', 'Home')];
+    expect(noteForLink(notes, 'Work/Plan')?.id).toBe('a');
+    expect(noteForLink(notes, 'Home/Plan')?.id).toBe('b');
+    expect(noteForLink(notes, 'Work/Plan.md')?.id).toBe('a');
+    expect(noteForLink(notes, 'Nowhere/Plan')).toBeNull();
+  });
+
+  it('still finds a note whose own title has a slash in it', () => {
+    const notes = [at('a', 'and/or', '')];
+    expect(noteForLink(notes, 'and/or')?.id).toBe('a');
+  });
+
+  it('leaves a name only one note answers to exactly as short as it was', () => {
+    const notes = [at('a', 'Plan', 'Work'), at('b', 'Groceries', 'Home')];
+    expect(noteForLink(notes, 'Plan')?.id).toBe('a');
+    expect(qualifiedLink(notes, notes[0])).toBe('Plan');
+  });
+
+  it('spells out the folder for a link that would otherwise be ambiguous', () => {
+    const notes = [at('a', 'Plan', 'Work'), at('b', 'Plan', 'Home')];
+    expect(qualifiedLink(notes, notes[0])).toBe('Work/Plan');
+    expect(qualifiedLink(notes, notes[1])).toBe('Home/Plan');
+    // And what it spells out resolves back to the note it was written for.
+    expect(noteForLink(notes, qualifiedLink(notes, notes[1]))?.id).toBe('b');
+  });
+
+  it('keeps a title ahead of an alias on another note, folders or not', () => {
+    const notes = [at('a', 'Dog', 'Work'), at('b', 'Wolf', 'Home', ['Dog'])];
+    expect(noteForLink(notes, 'Dog')?.id).toBe('a');
   });
 });

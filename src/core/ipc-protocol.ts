@@ -39,6 +39,8 @@ export const EXIT = {
   failure: 1,
   usage: 2,
   notFound: 3,
+  /** A name more than one note answers to: folders make two notes called Plan legal. */
+  ambiguous: 7,
   busy: 4,
   noApp: 5,
   appError: 6,
@@ -63,7 +65,7 @@ export const RPC_ERROR = {
 export interface RpcErrorShape {
   code: number;
   message: string;
-  data?: { exit?: ExitCode; candidates?: Array<{ id: string; title: string }> } & Record<string, unknown>;
+  data?: { exit?: ExitCode; candidates?: Array<{ id: string; title: string; path?: string }> } & Record<string, unknown>;
 }
 
 export interface RpcRequest {
@@ -149,6 +151,18 @@ export interface Methods {
   'note.status': { params: { id: string }; result: NoteStatus };
   /** The filename a live note is stored under, or null while it has never been written. */
   'note.file': { params: { id: string }; result: { path: string | null } };
+  /** Every folder in the notebook, empty ones included. */
+  'folder.list': { params: Record<string, never>; result: { folders: string[] } };
+  /** Makes a folder and every folder above it. */
+  'folder.create': { params: { folder: string }; result: { folder: string } };
+  /** Changes a folder's own name, leaving it where it is. */
+  'folder.rename': { params: { folder: string; name: string }; result: { folder: string } };
+  /** Puts a folder, and everything in it, inside another. */
+  'folder.move': { params: { folder: string; into: string }; result: { folder: string } };
+  /** Removes a folder that holds nothing. */
+  'folder.delete': { params: { folder: string }; result: { deleted: boolean } };
+  /** Files a note in another folder; resolves to its path inside the notes folder. */
+  'note.move': { params: { id: string; folder: string }; result: { path: string } };
   /** Creates or replaces a note. Refused with `busy` while the note is being typed in, unless forced. */
   /** `expectUpdatedAt`: the note's `updatedAt` as read; refused as busy when the note has changed since, unless forced. */
   'note.put': { params: { note: Note; force?: boolean; expectUpdatedAt?: number }; result: Note };
@@ -214,6 +228,12 @@ export const MAIN_METHODS: ReadonlySet<MethodName> = new Set<MethodName>([
   'app.info',
   'paths',
   'note.file',
+  'folder.list',
+  'folder.create',
+  'folder.rename',
+  'folder.move',
+  'folder.delete',
+  'note.move',
   'trash.list',
   'trash.get',
   'trash.purge',

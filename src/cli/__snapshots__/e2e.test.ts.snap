@@ -38,6 +38,8 @@ Commands:
   open [options] [note]                           bring up the window at a note (starts Notes if it is not running)
   show-window                                     bring the Notes window to the front (starts it if needed)
   stats [note]                                    words, characters, tasks and links, for one note or all of them
+  move <note> <folder>                            file a note in another folder, keeping its name, its links and its history
+  folders                                         the folders notes are filed in: real directories inside the notes folder
   tags [options]                                  every tag in use, with how many notes carry it
   tag                                             add, remove or rename a #tag
   links [options] <note>                          the notes a note links to with [[...]]

@@ -29,6 +29,12 @@ export interface Paths {
   ipc: string;
   /** Which task reminders have been shown, so a restart does not show them again. */
   reminded: string;
+  /**
+   * Notes whose files have gone from the folder without the app deleting them.
+   * A sync tool moving a note takes it away and puts it back a moment later,
+   * and the app must not take the gap for a deletion; see `store.ts`.
+   */
+  missing: string;
 }
 
 export const SETTINGS_FILE = 'settings.json';
@@ -80,6 +86,7 @@ export function pathsFor(root: string, notesFolder: string | null = notesFolderF
     legacy: path.join(root, 'notes.json'),
     ipc: path.join(root, 'ipc.json'),
     reminded: path.join(root, 'reminded.json'),
+    missing: path.join(root, 'missing.json'),
   };
 }
 

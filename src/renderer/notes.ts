@@ -1,3 +1,4 @@
+import { FOLDER_SEP, folderKey, joinFolder, normalizeFolder, ROOT_FOLDER } from '../shared/folders';
 import { cleanAliases } from '../shared/notes-folder';
 import type { Note } from '../shared/types';
 
@@ -210,14 +211,59 @@ export function answersTo(note: Pick<Note, 'body' | 'title' | 'aliases'>, target
   return namesOf(note).some((n) => linkKey(n) === want);
 }
 
+/** What a [[link]] found: one note, none, or more than one and no way to choose. */
+export type LinkHit = { kind: 'one'; note: Note } | { kind: 'none' } | { kind: 'many'; notes: Note[] };
+
+/** The notes answering to a name, title first: an alias never shadows a title. */
+function answering(notes: Note[], name: string): Note[] {
+  const want = linkKey(name);
+  const titled = notes.filter((n) => linkKey(titleOf(n)) === want);
+  return titled.length > 0 ? titled : notes.filter((n) => (n.aliases ?? []).some((a) => linkKey(a) === want));
+}
+
+/**
+ * Where a [[link]] points, and how sure it is.
+ *
+ * Folders make two notes called Plan legal, so a bare `[[Plan]]` can no longer
+ * always mean one of them. When it names more than one, the link is ambiguous
+ * and lands nowhere: choosing the first, or the nearest, would make what a link
+ * means depend on where the notes happen to sit and which order they were read.
+ *
+ * A slash makes it a path instead: `[[Work/Plan]]` is the note called Plan in
+ * the folder Work. A title with a slash in it is still a title, so the whole
+ * name is tried first and the path reading only steps in when nothing answers.
+ */
+export function resolveLink(notes: Note[], target: string): LinkHit {
+  const raw = target.trim();
+  const settle = (hits: Note[]): LinkHit | null => (hits.length === 1 ? { kind: 'one', note: hits[0] } : hits.length > 1 ? { kind: 'many', notes: hits } : null);
+  const at = raw.lastIndexOf(FOLDER_SEP);
+  if (at > 0) {
+    const folder = normalizeFolder(raw.slice(0, at));
+    const name = raw.slice(at + 1).replace(/.md$/i, '');
+    const here = notes.filter((n) => folderKey(n.folder ?? ROOT_FOLDER) === folderKey(folder));
+    const found = settle(answering(here, name));
+    if (found) return found;
+  }
+  return settle(answering(notes, raw)) ?? { kind: 'none' };
+}
+
 /**
  * The note a link points at: the one whose title it names, or failing that
  * the one that lists the name as an alias. Title beats alias, always, so a
- * note cannot be shadowed by another note's nickname for something.
+ * note cannot be shadowed by another note's nickname for something. A name
+ * more than one note answers to points nowhere until it is said which.
  */
 export function noteForLink(notes: Note[], target: string): Note | null {
-  const want = linkKey(target);
-  return notes.find((n) => linkKey(titleOf(n)) === want) ?? notes.find((n) => (n.aliases ?? []).some((a) => linkKey(a) === want)) ?? null;
+  const hit = resolveLink(notes, target);
+  return hit.kind === 'one' ? hit.note : null;
+}
+
+/** How a link would have to be written to mean this note and no other. */
+export function qualifiedLink(notes: Note[], note: Note): string {
+  const title = titleOf(note);
+  const hit = resolveLink(notes, title);
+  if (hit.kind === 'one' && hit.note.id === note.id) return title;
+  return joinFolder(note.folder ?? ROOT_FOLDER, title);
 }
 
 /**

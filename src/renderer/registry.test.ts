@@ -66,7 +66,7 @@ const sectionOrder = (group: string): string[] => {
 
 describe('the command registry', () => {
   it('reads every command out of main.ts', () => {
-    expect(ACTIONS.length).toBe(58);
+    expect(ACTIONS.length).toBe(65);
     expect(new Set(ACTIONS.map((a) => a.id)).size).toBe(ACTIONS.length);
   });
 
@@ -87,12 +87,15 @@ describe('the command registry', () => {
   });
 
   it('files the Note menu under the headings the design settled on', () => {
-    expect(sectionOrder('Notes')).toEqual(['Create', 'Find and navigate', 'This note', 'Tabs', 'Saved searches', 'Library']);
-    expect(idsUnder('Notes', 'Create')).toEqual(['new', 'template-new', 'import']);
+    expect(sectionOrder('Notes')).toEqual(['Create', 'Find and navigate', 'This note', 'Tabs', 'Saved searches', 'Folders', 'Library']);
+    expect(idsUnder('Notes', 'Create')).toEqual(['new', 'template-new', 'import', 'folder-new']);
     expect(idsUnder('Notes', 'Find and navigate')).toEqual(['find', 'recent', 'prev', 'next', 'back', 'forward']);
-    expect(idsUnder('Notes', 'This note')).toEqual(['title', 'aliases', 'pin', 'history', 'save', 'export', 'merge-into', 'delete']);
+    expect(idsUnder('Notes', 'This note')).toEqual(['title', 'aliases', 'pin', 'history', 'save', 'export', 'merge-into', 'delete', 'note-move', 'note-show']);
     expect(idsUnder('Notes', 'Tabs')).toEqual(['tab-new', 'tab-close', 'tab-next', 'tab-prev']);
     expect(idsUnder('Notes', 'Saved searches')).toEqual(['view-save', 'view-open', 'view-forget']);
+    // Folders sits immediately before Library: the notebook's own tree, then
+    // the things that are about the notebook as a whole.
+    expect(idsUnder('Notes', 'Folders')).toEqual(['folder-rename', 'folder-move', 'folder-delete']);
     expect(idsUnder('Notes', 'Library')).toEqual(['due', 'tag-rename', 'trash', 'folder']);
   });
 
@@ -106,7 +109,7 @@ describe('the command registry', () => {
 
   it('splits Window between the workspace and the application', () => {
     expect(sectionOrder('Window')).toEqual(['Workspace', 'Application']);
-    expect(idsUnder('Window', 'Workspace')).toEqual(['sidebar', 'split', 'pane-close', 'pane-next', 'pane-prev']);
+    expect(idsUnder('Window', 'Workspace')).toEqual(['sidebar', 'split', 'pane-close', 'pane-next', 'pane-prev', 'folders-go']);
     expect(idsUnder('Window', 'Application')).toEqual(['layout', 'palette', 'help']);
   });
 

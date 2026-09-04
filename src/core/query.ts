@@ -1,5 +1,6 @@
 import { linkKey, linksIn, tagMatches, tagsOf, titleOf, wordCount } from '../renderer/notes';
 import { tasksIn } from '../renderer/tasks';
+import { folderMatches, parseFolder, ROOT_FOLDER } from '../shared/folders';
 import type { Note } from '../shared/types';
 import { addDays, inWindow, parseDueWindow, type DueWindow } from './due';
 
@@ -39,6 +40,12 @@ export interface Filter {
   /** The same two, by title: what the search box can say. */
   linksToTitle?: string;
   linkedFromTitle?: string;
+  /**
+   * The folder a note must be in, or beneath: `folder:Work` finds `Work` and
+   * everything under it, the way `tag:work` finds `#work/clients`. `/` asks
+   * for the notes filed at the root itself.
+   */
+  folder?: string;
   /** Notes nothing links to and that link to nothing. */
   orphan?: boolean;
   hasTasks?: boolean;
@@ -132,6 +139,7 @@ export const OPERATORS: Array<{ op: string; means: string }> = [
   { op: 'untitled:', means: 'without an explicit title' },
   { op: 'created:>7d', means: 'made in the last week; < for before, a date or a span (updated: likewise)' },
   { op: 'links:Title', means: 'linking to that note (from:Title for the notes it links to)' },
+  { op: 'folder:Work', means: 'in this folder or one beneath it; folder:/ for the ones at the root' },
   { op: 'orphan:', means: 'with no links either way' },
   { op: 'sort:title', means: 'ordered by title, created, updated or words; add - to reverse' },
   { op: 'limit:5', means: 'at most that many' },
@@ -214,7 +222,7 @@ export function tokenize(text: string): Token[] {
   return out;
 }
 
-const OPERATOR_NAMES = new Set(['tag', 'todo', 'done', 'task', 'tasks', 'due', 'pinned', 'pin', 'untitled', 'created', 'updated', 'edited', 'links', 'from', 'linked', 'orphan', 'sort', 'limit']);
+const OPERATOR_NAMES = new Set(['tag', 'todo', 'done', 'task', 'tasks', 'due', 'pinned', 'pin', 'untitled', 'created', 'updated', 'edited', 'links', 'from', 'linked', 'orphan', 'folder', 'sort', 'limit']);
 
 const yes = (v: string): boolean => !/^(no|false|off|0)$/i.test(v.trim());
 
@@ -289,6 +297,13 @@ export function parseQuery(text: string, now = Date.now()): Filter & { errors: s
       case 'orphan':
         filter.orphan = yes(v);
         break;
+      case 'folder': {
+        const parsed = parseFolder(v === '/' ? '' : v);
+        if ('error' in parsed) filter.errors.push(`folder: ${parsed.error}`);
+        // A bare folder: is no question at all; / is the question "at the root".
+        else if (v) filter.folder = v === '/' ? ROOT_ONLY : parsed.folder;
+        break;
+      }
       case 'due': {
         const w = parseDueWindow(v, now);
         if (w) filter.due = w;
@@ -360,6 +375,19 @@ const compare: Record<SortKey, (a: Note, b: Note) => number> = {
  * The notes a filter keeps, in its order. Without a sort the list is the
  * app's own: pinned first, then most recently edited.
  */
+/**
+ * The value `folder:/` stands for: the root and nothing beneath it. The root
+ * as a folder is the empty string, which would mean the whole notebook, so
+ * asking for the root alone needs a word of its own.
+ */
+export const ROOT_ONLY = '/';
+
+/** Whether a note is in a folder, or in one inside it. */
+export function inFolder(note: Note, folder: string): boolean {
+  const at = note.folder ?? ROOT_FOLDER;
+  return folder === ROOT_ONLY ? at === ROOT_FOLDER : folderMatches(at, folder);
+}
+
 export function applyFilter(notes: Note[], filter: Filter): Note[] {
   const byTitle = (title: string | undefined): Note | undefined => (title ? notes.find((n) => linkKey(titleOf(n)) === linkKey(title)) : undefined);
   const linkTarget = filter.linksTo ? notes.find((n) => n.id === filter.linksTo) : byTitle(filter.linksToTitle);
@@ -374,6 +402,7 @@ export function applyFilter(notes: Note[], filter: Filter): Note[] {
     if (!matchesTerms(n, filter.terms, filter.excludes)) return false;
     if (filter.patterns && !filter.patterns.every((re) => re.test(`${titleOf(n)}\n${n.body}`))) return false;
     if (filter.tags.some((tag) => !hasTag(n, tag))) return false;
+    if (filter.folder !== undefined && !inFolder(n, filter.folder)) return false;
     if (filter.excludeTags?.some((tag) => hasTag(n, tag))) return false;
     if (filter.pinned !== undefined && (n.pinned === true) !== filter.pinned) return false;
     if (filter.untitled !== undefined && Boolean(n.title?.trim()) === filter.untitled) return false;
@@ -435,7 +464,7 @@ export function parseWords(words: readonly string[], now = Date.now()): Filter &
     merged.errors.push(...one.errors);
     if (one.patterns) (merged.patterns ??= []).push(...one.patterns);
     if (one.excludeTags) (merged.excludeTags ??= []).push(...one.excludeTags);
-    for (const key of ['pinned', 'untitled', 'createdAfter', 'createdBefore', 'updatedAfter', 'updatedBefore', 'linksToTitle', 'linkedFromTitle', 'orphan', 'hasTasks', 'hasTodo', 'hasDone', 'due', 'sort', 'reverse', 'limit'] as const) {
+    for (const key of ['pinned', 'untitled', 'createdAfter', 'createdBefore', 'updatedAfter', 'updatedBefore', 'linksToTitle', 'linkedFromTitle', 'orphan', 'folder', 'hasTasks', 'hasTodo', 'hasDone', 'due', 'sort', 'reverse', 'limit'] as const) {
       if (one[key] !== undefined) (merged as unknown as Record<string, unknown>)[key] = one[key];
     }
   }

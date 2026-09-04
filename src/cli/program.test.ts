@@ -86,10 +86,12 @@ describe('notes (in-process)', () => {
     expect(stdout.trim()).toBe('call the bank\n\nbuy stamps');
   });
 
-  it('lists an ambiguous name and exits 3', async () => {
+  it('lists an ambiguous name and exits 7, which is not "no such note"', async () => {
     await run('new', 'Shop A');
     await run('new', 'Shop B');
-    expect(await run('show', 'shop')).toBe(3);
+    // 7, not 3: folders make two notes of one name an everyday thing, so a
+    // script can tell "say which one" from "there is no such note".
+    expect(await run('show', 'shop')).toBe(7);
     expect(stderr).toContain('matches 2 notes');
     expect(stderr).toContain('Shop A');
   });
@@ -435,5 +437,93 @@ describe('0.15: refile, section move, rename with links, tag rename, merge', () 
     expect(both.map((n) => n.title).sort()).toEqual(['Alpha', 'Beta']);
     expect(await run('unpin', 'alpha', '--json')).toBe(0);
     expect((JSON.parse(stdout) as { title: string }).title).toBe('Alpha');
+  });
+});
+
+describe('0.22: folders on the command line', () => {
+  it('makes folders, lists them with their counts, and files notes into them', async () => {
+    expect(await run('folders', 'new', 'Work/Clients')).toBe(0);
+    expect(await run('new', 'Hale', '--content', 'the client', '--folder', 'Work/Clients')).toBe(0);
+    expect(await run('new', 'Loose', '--content', 'unfiled')).toBe(0);
+
+    expect(await run('folders', 'list', '--plain')).toBe(0);
+    // Both counts: a folder holding nothing but folders is not empty.
+    expect(lines()).toEqual(['Work\t0\t1', 'Work/Clients\t1\t1']);
+
+    expect(await run('list', '--folder', 'Work', '--plain')).toBe(0);
+    expect(lines().map((l) => l.split('\t')[2])).toEqual(['Hale']);
+    expect(await run('list', '--folder', '/', '--plain')).toBe(0);
+    expect(lines().map((l) => l.split('\t')[2])).toEqual(['Loose']);
+  });
+
+  it('files a note in another folder without renaming it, and says where it went', async () => {
+    await run('folders', 'new', 'Archive');
+    await run('new', 'Plan', '--content', 'the plan');
+    expect(await run('move', 'Plan', 'Archive')).toBe(0);
+    expect(stdout).toContain('Archive/Plan.md');
+    expect(await run('show', 'Plan', '--json')).toBe(0);
+    const shown = JSON.parse(stdout);
+    expect(shown.folder).toBe('Archive');
+    expect(shown.path).toBe('Archive/Plan.md');
+    expect(shown.title).toBe('Plan');
+  });
+
+  it('refuses a folder that is not there rather than making one on the way', async () => {
+    await run('new', 'Plan');
+    expect(await run('move', 'Plan', 'Nowhere')).toBe(3);
+    expect(stderr).toContain('no folder called');
+    expect(await run('new', 'Other', '--folder', 'Nowhere')).toBe(3);
+  });
+
+  it('refuses a folder name Windows will not keep, and never offers a different one', async () => {
+    expect(await run('folders', 'new', 'Q1?Q2')).toBe(2);
+    expect(stderr).toContain('"?"');
+    expect(await run('folders', 'list', '--plain')).toBe(0);
+    expect(lines()).toEqual([]);
+  });
+
+  it('renames and moves a folder, and only deletes an empty one', async () => {
+    await run('folders', 'new', 'Work/Clients');
+    await run('new', 'Hale', '--folder', 'Work/Clients', '--content', 'x');
+    expect(await run('folders', 'rename', 'Work/Clients', 'Customers')).toBe(0);
+    expect(stdout).toContain('Work / Customers');
+    expect(await run('folders', 'delete', 'Work/Customers')).toBe(1);
+    expect(stderr).toContain('still has something in it');
+    await run('folders', 'new', 'Archive');
+    expect(await run('folders', 'move', 'Work/Customers', 'Archive')).toBe(0);
+    expect(await run('show', 'Hale', '--json')).toBe(0);
+    expect(JSON.parse(stdout).folder).toBe('Archive/Customers');
+  });
+
+  it('names one note by its path when two notes share a title, and exits 7 when nothing does', async () => {
+    await run('folders', 'new', 'Work');
+    await run('folders', 'new', 'Home');
+    await run('new', 'Plan', '--folder', 'Work', '--content', 'the work one');
+    await run('new', 'Plan', '--folder', 'Home', '--content', 'the home one');
+    expect(await run('show', 'Plan')).toBe(7);
+    // The refusal lists where each one is, which is the whole point of saying 7.
+    expect(stderr).toContain('Work/Plan');
+    expect(await run('show', 'Work/Plan')).toBe(0);
+    expect(stdout.trim()).toBe('the work one');
+    expect(await run('show', 'Home/Plan.md')).toBe(0);
+    expect(stdout.trim()).toBe('the home one');
+  });
+
+  it('imports into a folder', async () => {
+    const file = path.join(root, 'Imported.md');
+    await fs.writeFile(file, '# Imported\n\nfrom a file', 'utf8');
+    await run('folders', 'new', 'Inbox');
+    expect(await run('import', file, '--folder', 'Inbox')).toBe(0);
+    expect(await run('show', 'Imported', '--json')).toBe(0);
+    expect(JSON.parse(stdout).folder).toBe('Inbox');
+  });
+
+  it('answers folder: on the command line the same way the search box does', async () => {
+    await run('folders', 'new', 'Work/Clients');
+    await run('new', 'Hale', '--folder', 'Work/Clients', '--content', 'client');
+    await run('new', 'Loose', '--content', 'client');
+    expect(await run('search', 'client', 'folder:Work', '--plain')).toBe(0);
+    expect(stdout).toContain('Hale');
+    expect(stdout).not.toContain('Loose');
   });
 });

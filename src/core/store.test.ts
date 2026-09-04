@@ -7,6 +7,7 @@ import { createHistory } from './history';
 import { pathsFor } from './paths';
 import { createSettings } from './settings';
 import { createStore, TRASH_AGE_MS } from './store';
+import { titleOf } from '../renderer/notes';
 import type { Note } from '../shared/types';
 
 /**
@@ -233,5 +234,170 @@ describe('store, re-reading the folder', () => {
     const copy = notes.find((n) => n.id !== 'p');
     expect(copy?.body).toBe('Plan, elsewhere');
     expect(store.fileNameOf(copy?.id ?? '')).toBe('Plan (conflicted copy).md');
+  });
+});
+
+describe('store, folders', () => {
+  it('reads the notes in the folders inside the notes folder, and says where each is', async () => {
+    const store = createStore(root);
+    const dir = pathsFor(root).notes;
+    await fs.mkdir(path.join(dir, 'Work', 'Clients'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'Loose.md'), 'at the root', 'utf8');
+    await fs.writeFile(path.join(dir, 'Work', 'Clients', 'Hale.md'), 'the client', 'utf8');
+    const { notes, folders } = await store.loadNotes();
+    const where = Object.fromEntries(notes.map((n) => [titleOf(n), n.folder]));
+    expect(where).toEqual({ Loose: '', Hale: 'Work/Clients' });
+    expect(folders).toEqual(['Work', 'Work/Clients']);
+    expect(store.fileNameOf(notes.find((n) => titleOf(n) === 'Hale')!.id)).toBe('Work/Clients/Hale.md');
+  });
+
+  it('leaves the dot folders and the attachments folder out of the notebook entirely', async () => {
+    const store = createStore(root);
+    const paths = pathsFor(root);
+    await fs.mkdir(path.join(paths.notes, '.obsidian'), { recursive: true });
+    await fs.mkdir(paths.attachments, { recursive: true });
+    await fs.mkdir(path.join(paths.notes, 'Work', 'attachments'), { recursive: true });
+    await fs.writeFile(path.join(paths.notes, '.obsidian', 'Config.md'), 'not a note', 'utf8');
+    await fs.writeFile(path.join(paths.attachments, 'Caption.md'), 'not a note', 'utf8');
+    await fs.writeFile(path.join(paths.notes, 'Work', 'attachments', 'Deep.md'), 'a real note', 'utf8');
+    const { notes, folders } = await store.loadNotes();
+    expect(notes.map((n) => titleOf(n))).toEqual(['Deep']);
+    // The reserved one is only the one at the top; a folder someone named
+    // "attachments" further down is an ordinary folder.
+    expect(folders).toEqual(['Work', 'Work/attachments']);
+  });
+
+  it('names two notes the same in two folders, and only numbers a name taken in the same one', async () => {
+    const store = createStore(root);
+    await store.createFolder('Work');
+    await store.createFolder('Home');
+    await store.saveNotes({
+      version: 1,
+      notes: [note('a', 'Plan', { folder: 'Work' }), note('b', 'Plan', { folder: 'Home' }), note('c', 'Plan', { folder: 'Work' })],
+    });
+    expect(store.fileNameOf('a')).toBe('Work/Plan.md');
+    expect(store.fileNameOf('b')).toBe('Home/Plan.md');
+    expect(store.fileNameOf('c')).toBe('Work/Plan 2.md');
+  });
+
+  it('moves a note without renaming it, and keeps its id', async () => {
+    const store = createStore(root);
+    await store.saveNotes({ version: 1, notes: [note('a', 'Plan')] });
+    await store.createFolder('Work/Clients');
+    expect(await store.moveNote('a', 'Work/Clients')).toBe('Work/Clients/Plan.md');
+    const { notes } = await store.loadNotes();
+    expect(notes.map((n) => [n.id, titleOf(n), n.folder])).toEqual([['a', 'Plan', 'Work/Clients']]);
+    // Nothing about where it is was written into the file.
+    const text = await fs.readFile(path.join(pathsFor(root).notes, 'Work', 'Clients', 'Plan.md'), 'utf8');
+    expect(text).not.toContain('folder');
+  });
+
+  it('refuses to file a note in a folder that is not there', async () => {
+    const store = createStore(root);
+    await store.saveNotes({ version: 1, notes: [note('a', 'Plan')] });
+    await expect(store.moveNote('a', 'Nowhere')).rejects.toThrow(/no folder called/i);
+  });
+
+  it('renames and moves a whole folder, and every note in it keeps its id', async () => {
+    const store = createStore(root);
+    await store.createFolder('Work/Clients');
+    await store.saveNotes({ version: 1, notes: [note('a', 'Hale', { folder: 'Work/Clients' })] });
+    expect(await store.renameFolder('Work/Clients', 'Customers')).toBe('Work/Customers');
+    expect(store.fileNameOf('a')).toBe('Work/Customers/Hale.md');
+    await store.createFolder('Archive');
+    expect(await store.moveFolder('Work/Customers', 'Archive')).toBe('Archive/Customers');
+    const { notes } = await store.loadNotes();
+    expect(notes.map((n) => [n.id, n.folder])).toEqual([['a', 'Archive/Customers']]);
+  });
+
+  it('will not put a folder inside itself, or take one that still holds something', async () => {
+    const store = createStore(root);
+    await store.createFolder('Work/Clients');
+    await expect(store.moveFolder('Work', 'Work/Clients')).rejects.toThrow(/inside itself/i);
+    await expect(store.deleteFolder('Work')).rejects.toThrow(/still has something in it/i);
+    await store.deleteFolder('Work/Clients');
+    expect(await store.listFolders()).toEqual(['Work']);
+  });
+
+  it('never makes two folders that differ only in case, because Windows cannot hold them', async () => {
+    const store = createStore(root);
+    expect(await store.createFolder('Work')).toBe('Work');
+    expect(await store.createFolder('WORK')).toBe('Work');
+    expect(await store.listFolders()).toEqual(['Work']);
+  });
+
+  it('puts a deleted note back in the folder it was deleted from', async () => {
+    const store = createStore(root);
+    await store.createFolder('Work');
+    await store.saveNotes({ version: 1, notes: [note('a', 'Hale', { folder: 'Work' })] });
+    await store.saveNotes({ version: 1, notes: [] });
+    // The trash keeps the shape of the notebook, so nothing has to remember it.
+    expect(await fs.readFile(path.join(pathsFor(root).trash, 'Work', 'Hale.md'), 'utf8')).toContain('Hale');
+    const back = await store.restoreFromTrash('a');
+    expect(back?.folder).toBe('Work');
+    expect(store.fileNameOf('a')).toBe('Work/Hale.md');
+  });
+});
+
+describe('store, a note that goes missing', () => {
+  it('survives a move seen as two halves: gone from one scan, back in the next', async () => {
+    // Codex's own acceptance test for the release. OneDrive takes the file
+    // away and puts it back, and the two need not land in the same scan.
+    const store = createStore(root);
+    const dir = pathsFor(root).notes;
+    await store.saveNotes({ version: 1, notes: [note('abc', 'Plan')] });
+    const text = await fs.readFile(path.join(dir, 'Plan.md'), 'utf8');
+
+    await fs.rm(path.join(dir, 'Plan.md'));
+    await store.refresh();
+    // Not trashed: only the app deleting a note puts it in the trash.
+    expect(await store.listTrash()).toEqual([]);
+    expect([...store.missingIds()]).toEqual(['abc']);
+    // Its history is still spoken for, so the sweep cannot take it.
+    expect([...store.keptIds()]).toContain('abc');
+
+    // A new store, as a restart makes: what is missing was written down.
+    const later = createStore(root);
+    await fs.mkdir(path.join(dir, 'Work'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'Work', 'Plan.md'), text, 'utf8');
+    const { notes } = await later.loadNotes();
+    expect(notes.map((n) => [n.id, n.folder])).toEqual([['abc', 'Work']]);
+    expect([...later.missingIds()]).toEqual([]);
+    expect(await later.listTrash()).toEqual([]);
+  });
+
+  it('forgets a note that never came back, once it has waited the month the trash gives', async () => {
+    const store = createStore(root);
+    await store.saveNotes({ version: 1, notes: [note('abc', 'Plan')] });
+    await fs.rm(path.join(pathsFor(root).notes, 'Plan.md'));
+    await store.refresh();
+    expect(await store.expireTrash(Date.now())).toEqual([]);
+    expect(await store.expireTrash(Date.now() + TRASH_AGE_MS + 1000)).toEqual(['abc']);
+    expect([...store.missingIds()]).toEqual([]);
+  });
+
+  it('takes a move seen whole for a move, with no missing note in between', async () => {
+    const store = createStore(root);
+    const dir = pathsFor(root).notes;
+    await store.saveNotes({ version: 1, notes: [note('abc', 'Plan')] });
+    await fs.mkdir(path.join(dir, 'Work'), { recursive: true });
+    await fs.rename(path.join(dir, 'Plan.md'), path.join(dir, 'Work', 'Plan.md'));
+    await store.refresh();
+    expect([...store.missingIds()]).toEqual([]);
+    expect(store.fileNameOf('abc')).toBe('Work/Plan.md');
+  });
+
+  it('still calls the second of two files carrying one id a copy', async () => {
+    const store = createStore(root);
+    const dir = pathsFor(root).notes;
+    await store.saveNotes({ version: 1, notes: [note('abc', 'Plan')] });
+    const text = await fs.readFile(path.join(dir, 'Plan.md'), 'utf8');
+    await fs.mkdir(path.join(dir, 'Work'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'Work', 'Plan.md'), text, 'utf8');
+    const { notes } = await store.loadNotes();
+    expect(notes).toHaveLength(2);
+    // The one already known keeps the id; the newcomer is stamped with another.
+    expect(notes.filter((n) => n.id === 'abc').map((n) => n.folder)).toEqual(['']);
+    expect(notes.every((n) => n.id)).toBe(true);
   });
 });

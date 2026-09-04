@@ -1,17 +1,33 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, watch, type FSWatcher } from 'node:fs';
+import { existsSync, watch, type Dirent, type FSWatcher } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { previewOf } from '../shared/history';
 import { parseNotesFile } from '../shared/notes-file';
+import {
+  fileNameOf as baseNameOf,
+  folderKey,
+  folderLabel,
+  folderName,
+  folderOf,
+  folderProblem,
+  isSelfOrInside,
+  joinFolder,
+  parentFolder,
+  ROOT_FOLDER,
+  segmentProblem,
+} from '../shared/folders';
 import { fileNameFor, formatNoteFile, isNoteFileName, parseNoteFile, uniqueFileName, type ParsedNoteFile } from '../shared/notes-folder';
 import type { ExternalChanges, Note, NotesFile, TrashedNote } from '../shared/types';
 import { titleOf } from '../renderer/notes';
 import { pathsFor } from './paths';
 
 /**
- * The notes on disk: a folder of markdown files, one per note, named after
- * their titles, with a front-matter block carrying the id and the dates.
+ * The notes on disk: a tree of folders holding markdown files, one per note,
+ * named after their titles, with a front-matter block carrying the id and the
+ * dates. A note's folder is its path inside the notes folder and nothing else:
+ * the filesystem is the only thing that says where a note is, so a note moved
+ * in Explorer needs no agreement from the app.
  * Put the folder in OneDrive, Dropbox or git and the notes are backed up and
  * readable anywhere, by anything, without the app having a sync service.
  *
@@ -32,11 +48,30 @@ import { pathsFor } from './paths';
 /** How long a deleted note waits in the trash before it is gone for good. */
 export const TRASH_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * A note whose file has gone from the folder without the app deleting it.
+ *
+ * A sync tool moving a note between two folders takes the file away and puts
+ * it back a moment later, and the two halves need not land in the same scan.
+ * Trashing it in the gap would leave a copy in the trash and a note on disk
+ * once it arrived; forgetting it would let the history sweep take its versions
+ * with it. So it is written down instead, and the moment the id turns up
+ * anywhere in the notebook again it is the same note, with its history intact.
+ * A note that never comes back is forgotten after the same month the trash
+ * gives a deleted one.
+ */
+export interface MissingNote {
+  /** Where it was last seen, inside the notes folder. */
+  path: string;
+  /** When it went. */
+  at: number;
+}
+
 /** How long the folder must be quiet before it is re-read: sync tools write in bursts. */
 export const WATCH_SETTLE_MS = 700;
 
 interface Entry {
-  /** The filename inside the notes folder. */
+  /** The path inside the notes folder, `/`-separated: `Work/Clients/Hale.md`. */
   name: string;
   /** The file's text as last read or written, so an unchanged note costs no write. */
   text: string;
@@ -63,9 +98,31 @@ export interface Store {
   readonly trashDir: string;
   loadNotes(): Promise<NotesFile>;
   saveNotes(file: NotesFile): Promise<void>;
-  /** The filename a live note is stored under, once it has been loaded or saved. */
+  /**
+   * The path a live note is stored under inside the notes folder, once it has
+   * been loaded or saved: `Work/Clients/Hale.md`, or `Hale.md` at the root.
+   */
   fileNameOf(id: string): string | null;
+  /** Every folder in the notebook, empty ones included, deepest last. */
+  listFolders(): Promise<string[]>;
+  /** Makes a folder and every folder above it. Resolves to what it made. */
+  createFolder(folder: string): Promise<string>;
+  /** Changes a folder's last name, keeping it where it is. Resolves to its new path. */
+  renameFolder(folder: string, name: string): Promise<string>;
+  /** Puts a folder, and everything inside it, into another. Resolves to its new path. */
+  moveFolder(folder: string, into: string): Promise<string>;
+  /** Removes a folder that holds nothing. */
+  deleteFolder(folder: string): Promise<void>;
+  /** Files a note in another folder. Resolves to its new path inside the notes folder. */
+  moveNote(id: string, folder: string): Promise<string>;
   trashedIds(): ReadonlySet<string>;
+  /**
+   * The notes whose history must be kept though they are not in the list: the
+   * ones waiting in the trash, and the ones whose files have gone missing.
+   */
+  keptIds(): ReadonlySet<string>;
+  /** The notes whose files went away without the app deleting them, by id. */
+  missingIds(): ReadonlySet<string>;
   listTrash(): Promise<TrashedNote[]>;
   getTrashed(id: string): Promise<Note | null>;
   restoreFromTrash(id: string): Promise<Note | null>;
@@ -112,36 +169,102 @@ export async function writeAtomic(target: string, text: string): Promise<void> {
 const lower = (s: string): string => s.toLowerCase();
 
 /**
- * Every note file in a folder, parsed. A file that cannot be read is skipped,
- * not fatal; one that is there but locked (a sync tool or antivirus holding it
- * for a moment) is also named in `unreadable`, so a re-scan does not mistake
- * it for a file that was deleted.
+ * A directory the scan does not go into, and does not show. A dot folder is
+ * someone else's business — `.git`, `.obsidian`, `.trash` — and the notebook's
+ * own attachments folder is the app's, holding pictures rather than notes. A
+ * folder somebody names `attachments` further down is an ordinary folder: only
+ * the reserved one at the top is skipped, which is why this takes a depth.
  */
-async function readNoteFiles(dir: string, unreadable?: Set<string>): Promise<ReadFile[]> {
-  let names: string[];
-  try {
-    names = await fs.readdir(dir);
-  } catch (err) {
-    // A folder that is not there is empty. One that cannot be listed just now
-    // (a sync tool or antivirus holding it) is not: taking it for empty would
-    // read as every note deleted at once, and a re-scan would trash them all.
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
-    throw err;
-  }
+function skipDir(name: string, depth: number, reserved: ReadonlySet<string>): boolean {
+  return name.startsWith('.') || (depth === 0 && reserved.has(lower(name)));
+}
+
+/**
+ * Every note file in a folder and in the folders inside it, parsed, each under
+ * the path it is at: `Work/Clients/Hale.md`. A file that cannot be read is
+ * skipped, not fatal; one that is there but locked (a sync tool or antivirus
+ * holding it for a moment) is also named in `unreadable`, so a re-scan does not
+ * mistake it for a file that was deleted.
+ *
+ * The whole tree is read in one pass, which is what lets a note that has moved
+ * between two folders be recognised as the note it was rather than as one file
+ * deleted and another created.
+ */
+async function readNoteFiles(dir: string, unreadable?: Set<string>, reserved: ReadonlySet<string> = new Set()): Promise<ReadFile[]> {
   const out: ReadFile[] = [];
-  for (const name of names.filter(isNoteFileName).sort()) {
-    const full = path.join(dir, name);
+  const walk = async (at: string, rel: string, depth: number): Promise<void> => {
+    let entries: Dirent[];
     try {
-      const [text, stat] = await Promise.all([fs.readFile(full, 'utf8'), fs.stat(full)]);
-      const parsed = parseNoteFile(text, { id: randomUUID(), name: name.replace(/\.md$/i, ''), mtime: stat.mtimeMs });
-      out.push({ ...parsed, name, text });
+      entries = await fs.readdir(at, { withFileTypes: true });
     } catch (err) {
-      console.error(`[notes] could not read ${name}`, err);
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') unreadable?.add(lower(name));
+      // A folder that is not there is empty. One that cannot be listed just now
+      // (a sync tool or antivirus holding it) is not: taking it for empty would
+      // read as every note deleted at once, and a re-scan would trash them all.
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      if (rel) {
+        console.error(`[notes] could not list ${rel}`, err);
+        return;
+      }
+      throw err;
     }
-  }
+    const dirs: string[] = [];
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      // A junction or a symlink is not followed: a loop would never end, and a
+      // folder that is really somewhere else is not part of this notebook.
+      if (entry.isDirectory() && !entry.isSymbolicLink()) {
+        // Something named like a note that is not a file is the note's place
+        // held against us — a lock, or a sync tool mid-write. It is there and
+        // it cannot be read, which is not the same as gone, and it is
+        // certainly not a folder called "Plan.md".
+        if (isNoteFileName(entry.name)) unreadable?.add(lower(joinFolder(rel, entry.name)));
+        else if (!skipDir(entry.name, depth, reserved)) dirs.push(entry.name);
+        continue;
+      }
+      if (!entry.isFile() || !isNoteFileName(entry.name)) continue;
+      const name = joinFolder(rel, entry.name);
+      const full = path.join(at, entry.name);
+      try {
+        const [text, stat] = await Promise.all([fs.readFile(full, 'utf8'), fs.stat(full)]);
+        const parsed = parseNoteFile(text, { id: randomUUID(), name: entry.name.replace(/\.md$/i, ''), mtime: stat.mtimeMs });
+        out.push({ ...parsed, name, text });
+      } catch (err) {
+        console.error(`[notes] could not read ${name}`, err);
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') unreadable?.add(lower(name));
+      }
+    }
+    for (const name of dirs) await walk(path.join(at, name), joinFolder(rel, name), depth + 1);
+  };
+  await walk(dir, ROOT_FOLDER, 0);
   return out;
 }
+
+/** Every folder inside a directory, root-relative, a parent always before its children. */
+async function readFolders(dir: string, reserved: ReadonlySet<string> = new Set()): Promise<string[]> {
+  const out: string[] = [];
+  const walk = async (at: string, rel: string, depth: number): Promise<void> => {
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(at, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      if (skipDir(entry.name, depth, reserved)) continue;
+      const folder = joinFolder(rel, entry.name);
+      out.push(folder);
+      await walk(path.join(at, entry.name), folder, depth + 1);
+    }
+  };
+  await walk(dir, ROOT_FOLDER, 0);
+  return out;
+}
+
+/** A note's folder path turned into a real one on this machine. */
+const dirAt = (root: string, folder: string): string => (folder ? path.join(root, ...folder.split('/')) : root);
+
+/** A note file's path turned into a real one on this machine. */
+const fileAt = (root: string, rel: string): string => path.join(root, ...rel.split('/'));
 
 /** Whether a note's current filename already suits its title: `Plan.md` or `Plan 2.md` for "Plan". */
 function nameSuits(name: string, base: string): boolean {
@@ -153,14 +276,56 @@ export function createStore(root: string): Store {
   const paths = pathsFor(root);
   const notesDir = paths.notes;
   const trashDir = paths.trash;
+  /**
+   * Folders at the top of the notebook that are the app's rather than the
+   * notebook's. Only `attachments`, and only when it is in there at all: with
+   * the notes left where the app puts them the pictures are elsewhere, and
+   * nothing is reserved.
+   */
+  const reserved = new Set<string>(
+    path.resolve(path.dirname(paths.attachments)) === path.resolve(notesDir) ? [lower(path.basename(paths.attachments))] : [],
+  );
 
   /** Every live note, by id. */
   const index = new Map<string, Entry>();
   /** The ids waiting in the trash, so their history is kept while they wait. */
   const trashed = new Set<string>();
+  /** The notes whose files have gone without the app deleting them, by id. */
+  const missing = new Map<string, MissingNote>();
+  let missingRead = false;
+  let missingDirty = false;
   const listeners = new Set<ChangeListener>();
   /** Counts the passes over the folder made for changes from outside; see `Entry.since`. */
   let changeSeq = 0;
+
+  /** Reads `missing.json` once. Nothing there, or nothing readable, is nothing missing. */
+  async function readMissing(): Promise<void> {
+    if (missingRead) return;
+    missingRead = true;
+    try {
+      const raw: unknown = JSON.parse(await fs.readFile(paths.missing, 'utf8'));
+      if (!raw || typeof raw !== 'object') return;
+      for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+        const at = (value as MissingNote)?.at;
+        const where = (value as MissingNote)?.path;
+        if (typeof at === 'number' && typeof where === 'string') missing.set(id, { path: where, at });
+      }
+    } catch {
+      // No such file, or unreadable: nothing is known to be missing.
+    }
+  }
+
+  /** Writes the missing notes back, and takes the file away once there are none. */
+  async function flushMissing(): Promise<void> {
+    if (!missingDirty) return;
+    missingDirty = false;
+    try {
+      if (missing.size === 0) await fs.unlink(paths.missing).catch(() => undefined);
+      else await writeAtomic(paths.missing, `${JSON.stringify(Object.fromEntries(missing), null, 2)}\n`);
+    } catch (err) {
+      console.error('[notes] could not write the missing notes', err);
+    }
+  }
 
   function emit(changes: ExternalChanges): void {
     if (changes.upserts.length === 0 && changes.removed.length === 0) return;
@@ -177,7 +342,7 @@ export function createStore(root: string): Store {
   function takenInNotes(name: string, except?: string): boolean {
     if (except && lower(name) === lower(except)) return false;
     for (const entry of index.values()) if (lower(entry.name) === lower(name)) return true;
-    return existsSync(path.join(notesDir, name));
+    return existsSync(fileAt(notesDir, name));
   }
 
   /**
@@ -187,7 +352,7 @@ export function createStore(root: string): Store {
    */
   async function readIntoIndex(dir: string): Promise<{ notes: Note[]; changed: Note[]; removed: string[] }> {
     const unreadable = new Set<string>();
-    const files = await readNoteFiles(dir, unreadable);
+    const files = await readNoteFiles(dir, unreadable, reserved);
     const seen = new Set<string>();
     const notes: Note[] = [];
     const changed: Note[] = [];
@@ -238,11 +403,19 @@ export function createStore(root: string): Store {
       let text = f.text;
       if (needsWrite) {
         text = formatNoteFile(note, f.extra);
-        await writeAtomic(path.join(dir, f.name), text).catch((err) => console.error(`[notes] could not stamp ${f.name}`, err));
+        await writeAtomic(fileAt(dir, f.name), text).catch((err) => console.error(`[notes] could not stamp ${f.name}`, err));
       }
+      // The folder is where the file is, and is put on the note here rather
+      // than written into it: nothing on disk says where a note lives except
+      // the path it is at.
+      note = { ...note, folder: folderOf(f.name), file: baseNameOf(f.name) };
       const before = index.get(note.id);
-      if (!before || before.text !== text) changed.push(note);
+      // A note whose path changed has changed, though every byte of it is the
+      // same: it is somewhere else now, and the window is showing where.
+      if (!before || before.text !== text || before.name !== f.name) changed.push(note);
       index.set(note.id, { name: f.name, text, extra: f.extra, since: before?.since ?? changeSeq });
+      // Found again, wherever it turned up: the same note, with its history.
+      if (missing.delete(note.id)) missingDirty = true;
       notes.push(note);
     }
     // A file still on disk but unreadable this pass is not gone: its entry stays as last read.
@@ -305,23 +478,54 @@ export function createStore(root: string): Store {
     // Queued like every other folder pass: a load that overlaps a save rewrites
     // the index from a folder the save is still changing.
     return queue(async () => {
+      await readMissing();
       if (!existsSync(notesDir)) await migrate(notesDir);
       await fs.mkdir(notesDir, { recursive: true });
       const { notes } = await readIntoIndex(notesDir);
-      return { version: 1, notes };
+      const folders = await readFolders(notesDir, reserved);
+      await flushMissing();
+      return { version: 1, notes, folders };
     });
   }
 
   /** Moves one note's file into the trash, stamped with the moment it left. */
   async function trashEntry(id: string, entry: Entry): Promise<void> {
-    const parsed = parseNoteFile(entry.text, { id, name: entry.name.replace(/\.md$/i, ''), mtime: Date.now() });
+    const parsed = parseNoteFile(entry.text, { id, name: baseNameOf(entry.name).replace(/\.md$/i, ''), mtime: Date.now() });
     const text = formatNoteFile(parsed.note, parsed.extra, Date.now());
     await fs.mkdir(trashDir, { recursive: true });
-    const name = uniqueFileName(entry.name.replace(/\.md$/i, ''), (n) => existsSync(path.join(trashDir, n)));
-    await writeAtomic(path.join(trashDir, name), text);
-    await fs.unlink(path.join(notesDir, entry.name)).catch(() => undefined);
+    // The trash keeps the shape of the notebook, so a note put back goes back
+    // where it was rather than into the pile at the root.
+    const name = uniqueFileName(entry.name.replace(/\.md$/i, ''), (n) => existsSync(fileAt(trashDir, n)));
+    await writeAtomic(fileAt(trashDir, name), text);
+    await fs.unlink(fileAt(notesDir, entry.name)).catch(() => undefined);
+    // The folder the note left is not tidied away: an empty folder in the
+    // notebook is a place somebody made, and deleting a note is not a reason
+    // to take it.
     index.delete(id);
     trashed.add(id);
+    if (missing.delete(id)) missingDirty = true;
+  }
+
+  /**
+   * Takes away the folders a file left behind in the trash. Only there: an
+   * empty folder in the notebook is a place someone made, but one in the
+   * trash is the shadow of a note that is gone.
+   */
+  async function pruneTrashFolders(folder: string): Promise<void> {
+    for (let at = folder; at; at = parentFolder(at)) {
+      try {
+        await fs.rmdir(dirAt(trashDir, at));
+      } catch {
+        return;
+      }
+    }
+  }
+
+  /** Writes down that a note's file has gone, without deciding that it was deleted. */
+  function markMissing(id: string, where: string): void {
+    if (missing.has(id)) return;
+    missing.set(id, { path: where, at: Date.now() });
+    missingDirty = true;
   }
 
   /**
@@ -347,13 +551,18 @@ export function createStore(root: string): Store {
         const extra = entry?.extra ?? [];
         const text = formatNoteFile(note, extra);
         if (entry && entry.text === text) continue;
-        const base = fileNameFor(titleOf(note));
+        // Where the note already is, or — for one the store has never seen —
+        // where the caller asked for it to be made. A save never moves a note
+        // the store knows: moving is its own operation, so that a stale list
+        // from a window that has not heard of a move cannot undo it.
+        const folder = entry ? folderOf(entry.name) : (note.folder ?? ROOT_FOLDER);
+        const base = joinFolder(folder, fileNameFor(titleOf(note)));
         let name = entry?.name ?? '';
         if (!entry || !nameSuits(name, base)) {
           const wanted = uniqueFileName(base, (n) => takenInNotes(n, entry?.name));
           if (entry && lower(wanted) !== lower(entry.name)) {
             try {
-              await fs.rename(path.join(notesDir, entry.name), path.join(notesDir, wanted));
+              await fs.rename(fileAt(notesDir, entry.name), fileAt(notesDir, wanted));
               name = wanted;
             } catch (err) {
               console.error(`[notes] could not rename ${entry.name}; keeping the name`, err);
@@ -362,10 +571,11 @@ export function createStore(root: string): Store {
             name = wanted;
           }
         }
-        await writeAtomic(path.join(notesDir, name), text);
+        await writeAtomic(fileAt(notesDir, name), text);
         index.set(note.id, { name, text, extra, since: 0 });
-        changes.upserts.push(note);
+        changes.upserts.push({ ...note, folder: folderOf(name), file: baseNameOf(name) });
       }
+      await flushMissing();
       emit(changes);
     });
   }
@@ -421,14 +631,19 @@ export function createStore(root: string): Store {
       const f = await trashFileFor(id);
       if (!f) return null;
       await fs.mkdir(notesDir, { recursive: true });
-      const name = uniqueFileName(fileNameFor(titleOf(f.note)), (n) => takenInNotes(n));
+      // Back into the folder it was deleted from, which is made again if it
+      // has gone in the meantime.
+      const folder = folderOf(f.name);
+      const name = uniqueFileName(joinFolder(folder, fileNameFor(titleOf(f.note))), (n) => takenInNotes(n));
       const text = formatNoteFile(f.note, f.extra);
-      await writeAtomic(path.join(notesDir, name), text);
-      await fs.unlink(path.join(trashDir, f.name)).catch(() => undefined);
+      await writeAtomic(fileAt(notesDir, name), text);
+      await fs.unlink(fileAt(trashDir, f.name)).catch(() => undefined);
+      await pruneTrashFolders(folder);
       index.set(f.note.id, { name, text, extra: f.extra, since: 0 });
       trashed.delete(f.note.id);
-      emit({ upserts: [f.note], removed: [], seq: changeSeq });
-      return f.note;
+      const back: Note = { ...f.note, folder, file: baseNameOf(name) };
+      emit({ upserts: [back], removed: [], seq: changeSeq });
+      return back;
     });
   }
 
@@ -437,7 +652,8 @@ export function createStore(root: string): Store {
     return queue(async () => {
       const f = await trashFileFor(id);
       if (!f) return false;
-      await fs.unlink(path.join(trashDir, f.name)).catch(() => undefined);
+      await fs.unlink(fileAt(trashDir, f.name)).catch(() => undefined);
+      await pruneTrashFolders(folderOf(f.name));
       trashed.delete(id);
       return true;
     });
@@ -449,20 +665,148 @@ export function createStore(root: string): Store {
    */
   function expireTrash(now = Date.now()): Promise<string[]> {
     return queue(async () => {
+      await readMissing();
       const files = await readNoteFiles(trashDir);
       const gone: string[] = [];
       const kept: string[] = [];
       for (const f of files) {
         const deletedAt = f.deletedAt ?? f.note.updatedAt;
         if (now - deletedAt > TRASH_AGE_MS) {
-          await fs.unlink(path.join(trashDir, f.name)).catch(() => undefined);
+          await fs.unlink(fileAt(trashDir, f.name)).catch(() => undefined);
+          await pruneTrashFolders(folderOf(f.name));
           gone.push(f.note.id);
         } else {
           kept.push(f.note.id);
         }
       }
       setTrashed(kept);
+      // A note that went missing and never came back has waited the month the
+      // trash gives; its history goes now, the same as a deleted note's.
+      for (const [id, note] of [...missing]) {
+        if (now - note.at <= TRASH_AGE_MS) continue;
+        missing.delete(id);
+        missingDirty = true;
+        gone.push(id);
+      }
+      await flushMissing();
       return gone;
+    });
+  }
+
+
+  // --- folders ---------------------------------------------------------------
+
+  /**
+   * The folder on disk spelt as it is spelt there, or null when there is none.
+   * Windows does not tell folders apart by case, so neither does this: asking
+   * for `work` finds `Work`, and the answer is the one that exists.
+   */
+  async function existing(folder: string): Promise<string | null> {
+    if (folder === ROOT_FOLDER) return ROOT_FOLDER;
+    const all = await readFolders(notesDir, reserved);
+    return all.find((f) => folderKey(f) === folderKey(folder)) ?? null;
+  }
+
+  /** A folder that must be there, or a refusal that names it. */
+  async function mustExist(folder: string): Promise<string> {
+    const found = await existing(folder);
+    if (found === null) throw new Error(`There is no folder called ${folderLabel(folder)}`);
+    return found;
+  }
+
+  /** After a folder has moved: re-read the tree and tell everyone what is where now. */
+  async function reindex(): Promise<void> {
+    const { changed, removed } = await readIntoIndex(notesDir);
+    await flushMissing();
+    if (changed.length > 0 || removed.length > 0) emit({ upserts: changed, removed, seq: changeSeq });
+  }
+
+  function listFolders(): Promise<string[]> {
+    return queue(() => readFolders(notesDir, reserved));
+  }
+
+  function createFolder(folder: string): Promise<string> {
+    return queue(async () => {
+      const problem = folderProblem(folder);
+      if (problem) throw new Error(problem);
+      if (folder === ROOT_FOLDER) throw new Error('A folder needs a name');
+      const already = await existing(folder);
+      // One that is already there under another casing is that one: Windows
+      // would have given us it anyway, and saying so is better than pretending.
+      if (already !== null) return already;
+      await fs.mkdir(dirAt(notesDir, folder), { recursive: true });
+      return folder;
+    });
+  }
+
+  function renameFolder(folder: string, name: string): Promise<string> {
+    return queue(async () => {
+      if (folder === ROOT_FOLDER) throw new Error('The notebook itself cannot be renamed');
+      const problem = segmentProblem(name.trim());
+      if (problem) throw new Error(problem);
+      const from = await mustExist(folder);
+      const to = joinFolder(parentFolder(from), name.trim());
+      if (to === from) return from;
+      // A folder that differs only in case is this one under another spelling,
+      // which is a rename worth allowing; any other name already taken is not.
+      const clash = await existing(to);
+      if (clash !== null && folderKey(clash) !== folderKey(from)) throw new Error(`There is already a folder called ${folderLabel(to)}`);
+      await renameWithRetry(dirAt(notesDir, from), dirAt(notesDir, to));
+      await reindex();
+      return to;
+    });
+  }
+
+  function moveFolder(folder: string, into: string): Promise<string> {
+    return queue(async () => {
+      if (folder === ROOT_FOLDER) throw new Error('The notebook itself cannot be moved');
+      const from = await mustExist(folder);
+      const parent = await mustExist(into);
+      if (isSelfOrInside(from, parent)) throw new Error('A folder cannot be put inside itself');
+      const to = joinFolder(parent, folderName(from));
+      if (folderKey(to) === folderKey(from)) return from;
+      if ((await existing(to)) !== null) throw new Error(`There is already a folder called ${folderLabel(to)}`);
+      await fs.mkdir(dirAt(notesDir, parent), { recursive: true });
+      await renameWithRetry(dirAt(notesDir, from), dirAt(notesDir, to));
+      await reindex();
+      return to;
+    });
+  }
+
+  function deleteFolder(folder: string): Promise<void> {
+    return queue(async () => {
+      if (folder === ROOT_FOLDER) throw new Error('The notebook itself cannot be deleted');
+      const found = await mustExist(folder);
+      try {
+        // Only an empty one: everything in the notebook is a file somebody
+        // wrote, and no folder command may take one of those with it.
+        await fs.rmdir(dirAt(notesDir, found));
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'ENOTEMPTY' || code === 'EEXIST' || code === 'EPERM') {
+          throw new Error(`${folderLabel(found)} still has something in it; empty it first`);
+        }
+        throw err;
+      }
+    });
+  }
+
+  function moveNote(id: string, folder: string): Promise<string> {
+    return queue(async () => {
+      const entry = index.get(id);
+      if (!entry) throw new Error('That note is not in the notebook');
+      const target = await mustExist(folder);
+      if (folderKey(folderOf(entry.name)) === folderKey(target)) return entry.name;
+      // The name goes with the note. Moving never renames, so the only reason
+      // it can end up called something else is a name already taken there.
+      const base = baseNameOf(entry.name).replace(/\.md$/i, '');
+      const wanted = uniqueFileName(joinFolder(target, base), (n) => takenInNotes(n, entry.name));
+      await fs.mkdir(dirAt(notesDir, target), { recursive: true });
+      await renameWithRetry(fileAt(notesDir, entry.name), fileAt(notesDir, wanted));
+      index.set(id, { ...entry, name: wanted });
+      const parsed = parseNoteFile(entry.text, { id, name: base, mtime: Date.now() });
+      emit({ upserts: [{ ...parsed.note, folder: target, file: baseNameOf(wanted) }], removed: [], seq: changeSeq });
+      return wanted;
     });
   }
 
@@ -476,13 +820,18 @@ export function createStore(root: string): Store {
       const before = new Map(index);
       // Counted before the read, so a file first seen in this pass is dated to the change that reports it.
       changeSeq++;
+      await readMissing();
       const { changed, removed } = await readIntoIndex(notesDir);
-      // A file taken away by hand still deserves the trash: what the app last
-      // knew of it is written there, so a mis-drag in Explorer costs nothing.
+      // A file that is gone from the folder is not a note that was deleted.
+      // Only the app deleting one puts it in the trash; everything else — a
+      // sync tool halfway through moving it, a folder taken away and put back
+      // — is written down as missing, and the note is whole again the moment
+      // its id turns up anywhere in the notebook.
       for (const id of removed) {
         const entry = before.get(id);
-        if (entry) await trashEntry(id, entry);
+        if (entry) markMissing(id, entry.name);
       }
+      await flushMissing();
       if (changed.length > 0 || removed.length > 0) {
         const changes: ExternalChanges = { upserts: changed, removed, seq: changeSeq };
         onChange(changes);
@@ -526,7 +875,15 @@ export function createStore(root: string): Store {
     loadNotes,
     saveNotes,
     fileNameOf: (id) => index.get(id)?.name ?? null,
+    listFolders,
+    createFolder,
+    renameFolder,
+    moveFolder,
+    deleteFolder,
+    moveNote,
     trashedIds: () => trashed,
+    keptIds: () => new Set([...trashed, ...missing.keys()]),
+    missingIds: () => new Set(missing.keys()),
     listTrash,
     getTrashed,
     restoreFromTrash,
