@@ -9,6 +9,7 @@ describe('parseSettings', () => {
       captureHotkey: 'ctrl+alt+q',
       reminders: true,
       views: [],
+      notesFolder: null,
     });
   });
 
@@ -46,7 +47,7 @@ describe('parseSettings', () => {
 describe('cleanSettings', () => {
   it('keeps only the known fields and drops chords that cannot be registered', () => {
     const dirty = { closeToTray: true, hotkey: 'x', captureHotkey: 'ctrl+alt+space', stray: 1 } as never;
-    expect(cleanSettings(dirty)).toEqual({ closeToTray: true, hotkey: null, captureHotkey: 'ctrl+alt+space', reminders: true, views: [] });
+    expect(cleanSettings(dirty)).toEqual({ closeToTray: true, hotkey: null, captureHotkey: 'ctrl+alt+space', reminders: true, views: [], notesFolder: null });
   });
 });
 

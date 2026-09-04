@@ -8,6 +8,9 @@ import type { Settings } from '../shared/settings';
 import { attachments, installAssetProtocol, pickAttachments, registerAssetScheme, saveAttachment, sweepOrphans } from './attachments';
 import { destroyCapture, hideCapture, showCapture, toggleCapture } from './capture';
 import { installContextMenu } from './context-menu';
+import { startClipper, type Clipper } from './clipper';
+import { currentNotesFolder, pickNotesFolder, restartForFolder } from './notes-folder';
+import { bookmarklet } from '../shared/clipper';
 import { exportNote, exportTo } from './export';
 import { forgetHistory, getSnapshot, history, keepNow, listHistory, record } from './history-store';
 import { pickImports } from './import';
@@ -166,6 +169,8 @@ function windowFor(event: Electron.IpcMainInvokeEvent): BrowserWindow {
 let mainWin: BrowserWindow | null = null;
 let ipcServer: IpcServer | null = null;
 let reminders: Reminders | null = null;
+/** The web clipper's receiver, while the app is up. */
+let clipper: Clipper | null = null;
 /** The notes as last loaded or saved, for anything in main that needs them without a read of the folder. */
 let lastNotes: Note[] = [];
 
@@ -307,6 +312,17 @@ if (squirrelLaunch) {
   });
   ipcMain.handle(IPC.notesSave, (_event, file: NotesFile) => persist(file));
   ipcMain.handle(IPC.openFolder, () => shell.openPath(notesDir()).then(() => undefined));
+  ipcMain.handle(IPC.notesFolder, () => currentNotesFolder());
+  ipcMain.handle(IPC.clipperBookmarklet, () => (clipper ? bookmarklet(clipper.port, clipper.token) : null));
+  ipcMain.handle(IPC.pickNotesFolder, async (event) => {
+    // Everything on screen goes to disk first: the files are about to move,
+    // and words still in the window would be written to the old place.
+    requestFlush(windowFor(event));
+    await drain();
+    const change = await pickNotesFolder(windowFor(event));
+    if (change?.restart) setTimeout(restartForFolder, 1200);
+    return change;
+  });
   ipcMain.handle(IPC.attach, (_event, bytes: Uint8Array, name: string) => saveAttachment(bytes, name));
   ipcMain.handle(IPC.pickAttachments, (event) => pickAttachments(windowFor(event)));
   ipcMain.handle(IPC.pickImports, (event) => pickImports(windowFor(event)));
@@ -377,6 +393,20 @@ if (squirrelLaunch) {
     } catch (err) {
       console.error('[notes] the command line cannot reach this instance', err);
     }
+    // The web clipper's receiver. A failure here is not worth stopping for:
+    // everything else about the app works without it.
+    try {
+      clipper = await startClipper({
+        log: (message) => console.error(message),
+        clip: async (title, text) => {
+          if (!ipcServer) throw new Error('the window is not listening yet');
+          const note: Note = { id: crypto.randomUUID(), body: text, createdAt: Date.now(), updatedAt: Date.now(), ...(title ? { title } : {}) };
+          await ipcServer.ask('note.put', { note, force: false });
+        },
+      });
+    } catch (err) {
+      console.error('[notes] the web clipper could not listen', err);
+    }
     // Launched by a notes:// link: act on it once the window can answer.
     const uri = uriIn(process.argv);
     if (uri) win.webContents.once('did-finish-load', () => setTimeout(() => handleUri(uri), 300));
@@ -386,6 +416,7 @@ if (squirrelLaunch) {
   let drained = false;
   app.on('will-quit', (event) => {
     globalShortcut.unregisterAll();
+    clipper?.stop();
     stopWatching();
     reminders?.stop();
     destroyCapture();

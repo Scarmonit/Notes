@@ -5,6 +5,11 @@ export const IPC = {
   flushReply: 'notes:flush-reply',
   externalChange: 'notes:external-change',
   openFolder: 'notes:open-folder',
+  /** The web clipper's bookmarklet, with this launch's port and token in it. */
+  clipperBookmarklet: 'notes:clipper-bookmarklet',
+  /** Choose where the markdown files live, and where they are now. */
+  pickNotesFolder: 'notes:pick-notes-folder',
+  notesFolder: 'notes:notes-folder',
   attach: 'notes:attach',
   pickAttachments: 'notes:pick-attachments',
   pickImports: 'notes:pick-imports',

@@ -1,3 +1,4 @@
+import { cleanNotesFolder } from '../core/paths';
 import { acceleratorOf } from './keys';
 
 /**
@@ -16,6 +17,8 @@ export interface Settings {
   reminders: boolean;
   /** Named searches, kept in the sidebar and answerable from the command line. */
   views: SavedView[];
+  /** Where the markdown files live, or null for the folder beside everything else. */
+  notesFolder: string | null;
 }
 
 /**
@@ -65,7 +68,7 @@ export function withView(views: SavedView[], name: string, query: string): Saved
   return cleanViews(views.map((v, i) => (i === at ? clean : v)));
 }
 
-export const DEFAULT_SETTINGS: Settings = { closeToTray: false, hotkey: 'ctrl+alt+n', captureHotkey: 'ctrl+alt+j', reminders: true, views: [] };
+export const DEFAULT_SETTINGS: Settings = { closeToTray: false, hotkey: 'ctrl+alt+n', captureHotkey: 'ctrl+alt+j', reminders: true, views: [], notesFolder: null };
 
 /** A chord Electron can register system-wide, or null. */
 export function usableHotkey(chord: string | null | undefined): string | null {
@@ -95,6 +98,7 @@ export function parseSettings(text: string): Settings {
     // Missing means the default (on); only an explicit false turns them off.
     reminders: doc.reminders !== false,
     views: cleanViews(doc.views),
+    notesFolder: cleanNotesFolder(doc.notesFolder),
   };
 }
 
@@ -106,5 +110,6 @@ export function cleanSettings(next: Settings): Settings {
     captureHotkey: usableHotkey(next.captureHotkey),
     reminders: next.reminders !== false,
     views: cleanViews(next.views),
+    notesFolder: cleanNotesFolder(next.notesFolder),
   };
 }

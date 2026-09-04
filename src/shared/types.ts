@@ -36,6 +36,17 @@ export interface NotesFile {
   seen?: number;
 }
 
+/** What came of asking Notes to keep the markdown somewhere else. */
+export interface FolderChange {
+  ok: boolean;
+  /** The folder now in force, or null for the one beside everything else. */
+  folder: string | null;
+  /** What happened, in a sentence, for the window to show before it starts again. */
+  message: string;
+  /** Whether the app must start again to read the notes from the new place. */
+  restart: boolean;
+}
+
 /** One markdown or text file chosen for import, read as text. */
 export interface ImportedFile {
   name: string;
@@ -98,6 +109,12 @@ export interface NotesApi {
   onExternalChange(fn: (changes: ExternalChanges) => void): void;
   /** Opens the notes folder in Explorer. */
   openNotesFolder(): Promise<void>;
+  /** Where the markdown files are now. */
+  notesFolder(): Promise<string>;
+  /** The web clipper's bookmarklet, or null while the receiver is not listening. */
+  clipperBookmarklet(): Promise<string | null>;
+  /** Asks for a folder to keep them in; null when nothing was chosen. */
+  pickNotesFolder(): Promise<FolderChange | null>;
   /** Stores image bytes in the attachments folder; resolves to its note-asset:// URL. */
   attach(bytes: Uint8Array, name: string): Promise<string>;
   /** Opens a file picker for images; resolves to the URLs of the ones chosen. */

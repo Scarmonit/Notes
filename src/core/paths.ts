@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 
 /**
@@ -6,6 +7,14 @@ import path from 'node:path';
  * runs as plain Node with no `electron` module, works the folder out the
  * same way Electron does — `%APPDATA%\Notes`, or whatever `--user-data-dir`
  * says — so both sides always read and write the same files.
+ *
+ * The notes themselves can be told to live elsewhere — in OneDrive, in a git
+ * checkout — with the `notesFolder` setting. That is read HERE, inside
+ * `pathsFor`, rather than by each caller: the window and the command line
+ * find the notes in the same place because there is only one place that
+ * decides where they are. The app's own workings — the settings file, the
+ * trash, the snapshots, the pipe — stay in the userData folder, which is the
+ * machine's business rather than the notebook's.
  */
 export interface Paths {
   root: string;
@@ -22,14 +31,52 @@ export interface Paths {
   reminded: string;
 }
 
-export function pathsFor(root: string): Paths {
+export const SETTINGS_FILE = 'settings.json';
+
+/** Nothing, or a folder path made absolute. */
+export function cleanNotesFolder(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? path.resolve(value.trim()) : null;
+}
+
+/**
+ * The notes folder the settings name, or null for "beside everything else".
+ * Read straight off the file, synchronously, because `pathsFor` is called
+ * before anything has had a chance to load anything.
+ */
+const chosen = new Map<string, string | null>();
+
+export function notesFolderFor(root: string): string | null {
+  const known = chosen.get(root);
+  if (known !== undefined) return known;
+  let found: string | null = null;
+  try {
+    const raw: unknown = JSON.parse(fs.readFileSync(path.join(root, SETTINGS_FILE), 'utf8'));
+    found = raw && typeof raw === 'object' ? cleanNotesFolder((raw as { notesFolder?: unknown }).notesFolder) : null;
+  } catch {
+    // No settings yet, or unreadable: the notes live in the usual place.
+  }
+  chosen.set(root, found);
+  return found;
+}
+
+/** After the folder has been changed, so the next `pathsFor` reads it again. */
+export function forgetNotesFolder(root?: string): void {
+  if (root === undefined) chosen.clear();
+  else chosen.delete(root);
+}
+
+export function pathsFor(root: string, notesFolder: string | null = notesFolderFor(root)): Paths {
+  // With a folder of its own, a note's pictures live beside it: a notebook
+  // put in OneDrive or git has to carry its images or the notes are broken
+  // everywhere else.
+  const vault = notesFolder ?? null;
   return {
     root,
-    notes: path.join(root, 'notes'),
+    notes: vault ?? path.join(root, 'notes'),
     trash: path.join(root, 'trash'),
     history: path.join(root, 'history'),
-    attachments: path.join(root, 'attachments'),
-    settings: path.join(root, 'settings.json'),
+    attachments: vault ? path.join(vault, 'attachments') : path.join(root, 'attachments'),
+    settings: path.join(root, SETTINGS_FILE),
     legacy: path.join(root, 'notes.json'),
     ipc: path.join(root, 'ipc.json'),
     reminded: path.join(root, 'reminded.json'),

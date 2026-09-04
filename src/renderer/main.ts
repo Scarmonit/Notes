@@ -10,6 +10,7 @@ import { isTextFile, noteFromFile } from './importer';
 import { decorateLines, isDecorated, type Protected } from './inline';
 import { renderMarkdown } from './markdown';
 import { headingAt, headingsIn, type Heading } from './outline';
+import { addColumn, addRow, newTable, removeRow, stepCell, tidyTable, type TableEdit } from './tables';
 import { cycleTaskLine, toggleTaskAt, toggleTaskLine } from './tasks';
 import {
   backlinksOf,
@@ -202,6 +203,11 @@ const el = {
   captureHotkeyClear: $<HTMLButtonElement>('capture-hotkey-clear'),
   captureHotkeyNote: $('capture-hotkey-note'),
   openFolder: $<HTMLButtonElement>('open-folder'),
+  clipperCopy: $<HTMLButtonElement>('clipper-copy'),
+  clipperNote: $<HTMLParagraphElement>('clipper-note'),
+  folderChange: $<HTMLButtonElement>('folder-change'),
+  folderPath: $<HTMLSpanElement>('folder-path'),
+  folderNote: $<HTMLParagraphElement>('folder-note'),
   cliText: $<HTMLSpanElement>('cli-text'),
   cliInstall: $<HTMLButtonElement>('cli-install'),
   cliNote: $<HTMLParagraphElement>('cli-note'),
@@ -2771,6 +2777,48 @@ document.addEventListener('pointerdown', (e) => {
   }
 });
 
+// --- tables -----------------------------------------------------------------
+
+/**
+ * A change to the table the caret is in, written back with the caret put in
+ * the cell the change chose. Returns false when the caret is not in a table,
+ * so the key that asked keeps its usual meaning.
+ */
+function applyTableEdit<A extends unknown[]>(edit: (body: string, offset: number, ...args: A) => TableEdit | null, ...args: A): boolean {
+  const n = selected();
+  if (!n || ui.preview || document.activeElement !== el.editor) return false;
+  const { text } = readEditor(el.editor);
+  const next = edit(text, caretOffset(), ...args);
+  if (!next || next.body === text) return Boolean(next);
+  // One undo step: setBody remembers the text before it changed.
+  setBody(next.body);
+  placeCaretAt(next.caret);
+  return true;
+}
+
+/**
+ * A table where the caret is, or the one it is in laid out again. Tables are
+ * the one common block the editor did not help with, and a hand-typed one
+ * drifts out of line the moment a cell grows.
+ */
+function tableHere(): void {
+  ensureEditable();
+  if (applyTableEdit(tidyTable)) {
+    showStatus('Table lined up · Tab moves between cells', 2500);
+    return;
+  }
+  if (!selectionInEditor()) caretToEnd();
+  const made = newTable();
+  insertAtCaret(`\n${made}\n`);
+  // The caret goes into the first cell rather than after the block.
+  const n = selected();
+  if (n) {
+    const at = n.body.indexOf(made);
+    if (at >= 0) placeCaretAt(at + 2);
+  }
+  showStatus('Tab moves between cells; the last one makes a row', 3500);
+}
+
 // --- editor input -----------------------------------------------------------
 
 /** True between compositionstart and compositionend: an IME owns the text then. */
@@ -2870,6 +2918,8 @@ onPane('editor', 'keydown', (e) => {
     e.preventDefault();
     // A selected picture or rule is not text to indent: the spaces would take its place.
     if (chip) return;
+    // In a table, Tab is the next cell instead — and the last cell makes a row.
+    if (applyTableEdit(stepCell, e.shiftKey ? -1 : 1)) return;
     if (e.shiftKey) {
       const sel = window.getSelection();
       const node = sel?.anchorNode;
@@ -3230,7 +3280,7 @@ async function saveSettings(next: Settings): Promise<void> {
   renderSettings();
   try {
     const stored = await window.notesApi.setSettings(next);
-    settings = { closeToTray: stored.closeToTray, hotkey: stored.hotkey, captureHotkey: stored.captureHotkey, reminders: stored.reminders, views: stored.views };
+    settings = { closeToTray: stored.closeToTray, hotkey: stored.hotkey, captureHotkey: stored.captureHotkey, reminders: stored.reminders, views: stored.views, notesFolder: stored.notesFolder };
     const notes: Partial<Record<HotkeyRow['key'], string>> = {};
     for (const row of hotkeyRows) if (stored[row.failed]) notes[row.key] = 'Another program already uses that combination.';
     renderSettings(notes);
@@ -3288,6 +3338,54 @@ for (const row of hotkeyRows) {
 
 el.openFolder.addEventListener('click', () => {
   void window.notesApi.openNotesFolder().catch((err) => console.error('[notes] could not open the folder', err));
+});
+
+/** Shows where the markdown actually is, so "the notes folder" is never a guess. */
+async function refreshFolderRow(): Promise<void> {
+  try {
+    el.folderPath.textContent = await window.notesApi.notesFolder();
+  } catch (err) {
+    console.error('[notes] could not read the notes folder', err);
+  }
+}
+
+el.clipperCopy.addEventListener('click', () => {
+  void window.notesApi
+    .clipperBookmarklet()
+    .then(async (link) => {
+      if (!link) {
+        el.clipperNote.textContent = 'The clipper is not listening; restart Notes.';
+        return;
+      }
+      await window.notesApi.copyText(link);
+      el.clipperCopy.textContent = 'Copied';
+      el.clipperNote.textContent = 'Make a new bookmark in your browser and paste this as its address.';
+      window.setTimeout(() => {
+        el.clipperCopy.textContent = 'Copy';
+      }, 1600);
+    })
+    .catch((err) => {
+      console.error('[notes] could not copy the bookmarklet', err);
+      el.clipperNote.textContent = 'That could not be copied.';
+    });
+});
+
+el.folderChange.addEventListener('click', () => {
+  el.folderChange.disabled = true;
+  void window.notesApi
+    .pickNotesFolder()
+    .then(async (change) => {
+      if (!change) return;
+      el.folderNote.textContent = change.message;
+      await refreshFolderRow();
+      // The app restarts itself a moment later, so the sentence can be read.
+      if (!change.restart) el.folderChange.disabled = false;
+    })
+    .catch((err) => {
+      console.error('[notes] could not change the notes folder', err);
+      el.folderNote.textContent = 'That folder could not be used.';
+      el.folderChange.disabled = false;
+    });
 });
 
 // The command line can change the settings while the sheet is not looking.
@@ -4665,7 +4763,7 @@ async function editAliases(): Promise<void> {
   if (typed === null) return;
   const next = cleanAliases(typed.split(','));
   const before = n.aliases ?? [];
-  if (before.join(' ') === next.join(' ')) return;
+  if (before.join('\u0000') === next.join('\u0000')) return;
   notes = updateAliases(notes, n.id, next);
   scheduleSave();
   renderList();
@@ -4845,6 +4943,49 @@ const ACTIONS: Action[] = [
   },
   { id: 'prev', label: 'Previous note', group: 'Notes', chord: 'ctrl+arrowup', run: () => step(-1) },
   { id: 'next', label: 'Next note', group: 'Notes', chord: 'ctrl+arrowdown', run: () => step(1) },
+  {
+    id: 'table',
+    label: 'Table',
+    hint: 'A table where the caret is, or the one it is in lined up again. Tab moves between cells and the last one makes a row',
+    group: 'Writing',
+    chord: 'ctrl+shift+j',
+    terms: 'grid columns rows tidy align',
+    enabled: () => hasNote(),
+    run: tableHere,
+  },
+  {
+    id: 'table-row',
+    label: 'Add a table row',
+    group: 'Writing',
+    chord: 'ctrl+enter',
+    terms: 'table line',
+    enabled: () => hasNote(),
+    run: () => {
+      if (!applyTableEdit(addRow)) showStatus('Put the caret in a table first', 2500);
+    },
+  },
+  {
+    id: 'table-column',
+    label: 'Add a table column',
+    group: 'Writing',
+    chord: 'ctrl+shift+arrowright',
+    terms: 'table',
+    enabled: () => hasNote(),
+    run: () => {
+      if (!applyTableEdit(addColumn)) showStatus('Put the caret in a table first', 2500);
+    },
+  },
+  {
+    id: 'table-remove-row',
+    label: 'Remove this table row',
+    group: 'Writing',
+    chord: 'ctrl+shift+arrowleft',
+    terms: 'table delete',
+    enabled: () => hasNote(),
+    run: () => {
+      if (!applyTableEdit(removeRow)) showStatus('That row is the header, or the only one left', 2500);
+    },
+  },
   {
     id: 'aliases',
     label: 'Other names for this note…',
@@ -5852,6 +5993,7 @@ async function init(): Promise<void> {
     console.error('[notes] could not read settings', err);
   }
   renderSettings();
+  void refreshFolderRow();
 }
 
 void init();

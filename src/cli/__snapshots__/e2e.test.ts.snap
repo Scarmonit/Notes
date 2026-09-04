@@ -71,7 +71,8 @@ Commands:
   commands                                        every command in the window, with its keys (from the app's own registry)
   run <command>                                   run one of the window's commands by id (see \`notes commands\`)
   path [which]                                    where the notes live (or the trash, history, attachments, settings)
-  folder                                          open the notes folder in Explorer
+  folder [options] [path]                         where the markdown files are kept, and where to keep them
+  mcp [options]                                   speak the Model Context Protocol on stdin and stdout, so an assistant can read and write these notes
   watch                                           print changes to the notes as they happen, until Ctrl+C
   cli                                             the \`notes\` command itself: put it on PATH, take it off, or check
   version                                         the versions of this command, the app it belongs to, and whether the app is running

@@ -206,6 +206,7 @@
             <dt><kbd>$x^2$</kbd> <kbd>```mermaid</kbd></dt><dd>Math between dollars ($$ on its own lines for a block) and mermaid fences render in the preview and every export</dd>
             <dt><kbd>**bold**</kbd> <kbd># Heading</kbd></dt><dd>Markdown takes its shape as you write it; the markers fade, and hide on every line but the one you are on</dd>
             <dt><kbd>---</kbd> <kbd>Enter</kbd></dt><dd>Turns into a section divider</dd>
+            <dt><kbd>| a | b |</kbd></dt><dd>A table. <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>J</kbd> makes one or lines up the one you are in; <kbd>Tab</kbd> moves between cells and the last cell makes a row</dd>
             <dt><kbd>Click</kbd> a heading</dt><dd>In the outline beside the note, jumps there</dd>
             <dt><kbd>Click</kbd> an image</dt><dd>Select it, then drag the corner handle to resize; double-click for the original size</dd>
             <dt><kbd>Alt</kbd> <kbd>↑</kbd> / <kbd>Alt</kbd> <kbd>↓</kbd></dt><dd>Move the selected image up or down a line (or drag it)</dd>
@@ -321,9 +322,17 @@
           <h3 class="layout-head">Files</h3>
           <div class="layout-row">
             <span class="u">Notes folder</span>
-            <span class="layout-text">One markdown file per note. Put the folder in OneDrive, Dropbox or git to keep them elsewhere too.</span>
+            <span id="folder-path" class="layout-text">One markdown file per note.</span>
+            <button id="folder-change" class="link-btn u" type="button">Change…</button>
             <button id="open-folder" class="pill u" type="button">Open</button>
           </div>
+          <p id="folder-note" class="layout-note u">Choose a folder in OneDrive, Dropbox or a git checkout and the notes are backed up and readable anywhere. An empty folder takes the notes you have; a folder that already holds notes becomes the notebook as it is.</p>
+          <div class="layout-row">
+            <span class="u">Web clipper</span>
+            <span class="layout-text">A bookmarklet that saves the page you are reading, or the words you have selected, as a note.</span>
+            <button id="clipper-copy" class="pill u" type="button">Copy</button>
+          </div>
+          <p id="clipper-note" class="layout-note u">Copy it, then make a new bookmark in your browser and paste it as the address. It works while Notes is running.</p>
           <div class="layout-row">
             <span class="u">Command line</span>
             <span id="cli-text" class="layout-text">The <code>notes</code> command works from cmd, PowerShell and Windows Terminal.</span>

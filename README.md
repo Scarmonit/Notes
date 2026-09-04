@@ -38,6 +38,10 @@ A keyboard-first markdown notes app for Windows: a sidebar of notes and a page t
 - Stays in the tray and comes back on a shortcut of your choosing (Layout, `Ctrl+,`)
 - Adjustable line width, so the words fill as much of the window as you want (Layout, `Ctrl+,`)
 - Right-click a word the spellchecker underlines to correct it, or add it to the dictionary for good
+- Tables help themselves while you type: `Ctrl+Shift+J` makes one or lines the one you are in back up, `Tab` and `Shift+Tab` move between cells and the last cell makes a row, `Ctrl+Enter` adds a row, `Ctrl+Shift+→` a column, `Ctrl+Shift+←` takes a row out. Alignment written as `:--` or `--:` is kept as you wrote it
+- **Where the notes live is yours to choose** (Layout, `Ctrl+,` → Notes folder → Change…). Point Notes at a folder in OneDrive, Dropbox or a git checkout: an empty folder takes the notes you have, pictures and all, and a folder that already holds notes becomes the notebook as it is. `notes folder <path>` does the same from a terminal
+- A **web clipper**: copy the bookmarklet from Layout, paste it as a bookmark's address, and one click saves the page you are reading — or the words you have selected — as a note. It goes to a receiver Notes opens on localhost while it runs, so a whole article fits, and only a bookmarklet carrying this launch's token can write
+- An **MCP server**, so Claude Code and other assistants can read and write these notes: `notes mcp` speaks the Model Context Protocol on stdin and stdout, with nine tools (search, read, create, change, delete, links and unlinked mentions, tags, scheduled tasks, and the Inbox) and every note as a resource. Add it with `claude mcp add notes -- notes mcp`. It goes through the same path the command line does, so while the app runs the window is still the single writer and a note being typed in is refused
 - A `notes` command for cmd, PowerShell and Windows Terminal, installed with the app: every feature above from a terminal, with JSON output, real exit codes and stdin (see [Command line](#command-line))
 - Notes are a folder of markdown files, `%APPDATA%\Notes\notes\<title>.md`, each with a small front-matter block (id, dates, pinned). Put the folder in OneDrive, Dropbox or git and they are backed up and readable anywhere; files changed or added by anything else show up in the app while it runs. Autosaved (atomic writes, flushed on close), with the snapshots beside them in `history` and deleted notes in `trash`. The first launch after 0.11 moves the old `notes.json` into the folder and keeps it as `notes.json.migrated`
 
@@ -69,6 +73,10 @@ The full list lives in the app on `Ctrl+/`, and every command is also reachable 
 | `Ctrl+Shift+L` | Outline |
 | `Ctrl+Shift+X` | Checklist item on this line |
 | `Ctrl+Shift+C` | Code block around the selection, or the paragraph you are in |
+| `Ctrl+Shift+J` | Table: a new one, or line up the one you are in |
+| `Tab` / `Shift+Tab` (in a table) | The next cell; the last one makes a row |
+| `Ctrl+Enter` / `Ctrl+Shift+→` | Add a table row / column |
+| `Ctrl+Shift+←` | Take this table row out |
 | `Ctrl+Shift+R` | Note history: the versions kept as you wrote, with restore |
 | `Ctrl+Shift+H` | Insert a section divider |
 | `Ctrl+Shift+I` | Attach an image (or paste / drop one onto the editor) |
@@ -186,7 +194,8 @@ Exit codes: 0 ok, 1 failure, 2 usage, 3 not found or ambiguous, 4 the note is be
 | `notes commands` | every command in the window, with its keys (from the app's own registry) |
 | `notes run <command>` | run one of the window's commands by id (see `notes commands`) |
 | `notes path [which]` | where the notes live (or the trash, history, attachments, settings) |
-| `notes folder` | open the notes folder in Explorer |
+| `notes folder [path]` | where the markdown files are kept, and where to keep them |
+| `notes mcp` | speak the Model Context Protocol on stdin and stdout, so an assistant can read and write these notes |
 | `notes watch` | print changes to the notes as they happen, until Ctrl+C |
 | `notes cli status` | where the launcher is, what it points at, and whether PATH has it |
 | `notes cli install` | write the launcher beside the app and add it to your PATH |

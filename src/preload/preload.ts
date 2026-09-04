@@ -19,6 +19,9 @@ const api: NotesApi = {
     ipcRenderer.on(IPC.externalChange, (_event, changes: ExternalChanges) => fn(changes));
   },
   openNotesFolder: () => ipcRenderer.invoke(IPC.openFolder),
+  notesFolder: () => ipcRenderer.invoke(IPC.notesFolder),
+  clipperBookmarklet: () => ipcRenderer.invoke(IPC.clipperBookmarklet),
+  pickNotesFolder: () => ipcRenderer.invoke(IPC.pickNotesFolder),
   attach: (bytes, name) => ipcRenderer.invoke(IPC.attach, bytes, name),
   pickAttachments: () => ipcRenderer.invoke(IPC.pickAttachments),
   pickImports: () => ipcRenderer.invoke(IPC.pickImports),
