@@ -1,9 +1,10 @@
 /**
  * Every command the app can run, described once.
  *
- * The keyboard map, the shortcuts sheet and the command palette are all built
- * from the same list, so a shortcut cannot exist without being findable, and
- * the sheet cannot claim a key that no longer runs anything.
+ * The keyboard map, the shortcuts sheet, the command palette and the pane's
+ * own menus are all built from the same list, so a shortcut cannot exist
+ * without being findable, and the sheet cannot claim a key that no longer runs
+ * anything.
  */
 
 export type ActionGroup = 'Notes' | 'Writing' | 'View' | 'Window';
@@ -26,6 +27,73 @@ export interface Action {
   enabled?: () => boolean;
   /** For toggles: whether the thing is currently on. */
   on?: () => boolean;
+  /**
+   * The heading this command sits under in its menu. A menu whose commands
+   * declare none is drawn as one list, which is right while it stays short.
+   */
+  menuSection?: string;
+  /**
+   * The few commands that earn a button of their own in the pane header, and
+   * the short word that goes on it. `priority` is the order they survive a
+   * narrowing pane: the lowest goes first, and every one of them is still in
+   * its menu, so nothing is ever out of reach.
+   */
+  pill?: { label: string; priority: number };
+}
+
+/**
+ * What the button for a group says. The groups are named for sets of things;
+ * a menu is about the one note in front of you, so `Notes` opens as `Note`.
+ */
+export const MENU_NAMES: Record<ActionGroup, string> = {
+  Notes: 'Note',
+  Writing: 'Write',
+  View: 'View',
+  Window: 'Window',
+};
+
+/** The menus, left to right. */
+export const MENU_ORDER: ActionGroup[] = ['Notes', 'Writing', 'View', 'Window'];
+
+export interface MenuSection {
+  /** The heading above these commands, or null in a menu drawn as one list. */
+  name: string | null;
+  items: Action[];
+}
+
+export interface Menu {
+  group: ActionGroup;
+  /** What the button says. */
+  name: string;
+  sections: MenuSection[];
+}
+
+/**
+ * The menus as they are drawn: one per group, its commands under the headings
+ * they declare. Both the sections and the commands in them keep the registry's
+ * own order, so where a command sits is decided where it is written and
+ * nowhere else.
+ */
+export function menuModel(actions: Action[]): Menu[] {
+  return MENU_ORDER.map((group) => {
+    const sections: MenuSection[] = [];
+    for (const action of actions) {
+      if (action.group !== group) continue;
+      const name = action.menuSection ?? null;
+      const last = sections[sections.length - 1];
+      if (last && last.name === name) last.items.push(action);
+      else sections.push({ name, items: [action] });
+    }
+    return { group, name: MENU_NAMES[group], sections };
+  });
+}
+
+/**
+ * The commands with a button of their own, the one that survives longest
+ * first. A pane too narrow for all of them drops them off the end.
+ */
+export function pillActions(actions: Action[]): Action[] {
+  return actions.filter((a) => a.pill).sort((a, b) => (b.pill?.priority ?? 0) - (a.pill?.priority ?? 0));
 }
 
 export interface Match {

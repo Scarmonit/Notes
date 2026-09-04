@@ -3,7 +3,7 @@ import { cleanAliases } from '../shared/notes-folder';
 import { chordOf, isCommandChord, keyLabel } from '../shared/keys';
 import { DEFAULT_SETTINGS, viewNamed, withView, type Settings } from '../shared/settings';
 import type { CliStatus, ExportKind, ExportRequest, ImportedFile, Note, NotesFile } from '../shared/types';
-import { keyMap, matchActions, type Action, type Match } from './actions';
+import { keyMap, matchActions, menuModel, pillActions, type Action, type Match } from './actions';
 import { toggleFence } from './fences';
 import { findMatches, matchFrom, replaceAll, replaceOne, validQuery, type FindMatch, type FindOptions } from './find';
 import { isTextFile, noteFromFile } from './importer';
@@ -109,13 +109,7 @@ function paneEls(root: HTMLElement) {
   return {
     toggleSidebar: q<HTMLButtonElement>('toggleSidebar'),
     status: q('status'),
-    previewToggle: q<HTMLButtonElement>('previewToggle'),
-    attachBtn: q<HTMLButtonElement>('attachBtn'),
-    exportWrap: q('exportWrap'),
-    exportBtn: q<HTMLButtonElement>('exportBtn'),
-    exportMenu: q('exportMenu'),
-    pinBtn: q<HTMLButtonElement>('pinBtn'),
-    deleteBtn: q<HTMLButtonElement>('deleteBtn'),
+    controls: q('controls'),
     tabs: q('tabs'),
     editorWrap: q('editorWrap'),
     text: q('text'),
@@ -192,6 +186,7 @@ const el = {
   helpSheet: $('help-sheet'),
   outlineShow: $<HTMLInputElement>('outline-show'),
   liveFormat: $<HTMLInputElement>('live-format'),
+  controlsShow: $<HTMLInputElement>('controls-show'),
   trashSheet: $('trash-sheet'),
   trashList: $('trash-list'),
   trashPreview: $('trash-preview'),
@@ -233,26 +228,8 @@ const el = {
   get status(): HTMLElement {
     return here().els.status;
   },
-  get previewToggle(): HTMLButtonElement {
-    return here().els.previewToggle;
-  },
-  get attachBtn(): HTMLButtonElement {
-    return here().els.attachBtn;
-  },
-  get exportWrap(): HTMLElement {
-    return here().els.exportWrap;
-  },
-  get exportBtn(): HTMLButtonElement {
-    return here().els.exportBtn;
-  },
-  get exportMenu(): HTMLElement {
-    return here().els.exportMenu;
-  },
-  get pinBtn(): HTMLButtonElement {
-    return here().els.pinBtn;
-  },
-  get deleteBtn(): HTMLButtonElement {
-    return here().els.deleteBtn;
+  get controls(): HTMLElement {
+    return here().els.controls;
   },
   get tabs(): HTMLElement {
     return here().els.tabs;
@@ -362,6 +339,8 @@ interface UiState {
   outline: boolean;
   /** Markdown drawn as what it means while it is typed. */
   liveFormat: boolean;
+  /** The commands, and their shortcuts, in the pane's header. */
+  controls: boolean;
   /** The notes last opened, newest first, for the Recent notes picker. */
   recent: Visit[];
   /** The panes the window had, left to right, and which one held the focus. */
@@ -408,6 +387,7 @@ function loadUi(): UiState {
     typewriter: false,
     outline: true,
     liveFormat: true,
+    controls: true,
     recent: [],
     panes: [],
     paneAt: 0,
@@ -620,6 +600,8 @@ function makePane(shape: PaneShape): Pane {
   root.addEventListener('pointerdown', () => focusPane(panes.indexOf(p)), true);
   root.addEventListener('focusin', () => focusPane(panes.indexOf(p)));
   for (const wire of paneWiring) p.els[wire.name].addEventListener(wire.type, wire.fn, wire.opts);
+  // The header's commands are written out of the registry, once per pane.
+  buildControls(p);
   return p;
 }
 
@@ -1175,12 +1157,7 @@ function renderPane(): void {
   const has = n !== null;
   el.editorWrap.hidden = !has;
   el.empty.hidden = has;
-  el.previewToggle.disabled = !has;
-  el.exportBtn.disabled = !has;
-  el.pinBtn.disabled = !has;
-  el.pinBtn.setAttribute('aria-pressed', String(n?.pinned === true));
-  el.pinBtn.textContent = n?.pinned ? 'Unpin' : 'Pin';
-  el.deleteBtn.disabled = !has;
+  syncControls();
   renderMeta();
   if (!n) {
     editorNoteId = null;
@@ -1198,7 +1175,6 @@ function renderPane(): void {
     el.text.classList.add('swap');
   }
 
-  el.previewToggle.setAttribute('aria-pressed', String(ui.preview));
   el.editor.hidden = ui.preview;
   el.preview.hidden = !ui.preview;
   if (ui.preview) {
@@ -1817,8 +1793,15 @@ const ARM_MS = 3000;
 let armed = false;
 let armTimer: number | null = null;
 let armReturnFocus: HTMLElement | null = null;
+/** The menu row that is armed, when the delete came from a menu rather than a chord. */
+let armedRow: HTMLElement | null = null;
 
-function armDelete(): void {
+/**
+ * Deleting takes two presses within three seconds. From a menu the row itself
+ * arms, and the menu stays open under it: a confirmation you have to go and
+ * find again is not a confirmation.
+ */
+function armDelete(row?: HTMLElement): void {
   if (!selected()) return;
   if (armed) {
     deleteSelected();
@@ -1826,9 +1809,16 @@ function armDelete(): void {
   }
   armed = true;
   armReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  el.deleteBtn.textContent = 'Confirm delete';
-  el.deleteBtn.classList.add('armed');
-  el.deleteBtn.focus();
+  armedRow = row ?? null;
+  if (armedRow) {
+    armedRow.classList.add('armed');
+    const label = armedRow.querySelector('.menu-label');
+    if (label) label.textContent = 'Delete this note — click again';
+    armedRow.focus();
+    showStatus('Click again to delete this note', ARM_MS);
+  } else {
+    showStatus('Press Ctrl+Shift+D again to delete this note', ARM_MS);
+  }
   armTimer = window.setTimeout(() => disarmDelete(true), ARM_MS);
 }
 
@@ -1837,9 +1827,13 @@ function disarmDelete(restoreFocus = false): void {
   armed = false;
   if (armTimer !== null) clearTimeout(armTimer);
   armTimer = null;
-  el.deleteBtn.textContent = 'Delete';
-  el.deleteBtn.classList.remove('armed');
-  if (restoreFocus && document.activeElement === el.deleteBtn) armReturnFocus?.focus();
+  if (armedRow) {
+    armedRow.classList.remove('armed');
+    const label = armedRow.querySelector('.menu-label');
+    if (label) label.textContent = 'Delete this note';
+    if (restoreFocus && document.activeElement === armedRow) armReturnFocus?.focus();
+  }
+  armedRow = null;
   armReturnFocus = null;
 }
 
@@ -2666,21 +2660,14 @@ onPane('editor', 'dragend', () => {
 
 // --- export -----------------------------------------------------------------
 
-const menuItems = (): HTMLButtonElement[] => Array.from(el.exportMenu.querySelectorAll<HTMLButtonElement>('.menu-item'));
-
-function openExportMenu(): void {
-  if (!selected()) return;
-  el.exportMenu.hidden = false;
-  el.exportBtn.setAttribute('aria-expanded', 'true');
-  menuItems()[0]?.focus();
-}
-
-function closeExportMenu(restoreFocus: boolean): void {
-  if (el.exportMenu.hidden) return;
-  el.exportMenu.hidden = true;
-  el.exportBtn.setAttribute('aria-expanded', 'false');
-  if (restoreFocus) el.exportBtn.focus();
-}
+/** The formats a note can leave in, in the order the menu offers them. */
+const EXPORT_KINDS: { kind: ExportKind; label: string; ext: string }[] = [
+  { kind: 'md', label: 'Markdown', ext: '.md' },
+  { kind: 'txt', label: 'Plain text', ext: '.txt' },
+  { kind: 'html', label: 'Web page', ext: '.html' },
+  { kind: 'pdf', label: 'Document', ext: '.pdf' },
+  { kind: 'png', label: 'Image', ext: '.png' },
+];
 
 const fileNameOf = (p: string): string => p.split(/[\\/]/).pop() ?? p;
 
@@ -2705,7 +2692,7 @@ async function renderedExport(n: Note, look: 'ink' | 'paper' = 'ink'): Promise<R
 async function runExport(kind: ExportKind): Promise<void> {
   const n = selected();
   if (!n) return;
-  closeExportMenu(false);
+  closeMenu(false);
   focusEditor();
   const title = titleOf(n);
   const body = exportBody(n);
@@ -2723,59 +2710,6 @@ async function runExport(kind: ExportKind): Promise<void> {
     showStatus('Export failed', 4000);
   }
 }
-
-onPane('exportBtn', 'click', () => {
-  if (el.exportMenu.hidden) openExportMenu();
-  else closeExportMenu(true);
-});
-
-// One listener on the menu rather than one per row: the rows belong to a pane
-// that may not have been built yet.
-onPane('exportMenu', 'click', (e) => {
-  const item = (e.target as HTMLElement | null)?.closest<HTMLButtonElement>('.menu-item');
-  if (item?.dataset.kind) void runExport(item.dataset.kind as ExportKind);
-});
-
-onPane('exportMenu', 'keydown', (e) => {
-  const items = menuItems();
-  const i = items.indexOf(document.activeElement as HTMLButtonElement);
-  switch (e.key) {
-    case 'ArrowDown':
-      e.preventDefault();
-      items[(i + 1) % items.length]?.focus();
-      break;
-    case 'ArrowUp':
-      e.preventDefault();
-      items[(i - 1 + items.length) % items.length]?.focus();
-      break;
-    case 'Home':
-      e.preventDefault();
-      items[0]?.focus();
-      break;
-    case 'End':
-      e.preventDefault();
-      items[items.length - 1]?.focus();
-      break;
-    case 'Tab':
-      closeExportMenu(false);
-      break;
-    default: {
-      const kind = ({ m: 'md', t: 'txt', p: 'png', h: 'html', d: 'pdf' } as Record<string, ExportKind>)[e.key.toLowerCase()];
-      if (kind && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        e.preventDefault();
-        void runExport(kind);
-      }
-    }
-  }
-});
-
-document.addEventListener('pointerdown', (e) => {
-  // Every pane's menu, not just this one's: clicking into another pane is
-  // exactly the click that should put an open menu away.
-  for (const p of panes) {
-    if (!p.els.exportMenu.hidden && !p.els.exportWrap.contains(e.target as Node)) withPane(p, () => closeExportMenu(false));
-  }
-});
 
 // --- tables -----------------------------------------------------------------
 
@@ -3108,6 +3042,9 @@ el.typewriter.addEventListener('change', () => {
 });
 el.outlineShow.addEventListener('change', () => {
   if (el.outlineShow.checked !== ui.outline) toggleOutline();
+});
+el.controlsShow.addEventListener('change', () => {
+  if (el.controlsShow.checked !== ui.controls) toggleControls();
 });
 el.liveFormat.addEventListener('change', () => {
   if (el.liveFormat.checked !== ui.liveFormat) toggleLiveFormat();
@@ -3533,10 +3470,6 @@ el.list.addEventListener('keydown', (e) => {
 // --- buttons ----------------------------------------------------------------
 
 el.newBtn.addEventListener('click', () => newNote());
-onPane('previewToggle', 'click', togglePreview);
-onPane('attachBtn', 'click', () => void pickImages());
-onPane('pinBtn', 'click', togglePinSelected);
-onPane('deleteBtn', 'click', armDelete);
 onPane('toggleSidebar', 'click', toggleSidebar);
 el.helpBtn.addEventListener('click', () => toggleHelp(true));
 el.helpSheet.addEventListener('click', (e) => {
@@ -4027,6 +3960,19 @@ function toggleLiveFormat(): void {
   renderEditor();
   if (selected() && !ui.preview) caretToEnd();
   showStatus(ui.liveFormat ? 'Live formatting on' : 'Live formatting off', 1500);
+}
+
+/**
+ * Puts the header's commands away, or brings them back. It only ever hides the
+ * buttons: every command, every chord and the palette go on working.
+ */
+function toggleControls(): void {
+  ui.controls = !ui.controls;
+  saveUi();
+  el.controlsShow.checked = ui.controls;
+  if (!ui.controls) closeMenu(false);
+  syncAllControls();
+  showStatus(ui.controls ? 'Editor controls on' : 'Editor controls off · the shortcuts still work', 2500);
 }
 
 // --- deleted notes ----------------------------------------------------------
@@ -4911,11 +4857,32 @@ const refactorUi = createRefactorUi({
 const hasNote = (): boolean => selected() !== null;
 
 const ACTIONS: Action[] = [
-  { id: 'new', label: 'New note', group: 'Notes', chord: 'ctrl+n', run: () => newNote() },
+  { id: 'new', label: 'New note', group: 'Notes', menuSection: 'Create', chord: 'ctrl+n', run: () => newNote() },
+  {
+    id: 'template-new',
+    label: 'New note from a template…',
+    hint: 'Titled with whatever is in the search box, or named afterwards',
+    group: 'Notes',
+    menuSection: 'Create',
+    chord: 'ctrl+shift+n',
+    terms: 'template start',
+    run: () => pickTemplate('new'),
+  },
+  {
+    id: 'import',
+    label: 'Import markdown or text files…',
+    hint: 'One note per file; dropping files on the window does the same',
+    group: 'Notes',
+    menuSection: 'Create',
+    chord: 'ctrl+shift+o',
+    terms: 'open md txt',
+    run: () => void pickImports(),
+  },
   {
     id: 'find',
     label: 'Find a note',
     group: 'Notes',
+    menuSection: 'Find and navigate',
     chord: 'ctrl+k',
     terms: 'search filter',
     run: () => {
@@ -4925,107 +4892,133 @@ const ACTIONS: Action[] = [
     },
   },
   {
-    id: 'trash',
-    label: 'Deleted notes…',
-    hint: 'What was deleted in the last month, to look at or put back',
+    id: 'recent',
+    label: 'Recent notes…',
+    hint: 'The last twenty notes you had open',
     group: 'Notes',
-    chord: 'ctrl+shift+backspace',
-    terms: 'trash bin undelete restore recover',
-    run: () => toggleTrash(),
+    menuSection: 'Find and navigate',
+    chord: 'ctrl+shift+b',
+    terms: 'history visited last',
+    run: pickRecent,
   },
+  { id: 'prev', label: 'Previous note', group: 'Notes', menuSection: 'Find and navigate', chord: 'ctrl+arrowup', run: () => step(-1) },
+  { id: 'next', label: 'Next note', group: 'Notes', menuSection: 'Find and navigate', chord: 'ctrl+arrowdown', run: () => step(1) },
   {
-    id: 'folder',
-    label: 'Open the notes folder',
-    hint: 'One markdown file per note; put the folder in OneDrive or git to keep them elsewhere too',
+    id: 'back',
+    label: 'Back',
+    hint: 'The note you came from, caret and scroll restored; the thumb button does the same',
     group: 'Notes',
-    terms: 'files explorer markdown sync backup',
-    run: () => void window.notesApi.openNotesFolder().catch((err) => console.error('[notes] could not open the folder', err)),
-  },
-  { id: 'prev', label: 'Previous note', group: 'Notes', chord: 'ctrl+arrowup', run: () => step(-1) },
-  { id: 'next', label: 'Next note', group: 'Notes', chord: 'ctrl+arrowdown', run: () => step(1) },
-  {
-    id: 'table',
-    label: 'Table',
-    hint: 'A table where the caret is, or the one it is in lined up again. Tab moves between cells and the last one makes a row',
-    group: 'Writing',
-    chord: 'ctrl+shift+j',
-    terms: 'grid columns rows tidy align',
-    enabled: () => hasNote(),
-    run: tableHere,
+    menuSection: 'Find and navigate',
+    chord: 'alt+arrowleft',
+    terms: 'previous history',
+    enabled: () => journey.back.length > 0,
+    run: () => travel(-1),
   },
   {
-    id: 'table-row',
-    label: 'Add a table row',
-    group: 'Writing',
-    chord: 'ctrl+enter',
-    terms: 'table line',
-    enabled: () => hasNote(),
-    run: () => {
-      if (!applyTableEdit(addRow)) showStatus('Put the caret in a table first', 2500);
-    },
+    id: 'forward',
+    label: 'Forward',
+    group: 'Notes',
+    menuSection: 'Find and navigate',
+    chord: 'alt+arrowright',
+    terms: 'history',
+    enabled: () => journey.forward.length > 0,
+    run: () => travel(1),
   },
   {
-    id: 'table-column',
-    label: 'Add a table column',
-    group: 'Writing',
-    chord: 'ctrl+shift+arrowright',
-    terms: 'table',
-    enabled: () => hasNote(),
-    run: () => {
-      if (!applyTableEdit(addColumn)) showStatus('Put the caret in a table first', 2500);
-    },
-  },
-  {
-    id: 'table-remove-row',
-    label: 'Remove this table row',
-    group: 'Writing',
-    chord: 'ctrl+shift+arrowleft',
-    terms: 'table delete',
-    enabled: () => hasNote(),
-    run: () => {
-      if (!applyTableEdit(removeRow)) showStatus('That row is the header, or the only one left', 2500);
-    },
+    id: 'title',
+    label: 'Rename this note',
+    hint: 'When other notes link to it by name, the links can follow',
+    group: 'Notes',
+    menuSection: 'This note',
+    chord: 'ctrl+r',
+    also: ['f2'],
+    terms: 'title',
+    run: focusTitle,
   },
   {
     id: 'aliases',
     label: 'Other names for this note…',
     hint: 'A [[link]] naming one of them finds this note, and so does a search',
     group: 'Notes',
+    menuSection: 'This note',
     chord: 'ctrl+shift+a',
     terms: 'alias aka also known as nickname',
     enabled: () => hasNote(),
     run: () => void editAliases(),
   },
   {
-    id: 'view-save',
-    label: 'Save this search…',
-    hint: 'Names the search in the box and keeps it above the tags',
+    id: 'pin',
+    label: 'Pin or unpin this note',
+    hint: 'Pinned notes sort above the rest, whatever their edit time',
     group: 'Notes',
-    terms: 'view saved search filter keep',
-    run: () => void saveView(),
+    menuSection: 'This note',
+    chord: 'ctrl+shift+p',
+    enabled: hasNote,
+    on: () => selected()?.pinned === true,
+    run: togglePinSelected,
   },
   {
-    id: 'view-open',
-    label: 'Saved searches…',
+    id: 'history',
+    label: 'Note history…',
+    hint: 'Earlier versions of this note, kept as you write, to look at or put back',
     group: 'Notes',
-    chord: 'ctrl+shift+y',
-    terms: 'view saved search filter',
-    enabled: () => settings.views.length > 0,
-    run: pickView,
+    menuSection: 'This note',
+    chord: 'ctrl+shift+r',
+    enabled: hasNote,
+    terms: 'versions restore snapshots undo recover',
+    run: () => toggleHistory(),
   },
   {
-    id: 'view-forget',
-    label: 'Forget a saved search…',
+    id: 'save',
+    label: 'Save now',
+    hint: 'Autosave is always on; this only makes it immediate',
     group: 'Notes',
-    terms: 'view saved search remove delete',
-    enabled: () => settings.views.length > 0,
-    run: forgetView,
+    menuSection: 'This note',
+    chord: 'ctrl+s',
+    run: () =>
+      void flush().then(() => {
+        if (!dirty) showStatus('Saved', 1200);
+      }),
+  },
+  {
+    id: 'export',
+    label: 'Export this note…',
+    hint: 'As Markdown, plain text or an image',
+    group: 'Notes',
+    menuSection: 'This note',
+    chord: 'ctrl+shift+s',
+    enabled: hasNote,
+    terms: 'save as md txt png',
+    // The formats are a drill-in inside the Note menu, so the chord opens the
+    // menu at that page: one list of formats, wherever the command came from.
+    run: () => openMenu('Notes', 'export'),
+  },
+  {
+    id: 'merge-into',
+    label: 'Merge this note into another…',
+    hint: 'Its text goes under a heading there, links follow, and this note goes to Deleted notes',
+    group: 'Notes',
+    menuSection: 'This note',
+    terms: 'merge combine duplicate join',
+    enabled: hasNote,
+    run: () => refactorUi.mergeInto(),
+  },
+  {
+    id: 'delete',
+    label: 'Delete this note',
+    hint: 'Press again within three seconds to confirm',
+    group: 'Notes',
+    menuSection: 'This note',
+    chord: 'ctrl+shift+d',
+    enabled: hasNote,
+    run: armDelete,
   },
   {
     id: 'tab-new',
     label: 'Open a note in a new tab…',
     hint: 'Keeps this one open beside it; Ctrl and a number goes to the nth tab',
     group: 'Notes',
+    menuSection: 'Tabs',
     chord: 'ctrl+t',
     terms: 'tab open beside second',
     enabled: () => notes.length > 0,
@@ -5036,6 +5029,7 @@ const ACTIONS: Action[] = [
     label: 'Close this tab',
     hint: 'The note stays; only the tab goes',
     group: 'Notes',
+    menuSection: 'Tabs',
     chord: 'ctrl+w',
     terms: 'tab shut',
     enabled: () => hasNote(),
@@ -5048,6 +5042,7 @@ const ACTIONS: Action[] = [
     id: 'tab-next',
     label: 'Next tab',
     group: 'Notes',
+    menuSection: 'Tabs',
     chord: 'ctrl+tab',
     terms: 'tab switch',
     enabled: () => panes[paneAt]?.tabs.length > 1,
@@ -5057,190 +5052,86 @@ const ACTIONS: Action[] = [
     id: 'tab-prev',
     label: 'Previous tab',
     group: 'Notes',
+    menuSection: 'Tabs',
     chord: 'ctrl+shift+tab',
     terms: 'tab switch',
     enabled: () => panes[paneAt]?.tabs.length > 1,
     run: () => stepTab(-1),
   },
   {
-    id: 'title',
-    label: 'Rename this note',
-    hint: 'When other notes link to it by name, the links can follow',
+    id: 'view-save',
+    label: 'Save this search…',
+    hint: 'Names the search in the box and keeps it above the tags',
     group: 'Notes',
-    chord: 'ctrl+r',
-    also: ['f2'],
-    terms: 'title',
-    run: focusTitle,
+    menuSection: 'Saved searches',
+    terms: 'view saved search filter keep',
+    run: () => void saveView(),
   },
   {
-    id: 'back',
-    label: 'Back',
-    hint: 'The note you came from, caret and scroll restored; the thumb button does the same',
+    id: 'view-open',
+    label: 'Saved searches…',
     group: 'Notes',
-    chord: 'alt+arrowleft',
-    terms: 'previous history',
-    enabled: () => journey.back.length > 0,
-    run: () => travel(-1),
+    menuSection: 'Saved searches',
+    chord: 'ctrl+shift+y',
+    terms: 'view saved search filter',
+    enabled: () => settings.views.length > 0,
+    run: pickView,
   },
   {
-    id: 'forward',
-    label: 'Forward',
+    id: 'view-forget',
+    label: 'Forget a saved search…',
     group: 'Notes',
-    chord: 'alt+arrowright',
-    terms: 'history',
-    enabled: () => journey.forward.length > 0,
-    run: () => travel(1),
+    menuSection: 'Saved searches',
+    terms: 'view saved search remove delete',
+    enabled: () => settings.views.length > 0,
+    run: forgetView,
   },
   {
-    id: 'recent',
-    label: 'Recent notes…',
-    hint: 'The last twenty notes you had open',
+    id: 'due',
+    label: 'Scheduled tasks…',
+    hint: 'Every checklist line with an @date, across the notes, overdue first',
     group: 'Notes',
-    chord: 'ctrl+shift+b',
-    terms: 'history visited last',
-    run: pickRecent,
+    menuSection: 'Library',
+    chord: 'ctrl+shift+u',
+    terms: 'due reminders deadline agenda today',
+    run: () => toggleDue(),
   },
   {
     id: 'tag-rename',
     label: 'Rename a tag everywhere…',
     hint: 'Every #tag, and every #tag/nested under it, in every note',
     group: 'Notes',
+    menuSection: 'Library',
     terms: 'tag rename retag',
     enabled: () => notes.length > 0,
     run: () => refactorUi.renameTag(),
   },
   {
-    id: 'merge-into',
-    label: 'Merge this note into another…',
-    hint: 'Its text goes under a heading there, links follow, and this note goes to Deleted notes',
+    id: 'trash',
+    label: 'Deleted notes…',
+    hint: 'What was deleted in the last month, to look at or put back',
     group: 'Notes',
-    terms: 'merge combine duplicate join',
-    enabled: hasNote,
-    run: () => refactorUi.mergeInto(),
+    menuSection: 'Library',
+    chord: 'ctrl+shift+backspace',
+    terms: 'trash bin undelete restore recover',
+    run: () => toggleTrash(),
   },
   {
-    id: 'pin',
-    label: 'Pin or unpin this note',
-    hint: 'Pinned notes sort above the rest, whatever their edit time',
+    id: 'folder',
+    label: 'Open the notes folder',
+    hint: 'One markdown file per note; put the folder in OneDrive or git to keep them elsewhere too',
     group: 'Notes',
-    chord: 'ctrl+shift+p',
-    enabled: hasNote,
-    on: () => selected()?.pinned === true,
-    run: togglePinSelected,
-  },
-  {
-    id: 'delete',
-    label: 'Delete this note',
-    hint: 'Press again within three seconds to confirm',
-    group: 'Notes',
-    chord: 'ctrl+shift+d',
-    enabled: hasNote,
-    run: armDelete,
-  },
-  {
-    id: 'import',
-    label: 'Import markdown or text files…',
-    hint: 'One note per file; dropping files on the window does the same',
-    group: 'Notes',
-    chord: 'ctrl+shift+o',
-    terms: 'open md txt',
-    run: () => void pickImports(),
-  },
-  {
-    id: 'export',
-    label: 'Export this note…',
-    hint: 'As Markdown, plain text or an image',
-    group: 'Notes',
-    chord: 'ctrl+shift+s',
-    enabled: hasNote,
-    terms: 'save as md txt png',
-    run: () => {
-      if (el.exportMenu.hidden) openExportMenu();
-      else closeExportMenu(true);
-    },
-  },
-  {
-    id: 'history',
-    label: 'Note history…',
-    hint: 'Earlier versions of this note, kept as you write, to look at or put back',
-    group: 'Notes',
-    chord: 'ctrl+shift+r',
-    enabled: hasNote,
-    terms: 'versions restore snapshots undo recover',
-    run: () => toggleHistory(),
-  },
-  {
-    id: 'save',
-    label: 'Save now',
-    hint: 'Autosave is always on; this only makes it immediate',
-    group: 'Notes',
-    chord: 'ctrl+s',
-    run: () =>
-      void flush().then(() => {
-        if (!dirty) showStatus('Saved', 1200);
-      }),
+    menuSection: 'Library',
+    terms: 'files explorer markdown sync backup',
+    run: () => void window.notesApi.openNotesFolder().catch((err) => console.error('[notes] could not open the folder', err)),
   },
 
-  {
-    id: 'attach',
-    label: 'Attach an image…',
-    hint: 'Pasting or dropping a picture does the same',
-    group: 'Writing',
-    chord: 'ctrl+shift+i',
-    terms: 'picture photo insert',
-    run: () => void pickImages(),
-  },
-  {
-    id: 'divider',
-    label: 'Insert a section divider',
-    hint: 'Or type --- on its own line and press Enter',
-    group: 'Writing',
-    chord: 'ctrl+shift+h',
-    terms: 'rule horizontal line break',
-    run: insertDivider,
-  },
-  {
-    id: 'code',
-    label: 'Code block around this',
-    hint: 'Fences the selection, or the paragraph you are in, so nothing in it is reflowed',
-    group: 'Writing',
-    chord: 'ctrl+shift+c',
-    terms: 'fence monospace preformatted highlight',
-    run: toggleCodeBlock,
-  },
-  {
-    id: 'task',
-    label: 'Checklist item on this line',
-    hint: 'Cycles the line: plain text, then to do, then done',
-    group: 'Writing',
-    chord: 'ctrl+shift+x',
-    terms: 'todo checkbox tick',
-    run: toggleTaskHere,
-  },
-  {
-    id: 'move-lines',
-    label: 'Move lines to another note…',
-    hint: 'The selected lines, or the line the caret is on, under a heading there',
-    group: 'Writing',
-    chord: 'ctrl+shift+v',
-    terms: 'refile file send transfer',
-    enabled: hasNote,
-    run: () => refactorUi.moveLines(),
-  },
-  {
-    id: 'move-section',
-    label: 'Move this section to another note…',
-    hint: 'The heading the caret is under and everything beneath it, levels untouched',
-    group: 'Writing',
-    terms: 'refile heading section',
-    enabled: hasNote,
-    run: () => refactorUi.moveSection(),
-  },
   {
     id: 'undo',
     label: 'Undo',
     hint: 'A run of typing is one step; a replace or a restore is one too',
     group: 'Writing',
+    menuSection: 'Edit',
     chord: 'ctrl+z',
     enabled: () => document.activeElement === el.editor,
     run: undoEdit,
@@ -5249,6 +5140,7 @@ const ACTIONS: Action[] = [
     id: 'redo',
     label: 'Redo',
     group: 'Writing',
+    menuSection: 'Edit',
     chord: 'ctrl+y',
     also: ['ctrl+shift+z'],
     enabled: () => document.activeElement === el.editor,
@@ -5259,6 +5151,7 @@ const ACTIONS: Action[] = [
     label: 'Find in this note',
     hint: 'Enter and Shift+Enter step through the matches; Esc lands on the current one',
     group: 'Writing',
+    menuSection: 'Edit',
     chord: 'ctrl+f',
     terms: 'search within match',
     run: () => openFind(false),
@@ -5268,9 +5161,145 @@ const ACTIONS: Action[] = [
     label: 'Replace in this note',
     hint: 'Find with a replace field; Enter replaces one match, Ctrl+Enter every one',
     group: 'Writing',
+    menuSection: 'Edit',
     chord: 'ctrl+h',
     terms: 'substitute rename all regex',
     run: () => openFind(true),
+  },
+  {
+    id: 'attach',
+    label: 'Attach an image…',
+    hint: 'Pasting or dropping a picture does the same',
+    group: 'Writing',
+    menuSection: 'Insert',
+    pill: { label: 'Attach', priority: 1 },
+    chord: 'ctrl+shift+i',
+    terms: 'picture photo insert',
+    run: () => void pickImages(),
+  },
+  {
+    id: 'divider',
+    label: 'Insert a section divider',
+    hint: 'Or type --- on its own line and press Enter',
+    group: 'Writing',
+    menuSection: 'Insert',
+    pill: { label: 'Divider', priority: 2 },
+    chord: 'ctrl+shift+h',
+    terms: 'rule horizontal line break',
+    run: insertDivider,
+  },
+  {
+    id: 'code',
+    label: 'Code block around this',
+    hint: 'Fences the selection, or the paragraph you are in, so nothing in it is reflowed',
+    group: 'Writing',
+    menuSection: 'Insert',
+    chord: 'ctrl+shift+c',
+    terms: 'fence monospace preformatted highlight',
+    run: toggleCodeBlock,
+  },
+  {
+    id: 'task',
+    label: 'Checklist item on this line',
+    hint: 'Cycles the line: plain text, then to do, then done',
+    group: 'Writing',
+    menuSection: 'Insert',
+    pill: { label: 'Task', priority: 4 },
+    chord: 'ctrl+shift+x',
+    terms: 'todo checkbox tick',
+    run: toggleTaskHere,
+  },
+  {
+    id: 'template-insert',
+    label: 'Insert a template…',
+    hint: 'A note tagged #template, its {{date}}, {{time}} and {{title}} filled in, at the caret',
+    group: 'Writing',
+    menuSection: 'Insert',
+    chord: 'ctrl+shift+e',
+    terms: 'snippet boilerplate expand',
+    enabled: hasNote,
+    run: () => pickTemplate('insert'),
+  },
+  {
+    id: 'date',
+    label: 'Insert the date',
+    hint: 'Today, as 2026-09-03; with Shift held, the time as well',
+    group: 'Writing',
+    menuSection: 'Insert',
+    pill: { label: 'Date', priority: 3 },
+    chord: 'ctrl+;',
+    also: ['ctrl+shift+;', 'ctrl+shift+:'],
+    terms: 'today time now timestamp',
+    enabled: hasNote,
+    run: insertDate,
+  },
+  {
+    id: 'table',
+    label: 'Table',
+    hint: 'A table where the caret is, or the one it is in lined up again. Tab moves between cells and the last one makes a row',
+    group: 'Writing',
+    menuSection: 'Table',
+    chord: 'ctrl+shift+j',
+    terms: 'grid columns rows tidy align',
+    enabled: () => hasNote(),
+    run: tableHere,
+  },
+  {
+    id: 'table-row',
+    label: 'Add a table row',
+    group: 'Writing',
+    menuSection: 'Table',
+    chord: 'ctrl+enter',
+    terms: 'table line',
+    enabled: () => hasNote(),
+    run: () => {
+      if (!applyTableEdit(addRow)) showStatus('Put the caret in a table first', 2500);
+    },
+  },
+  {
+    id: 'table-column',
+    label: 'Add a table column',
+    group: 'Writing',
+    menuSection: 'Table',
+    chord: 'ctrl+shift+arrowright',
+    terms: 'table',
+    enabled: () => hasNote(),
+    run: () => {
+      if (!applyTableEdit(addColumn)) showStatus('Put the caret in a table first', 2500);
+    },
+  },
+  {
+    id: 'table-remove-row',
+    label: 'Remove this table row',
+    group: 'Writing',
+    menuSection: 'Table',
+    chord: 'ctrl+shift+arrowleft',
+    terms: 'table delete',
+    enabled: () => hasNote(),
+    run: () => {
+      if (!applyTableEdit(removeRow)) showStatus('That row is the header, or the only one left', 2500);
+    },
+  },
+  {
+    id: 'move-lines',
+    label: 'Move lines to another note…',
+    hint: 'The selected lines, or the line the caret is on, under a heading there',
+    group: 'Writing',
+    menuSection: 'Move',
+    chord: 'ctrl+shift+v',
+    terms: 'refile file send transfer',
+    enabled: hasNote,
+    run: () => refactorUi.moveLines(),
+  },
+  {
+    id: 'move-section',
+    label: 'Move this section to another note…',
+    hint: 'The heading the caret is under and everything beneath it, levels untouched',
+    group: 'Writing',
+    menuSection: 'Move',
+    terms: 'refile heading section',
+    enabled: hasNote,
+    run: () => refactorUi.moveSection(),
   },
 
   {
@@ -5285,7 +5314,7 @@ const ACTIONS: Action[] = [
   {
     id: 'live',
     label: 'Live formatting',
-    hint: 'Headings, bold, code and lists take their shape as you write them',
+    hint: 'Markdown takes shape as you type: # for headings, ** for bold, - for lists',
     group: 'View',
     chord: 'ctrl+shift+m',
     terms: 'markdown render inline wysiwyg markers',
@@ -5322,46 +5351,6 @@ const ACTIONS: Action[] = [
     on: () => ui.typewriter,
     run: toggleTypewriter,
   },
-
-  {
-    id: 'template-insert',
-    label: 'Insert a template…',
-    hint: 'A note tagged #template, its {{date}}, {{time}} and {{title}} filled in, at the caret',
-    group: 'Writing',
-    chord: 'ctrl+shift+e',
-    terms: 'snippet boilerplate expand',
-    enabled: hasNote,
-    run: () => pickTemplate('insert'),
-  },
-  {
-    id: 'template-new',
-    label: 'New note from a template…',
-    hint: 'Titled with whatever is in the search box, or named afterwards',
-    group: 'Notes',
-    chord: 'ctrl+shift+n',
-    terms: 'template start',
-    run: () => pickTemplate('new'),
-  },
-  {
-    id: 'date',
-    label: 'Insert the date',
-    hint: 'Today, as 2026-09-03; with Shift held, the time as well',
-    group: 'Writing',
-    chord: 'ctrl+;',
-    also: ['ctrl+shift+;', 'ctrl+shift+:'],
-    terms: 'today time now timestamp',
-    enabled: hasNote,
-    run: insertDate,
-  },
-  {
-    id: 'due',
-    label: 'Scheduled tasks…',
-    hint: 'Every checklist line with an @date, across the notes, overdue first',
-    group: 'Notes',
-    chord: 'ctrl+shift+u',
-    terms: 'due reminders deadline agenda today',
-    run: () => toggleDue(),
-  },
   {
     id: 'graph',
     label: 'Graph of the notes…',
@@ -5372,12 +5361,13 @@ const ACTIONS: Action[] = [
     run: () => toggleGraph(),
   },
 
-  { id: 'sidebar', label: 'Toggle the sidebar', group: 'Window', chord: 'ctrl+\\', run: toggleSidebar },
+  { id: 'sidebar', label: 'Toggle the sidebar', group: 'Window', menuSection: 'Workspace', chord: 'ctrl+\\', run: toggleSidebar },
   {
     id: 'split',
     label: 'Split the pane',
     hint: 'The same note in a second pane beside this one, scrolled on its own',
     group: 'Window',
+    menuSection: 'Workspace',
     chord: 'ctrl+shift+\\',
     terms: 'pane side by side compare two',
     enabled: () => panes.length < MAX_PANES,
@@ -5387,6 +5377,7 @@ const ACTIONS: Action[] = [
     id: 'pane-close',
     label: 'Close this pane',
     group: 'Window',
+    menuSection: 'Workspace',
     chord: 'ctrl+shift+w',
     terms: 'pane unsplit',
     enabled: () => panes.length > 1,
@@ -5396,6 +5387,7 @@ const ACTIONS: Action[] = [
     id: 'pane-next',
     label: 'Focus the next pane',
     group: 'Window',
+    menuSection: 'Workspace',
     chord: 'ctrl+alt+arrowright',
     terms: 'pane move focus right',
     enabled: () => panes.length > 1,
@@ -5405,6 +5397,7 @@ const ACTIONS: Action[] = [
     id: 'pane-prev',
     label: 'Focus the previous pane',
     group: 'Window',
+    menuSection: 'Workspace',
     chord: 'ctrl+alt+arrowleft',
     terms: 'pane move focus left',
     enabled: () => panes.length > 1,
@@ -5415,6 +5408,7 @@ const ACTIONS: Action[] = [
     label: 'Layout and window settings',
     hint: 'Line width, margin, focus, the tray and the summon shortcut',
     group: 'Window',
+    menuSection: 'Application',
     chord: 'ctrl+,',
     terms: 'preferences options tray hotkey margin width',
     run: () => toggleLayout(),
@@ -5423,12 +5417,21 @@ const ACTIONS: Action[] = [
     id: 'palette',
     label: 'Command palette',
     group: 'Window',
+    menuSection: 'Application',
     chord: 'ctrl+shift+k',
     also: ['ctrl+p'],
     terms: 'commands run',
     run: () => togglePalette(true),
   },
-  { id: 'help', label: 'Keyboard shortcuts', group: 'Window', chord: 'ctrl+/', terms: 'keys help', run: () => toggleHelp() },
+  {
+    id: 'help',
+    label: 'Keyboard shortcuts',
+    group: 'Window',
+    menuSection: 'Application',
+    chord: 'ctrl+/',
+    terms: 'keys help',
+    run: () => toggleHelp(),
+  },
 ];
 
 const CHORDS = keyMap(ACTIONS);
@@ -5442,6 +5445,406 @@ function chordKeys(chord: string): DocumentFragment {
     frag.append(k);
   }
   return frag;
+}
+
+// --- the pane's controls, written from the registry -------------------------
+
+/**
+ * A few buttons and four menus in the pane's header, all of them read out of
+ * the same registry as the keyboard map, the sheet and the palette.
+ *
+ * The point is not to save a keystroke. It is that a command you cannot bring
+ * to mind is a command you do not use, so every menu row carries the chord
+ * that runs it: use the menu twice and you stop needing it.
+ */
+const MENUS = menuModel(ACTIONS);
+const PILLS = pillActions(ACTIONS);
+
+/** The chord as the sheet spells it, joined for a title attribute: `Ctrl+Shift+X`. */
+const chordText = (chord: string): string => keyLabel(chord).join('+');
+
+/** What a button says about itself when the pointer rests on it. */
+function controlTitle(action: Action): string {
+  return action.chord ? `${action.label} (${chordText(action.chord)})` : action.label;
+}
+
+/** The button that has a menu open, or null while none has. Only one is ever open. */
+let openMenuButton: HTMLButtonElement | null = null;
+/** Which command's drill-in the open panel is showing, when it is showing one. */
+let menuDrill: string | null = null;
+
+const controlsOf = (p: Pane): HTMLElement => p.els.controls;
+const panelOf = (button: HTMLElement): HTMLElement | null => button.parentElement?.querySelector<HTMLElement>('.menu') ?? null;
+
+/** Every row a panel currently offers, in the order the arrow keys walk them. */
+const rowsIn = (panel: HTMLElement): HTMLButtonElement[] => Array.from(panel.querySelectorAll<HTMLButtonElement>('.menu-item:not([disabled])'));
+
+/**
+ * Builds one pane's controls. Called once per pane, from `makePane`, because
+ * the header belongs to a pane and there may be three of them.
+ */
+function buildControls(p: Pane): void {
+  const box = controlsOf(p);
+  box.replaceChildren();
+
+  for (const action of PILLS) {
+    const button = document.createElement('button');
+    button.className = 'pill u ctl-pill';
+    button.type = 'button';
+    button.dataset.action = action.id;
+    button.textContent = action.pill?.label ?? action.label;
+    box.append(button);
+  }
+
+  const rule = document.createElement('span');
+  rule.className = 'ctl-rule';
+  rule.setAttribute('aria-hidden', 'true');
+  box.append(rule);
+
+  const bar = document.createElement('div');
+  bar.className = 'menu-bar';
+  bar.setAttribute('role', 'menubar');
+  bar.setAttribute('aria-label', 'Commands');
+  for (const menu of MENUS) bar.append(menuWrap(menu.name, menu.group));
+  // The one button a pane too narrow for four falls back to. It holds all of
+  // them, so narrowing a pane never takes a command away.
+  bar.append(menuWrap('Commands', 'all'));
+  box.append(bar);
+}
+
+/** A menu button and the empty panel it fills when it opens. */
+function menuWrap(name: string, which: string): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = which === 'all' ? 'menu-wrap menu-all' : 'menu-wrap';
+  const button = document.createElement('button');
+  button.className = 'pill u menu-btn';
+  button.type = 'button';
+  button.dataset.menu = which;
+  button.setAttribute('role', 'menuitem');
+  button.setAttribute('aria-haspopup', 'menu');
+  button.setAttribute('aria-expanded', 'false');
+  button.textContent = name;
+  const panel = document.createElement('div');
+  panel.className = 'menu';
+  panel.setAttribute('role', 'menu');
+  panel.setAttribute('aria-label', name);
+  panel.hidden = true;
+  wrap.append(button, panel);
+  return wrap;
+}
+
+/** One row: the tick gutter, the command's own words, and the chord that runs it. */
+function menuRow(action: Action): HTMLButtonElement {
+  const row = document.createElement('button');
+  row.className = 'menu-item';
+  row.type = 'button';
+  row.setAttribute('role', 'menuitem');
+  row.dataset.action = action.id;
+  row.title = controlTitle(action);
+  const tick = document.createElement('span');
+  tick.className = 'menu-tick';
+  tick.setAttribute('aria-hidden', 'true');
+  const on = action.on?.() === true;
+  tick.textContent = on ? '✓' : '';
+  if (action.on) row.setAttribute('aria-checked', String(on));
+  const label = document.createElement('span');
+  label.className = 'menu-label';
+  label.textContent = action.label;
+  row.append(tick, label);
+  if (action.chord) {
+    const kbd = document.createElement('kbd');
+    kbd.textContent = chordText(action.chord);
+    row.append(kbd);
+  }
+  // Greyed rather than gone: a menu is a map, and a map that redraws itself
+  // teaches nothing. The palette goes on hiding what cannot run.
+  if (action.enabled?.() === false) row.disabled = true;
+  return row;
+}
+
+function menuHeading(name: string): HTMLElement {
+  const head = document.createElement('p');
+  head.className = 'menu-head u';
+  head.setAttribute('role', 'presentation');
+  head.textContent = name;
+  return head;
+}
+
+/** The export formats, as the page you land on after choosing Export. */
+function exportPage(panel: HTMLElement): void {
+  const back = document.createElement('button');
+  back.className = 'menu-item menu-back';
+  back.type = 'button';
+  back.setAttribute('role', 'menuitem');
+  back.dataset.back = 'yes';
+  const arrow = document.createElement('span');
+  arrow.className = 'menu-tick';
+  arrow.setAttribute('aria-hidden', 'true');
+  arrow.textContent = '‹';
+  const label = document.createElement('span');
+  label.className = 'menu-label';
+  label.textContent = 'Export this note…';
+  back.append(arrow, label);
+  panel.append(back);
+  for (const { kind, label: name, ext } of EXPORT_KINDS) {
+    const row = document.createElement('button');
+    row.className = 'menu-item';
+    row.type = 'button';
+    row.setAttribute('role', 'menuitem');
+    row.dataset.kind = kind;
+    const tick = document.createElement('span');
+    tick.className = 'menu-tick';
+    tick.setAttribute('aria-hidden', 'true');
+    const text = document.createElement('span');
+    text.className = 'menu-label';
+    text.textContent = name;
+    const dim = document.createElement('span');
+    dim.className = 'menu-ext';
+    dim.textContent = ext;
+    text.append(' ', dim);
+    row.append(tick, text);
+    panel.append(row);
+  }
+}
+
+/**
+ * Fills a panel for the state it is in. Built on every open rather than once,
+ * so what is ticked and what is greyed is true at the moment it is read.
+ */
+function fillPanel(panel: HTMLElement, which: string): void {
+  panel.replaceChildren();
+  if (menuDrill === 'export') {
+    exportPage(panel);
+    return;
+  }
+  const all = which === 'all';
+  const menus = all ? MENUS : MENUS.filter((menu) => menu.group === which);
+  for (const menu of menus) {
+    // Collapsed into one button, the groups are the headings: their own
+    // sections would make a list too deep to scan in a pane this narrow.
+    if (all) panel.append(menuHeading(menu.name));
+    for (const section of menu.sections) {
+      if (section.name && !all) panel.append(menuHeading(section.name));
+      for (const action of section.items) panel.append(menuRow(action));
+    }
+  }
+}
+
+/** Opens a menu in the pane in front, optionally at one command's drill-in. */
+function openMenu(which: string, drill: string | null = null): void {
+  const box = el.controls;
+  const wanted = box.querySelector<HTMLButtonElement>(`.menu-btn[data-menu="${which}"]`);
+  // A pane narrow enough to have collapsed its menus answers on Commands.
+  const button = wanted && wanted.offsetParent !== null ? wanted : box.querySelector<HTMLButtonElement>('.menu-all .menu-btn');
+  if (!button) return;
+  if (openMenuButton && openMenuButton !== button) closeMenu(false);
+  const panel = panelOf(button);
+  if (!panel) return;
+  menuDrill = drill;
+  fillPanel(panel, button.dataset.menu ?? which);
+  panel.hidden = false;
+  button.setAttribute('aria-expanded', 'true');
+  openMenuButton = button;
+  rowsIn(panel)[drill === 'export' ? 1 : 0]?.focus();
+}
+
+function closeMenu(restoreFocus: boolean): void {
+  const button = openMenuButton;
+  if (!button) return;
+  const panel = panelOf(button);
+  disarmDelete();
+  if (panel) {
+    panel.hidden = true;
+    panel.replaceChildren();
+  }
+  button.setAttribute('aria-expanded', 'false');
+  openMenuButton = null;
+  menuDrill = null;
+  if (restoreFocus) button.focus();
+}
+
+/** Runs a command from a button, in the pane whose button it was. */
+function runFromControls(id: string, row?: HTMLElement): void {
+  const action = ACTIONS.find((a) => a.id === id);
+  if (!action || action.enabled?.() === false) return;
+  // Delete asks twice, and from a menu the row itself does the asking: the
+  // panel stays open under it, because a confirmation you have to go and find
+  // again is not a confirmation.
+  if (action.id === 'delete' && row) {
+    const second = armed;
+    armDelete(row);
+    if (second) closeMenu(false);
+    return;
+  }
+  closeMenu(false);
+  action.run();
+}
+
+/**
+ * A control belongs to the pane it sits above, so using one makes that pane
+ * the pane in front before it runs anything. The pointer already does this on
+ * its way down; saying it here as well means a command can never act on a
+ * note other than the one its own button is over.
+ */
+function focusPaneOf(node: Node | null): void {
+  const p = paneOf(node);
+  if (p && p !== panes[paneAt]) focusPane(panes.indexOf(p));
+}
+
+onPane('controls', 'click', (e) => {
+  focusPaneOf(e.target as Node);
+  const target = e.target as HTMLElement | null;
+  const row = target?.closest<HTMLButtonElement>('.menu-item');
+  if (row) {
+    if (row.dataset.back) {
+      const button = openMenuButton;
+      const panel = button ? panelOf(button) : null;
+      menuDrill = null;
+      if (button && panel) {
+        fillPanel(panel, button.dataset.menu ?? 'Notes');
+        rowsIn(panel)[0]?.focus();
+      }
+      return;
+    }
+    if (row.dataset.kind) {
+      void runExport(row.dataset.kind as ExportKind);
+      return;
+    }
+    if (row.dataset.action) runFromControls(row.dataset.action, row);
+    return;
+  }
+  const button = target?.closest<HTMLButtonElement>('.menu-btn');
+  if (button) {
+    if (openMenuButton === button) closeMenu(true);
+    else openMenu(button.dataset.menu ?? 'Notes');
+    return;
+  }
+  const pill = target?.closest<HTMLButtonElement>('.ctl-pill');
+  if (pill?.dataset.action) runFromControls(pill.dataset.action);
+});
+
+onPane('controls', 'keydown', (e) => {
+  focusPaneOf(e.target as Node);
+  const target = e.target as HTMLElement | null;
+  const button = target?.closest<HTMLButtonElement>('.menu-btn');
+  const bar = el.controls.querySelector<HTMLElement>('.menu-bar');
+  const buttons = bar ? Array.from(bar.querySelectorAll<HTMLButtonElement>('.menu-btn')).filter((b) => b.offsetParent !== null) : [];
+
+  if (button && !target?.closest('.menu')) {
+    const at = buttons.indexOf(button);
+    switch (e.key) {
+      case 'ArrowRight':
+        e.preventDefault();
+        buttons[(at + 1) % buttons.length]?.focus();
+        return;
+      case 'ArrowLeft':
+        e.preventDefault();
+        buttons[(at - 1 + buttons.length) % buttons.length]?.focus();
+        return;
+      case 'ArrowDown':
+        e.preventDefault();
+        openMenu(button.dataset.menu ?? 'Notes');
+        return;
+      case 'Escape':
+        // Esc on the bar means the bar, and nothing further up.
+        e.preventDefault();
+        e.stopPropagation();
+        focusEditor();
+        return;
+    }
+  }
+
+  const panel = target?.closest<HTMLElement>('.menu');
+  if (!panel) return;
+  const rows = rowsIn(panel);
+  const at = rows.indexOf(document.activeElement as HTMLButtonElement);
+  switch (e.key) {
+    case 'ArrowDown':
+      e.preventDefault();
+      rows[(at + 1) % rows.length]?.focus();
+      break;
+    case 'ArrowUp':
+      e.preventDefault();
+      rows[(at - 1 + rows.length) % rows.length]?.focus();
+      break;
+    case 'Home':
+      e.preventDefault();
+      rows[0]?.focus();
+      break;
+    case 'End':
+      e.preventDefault();
+      rows[rows.length - 1]?.focus();
+      break;
+    case 'ArrowLeft':
+    case 'ArrowRight': {
+      e.preventDefault();
+      const from = openMenuButton ? buttons.indexOf(openMenuButton) : 0;
+      const to = buttons[(from + (e.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length];
+      if (to) openMenu(to.dataset.menu ?? 'Notes');
+      break;
+    }
+    case 'Escape':
+      e.preventDefault();
+      e.stopPropagation();
+      closeMenu(true);
+      break;
+    case 'Tab':
+      closeMenu(false);
+      break;
+    default: {
+      // Type the first letter of what you are looking for, as menus have always done.
+      if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) break;
+      const want = e.key.toLowerCase();
+      const order = [...rows.slice(at + 1), ...rows.slice(0, at + 1)];
+      const hit = order.find((r) => (r.querySelector('.menu-label')?.textContent ?? '').trim().toLowerCase().startsWith(want));
+      if (hit) {
+        e.preventDefault();
+        hit.focus();
+      }
+    }
+  }
+});
+
+document.addEventListener('pointerdown', (e) => {
+  // Every pane's menu, not just this one's: clicking into another pane is
+  // exactly the click that should put an open menu away.
+  if (openMenuButton && !openMenuButton.parentElement?.contains(e.target as Node)) closeMenu(false);
+});
+
+/**
+ * The pane header, kept true: whether the controls are shown at all, which
+ * pills the pane is wide enough for, and what an open menu should now say.
+ */
+function syncControls(): void {
+  el.controls.hidden = !ui.controls;
+  for (const pill of Array.from(el.controls.querySelectorAll<HTMLButtonElement>('.ctl-pill'))) {
+    const action = ACTIONS.find((a) => a.id === pill.dataset.action);
+    if (!action) continue;
+    pill.disabled = action.enabled?.() === false;
+    pill.title = controlTitle(action);
+    if (action.on) pill.setAttribute('aria-pressed', String(action.on() === true));
+  }
+  const button = openMenuButton;
+  const panel = button ? panelOf(button) : null;
+  // An armed Delete row owns the panel until it is answered: redrawing under a
+  // confirmation would take the confirmation away.
+  if (button && panel && !armed && el.controls.contains(button)) {
+    const focused = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.action : undefined;
+    fillPanel(panel, button.dataset.menu ?? 'Notes');
+    if (focused) panel.querySelector<HTMLButtonElement>(`.menu-item[data-action="${focused}"]`)?.focus();
+  }
+}
+
+/** Every pane's header, after something that changed them all. */
+function syncAllControls(): void {
+  for (const p of panes) withPane(p, syncControls);
+}
+
+/** F10, or Alt on its own: the first menu of the pane in front takes the focus. */
+function focusMenuBar(): void {
+  if (!ui.controls) return;
+  const first = Array.from(el.controls.querySelectorAll<HTMLButtonElement>('.menu-btn')).find((b) => b.offsetParent !== null);
+  first?.focus();
 }
 
 // --- the shortcuts sheet, written from the registry -------------------------
@@ -5639,8 +6042,8 @@ function onEscape(): void {
   }
   if (!el.palette.hidden) {
     togglePalette(false);
-  } else if (!el.exportMenu.hidden) {
-    closeExportMenu(true);
+  } else if (openMenuButton) {
+    closeMenu(true);
   } else if (!el.pickSheet.hidden) {
     closePicker();
   } else if (!el.dueSheet.hidden) {
@@ -5676,7 +6079,20 @@ function onEscape(): void {
   }
 }
 
+/**
+ * Alt on its own is the menu bar, the way it is everywhere else in Windows.
+ * Alt with anything else is a chord, so the bar only opens when Alt goes down
+ * and comes back up with nothing in between.
+ */
+let altAlone = false;
+
 document.addEventListener('keydown', (e) => {
+  altAlone = e.key === 'Alt' && !e.ctrlKey && !e.shiftKey && !e.metaKey && !e.repeat;
+  if (e.key === 'F10' && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    focusMenuBar();
+    return;
+  }
   if (e.key === 'Escape') {
     onEscape();
     return;
@@ -5698,6 +6114,12 @@ document.addEventListener('keydown', (e) => {
   lastChord = chord;
   action.run();
   lastChord = '';
+});
+
+document.addEventListener('keyup', (e) => {
+  if (e.key !== 'Alt') return;
+  if (altAlone) focusMenuBar();
+  altAlone = false;
 });
 
 // Losing the window is a good moment to make sure everything is on disk.
@@ -5979,6 +6401,7 @@ async function init(): Promise<void> {
   applyWriting();
   el.outlineShow.checked = ui.outline;
   el.liveFormat.checked = ui.liveFormat;
+  el.controlsShow.checked = ui.controls;
   renderList();
   renderEditor();
   if (selected()) focusEditor();

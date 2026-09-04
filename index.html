@@ -64,22 +64,11 @@
             <div class="pane-meta">
               <span data-el="status" class="status u" aria-live="polite"></span>
             </div>
-            <div class="pane-actions no-drag">
-              <button data-el="previewToggle" class="pill u" title="Toggle preview (Ctrl+E)" aria-pressed="false">Preview</button>
-              <button data-el="attachBtn" class="pill u" title="Attach image (Ctrl+Shift+I)">Attach</button>
-              <div data-el="exportWrap" class="menu-wrap">
-                <button data-el="exportBtn" class="pill u" title="Export (Ctrl+Shift+S)" aria-haspopup="menu" aria-expanded="false">Export</button>
-                <div data-el="exportMenu" class="menu" role="menu" aria-label="Export as" hidden>
-                  <button class="menu-item" role="menuitem" data-kind="md"><span>Markdown <span class="menu-ext">.md</span></span><kbd>M</kbd></button>
-                  <button class="menu-item" role="menuitem" data-kind="txt"><span>Plain text <span class="menu-ext">.txt</span></span><kbd>T</kbd></button>
-                  <button class="menu-item" role="menuitem" data-kind="html"><span>Web page <span class="menu-ext">.html</span></span><kbd>H</kbd></button>
-                  <button class="menu-item" role="menuitem" data-kind="pdf"><span>Document <span class="menu-ext">.pdf</span></span><kbd>D</kbd></button>
-                  <button class="menu-item" role="menuitem" data-kind="png"><span>Image <span class="menu-ext">.png</span></span><kbd>P</kbd></button>
-                </div>
-              </div>
-              <button data-el="pinBtn" class="pill u" title="Pin note (Ctrl+Shift+P)" aria-pressed="false">Pin</button>
-              <button data-el="deleteBtn" class="pill u danger" title="Delete note (Ctrl+Shift+D)">Delete</button>
-            </div>
+            <!-- The commands for this pane's note, built from the one registry in
+                 actions.ts: a few buttons for the writing commands that are hardest
+                 to remember, then a menu per group where every command is written
+                 down beside the shortcut that runs it. -->
+            <div data-el="controls" class="pane-actions no-drag"></div>
           </header>
 
           <!-- The notes open in this pane. Only there once there are two of
@@ -187,6 +176,11 @@
       <div id="help-sheet" class="sheet" hidden role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
         <div class="sheet-card" tabindex="-1">
           <h2>Keyboard shortcuts</h2>
+          <p class="keys-intro">
+            Commands are also available from the pane menus, with their keyboard shortcuts printed beside them. Markdown takes shape as you
+            type: use <kbd>#</kbd> for headings, <kbd>**</kbd> for bold, and <kbd>-</kbd> for lists. Writing commands handle the larger
+            operations — checklists, code blocks, tables, attachments and templates.
+          </p>
           <!-- Every command row below is generated from the action registry, so the
                sheet and the keys that actually work cannot drift apart. -->
           <div id="key-groups"></div>
@@ -283,6 +277,11 @@
             <input id="live-format" type="checkbox" />
             <span class="u layout-name">Live formatting</span>
             <span class="layout-text">Headings, bold and code take shape as you write</span>
+          </label>
+          <label class="layout-row layout-check">
+            <input id="controls-show" type="checkbox" />
+            <span class="u layout-name">Editor controls</span>
+            <span class="layout-text">The commands for this note, with their shortcuts, in the pane header</span>
           </label>
           <label class="layout-row layout-check">
             <input id="focus-mode" type="checkbox" />

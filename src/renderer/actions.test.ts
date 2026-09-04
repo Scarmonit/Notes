@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { keyMap, matchActions, type Action } from './actions';
+import { keyMap, matchActions, menuModel, pillActions, type Action } from './actions';
 
 const noop = (): void => undefined;
 
@@ -71,5 +71,66 @@ describe('keyMap', () => {
   it('gives a contested chord to whichever command claims it first', () => {
     const map = keyMap([act('a', 'A', { chord: 'ctrl+q' }), act('b', 'B', { chord: 'ctrl+q' })]);
     expect(map.get('ctrl+q')?.id).toBe('a');
+  });
+});
+
+const MENU_ACTIONS: Action[] = [
+  act('new', 'New note', { menuSection: 'Create' }),
+  act('import', 'Import files…', { menuSection: 'Create' }),
+  act('pin', 'Pin this note', { menuSection: 'This note' }),
+  act('task', 'Checklist item', { group: 'Writing', menuSection: 'Insert', pill: { label: 'Task', priority: 4 } }),
+  act('date', 'Insert the date', { group: 'Writing', menuSection: 'Insert', pill: { label: 'Date', priority: 3 } }),
+  act('undo', 'Undo', { group: 'Writing', menuSection: 'Edit' }),
+  act('preview', 'Markdown preview', { group: 'View' }),
+  act('outline', 'Outline', { group: 'View' }),
+  act('sidebar', 'Toggle the sidebar', { group: 'Window', menuSection: 'Workspace' }),
+];
+
+describe('menuModel', () => {
+  it('gives one menu per group, in menu order, named for the one note in front of you', () => {
+    expect(menuModel(MENU_ACTIONS).map((m) => m.name)).toEqual(['Note', 'Write', 'View', 'Window']);
+  });
+
+  it('puts every command in exactly one menu, and keeps them all', () => {
+    const placed = menuModel(MENU_ACTIONS).flatMap((m) => m.sections.flatMap((s) => s.items.map((a) => a.id)));
+    expect(placed.sort()).toEqual(MENU_ACTIONS.map((a) => a.id).sort());
+  });
+
+  it('groups the commands under the headings they declare, in registry order', () => {
+    const note = menuModel(MENU_ACTIONS)[0];
+    expect(note.sections.map((s) => s.name)).toEqual(['Create', 'This note']);
+    expect(note.sections[0].items.map((a) => a.id)).toEqual(['new', 'import']);
+  });
+
+  it('draws a menu whose commands claim no heading as one list', () => {
+    const view = menuModel(MENU_ACTIONS).find((m) => m.group === 'View');
+    expect(view?.sections).toHaveLength(1);
+    expect(view?.sections[0].name).toBeNull();
+    expect(view?.sections[0].items.map((a) => a.id)).toEqual(['preview', 'outline']);
+  });
+
+  it('starts a fresh section when a heading comes round again, rather than merging them', () => {
+    const split = [act('a', 'A', { menuSection: 'One' }), act('b', 'B', { menuSection: 'Two' }), act('c', 'C', { menuSection: 'One' })];
+    expect(menuModel(split)[0].sections.map((s) => s.name)).toEqual(['One', 'Two', 'One']);
+  });
+
+  it('leaves a menu with no commands empty rather than inventing one', () => {
+    expect(menuModel([])).toHaveLength(4);
+    expect(menuModel([])[0].sections).toEqual([]);
+  });
+});
+
+describe('pillActions', () => {
+  it('returns only the commands with a button, the one that survives longest first', () => {
+    expect(pillActions(MENU_ACTIONS).map((a) => a.id)).toEqual(['task', 'date']);
+  });
+
+  it('drops from the end as a pane narrows, so the lowest priority goes first', () => {
+    const pills = pillActions(MENU_ACTIONS);
+    expect(pills.slice(0, pills.length - 1).map((a) => a.id)).toEqual(['task']);
+  });
+
+  it('finds nothing to show when no command asks for a button', () => {
+    expect(pillActions([act('a', 'A')])).toEqual([]);
   });
 });

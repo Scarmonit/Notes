@@ -47,7 +47,7 @@ A keyboard-first markdown notes app for Windows: a sidebar of notes and a page t
 
 ## Shortcuts
 
-The full list lives in the app on `Ctrl+/`, and every command is also reachable from the palette on `Ctrl+Shift+K`.
+The full list lives in the app on `Ctrl+/`, and every command is also reachable from the palette on `Ctrl+Shift+K`. You do not have to remember any of them: each pane's header carries buttons for the writing commands and four menus — **Note**, **Write**, **View**, **Window** — holding every command in the app with its shortcut printed beside it (`F10`, or `Alt` on its own, opens them from the keyboard; Layout, `Ctrl+,`, turns them off).
 
 | Keys | Action |
 | --- | --- |
@@ -245,11 +245,11 @@ src/main/       Electron main process: window, tray, IPC, the stores bound to us
                 server (ipc-server.ts), Squirrel hooks (squirrel.ts), the quick-note box (capture.ts)
 src/preload/    contextBridge API (window.notesApi)
 src/renderer/   UI: notes.ts, tasks.ts, fences.ts, find.ts, outline.ts and inline.ts (pure),
-                richeditor.ts (markdown <-> DOM), actions.ts (the command registry the keys, sheet
-                and palette all read), markdown.ts and highlight.ts, importer.ts,
+                richeditor.ts (markdown <-> DOM), actions.ts (the command registry the keys, sheet,
+                palette and pane menus all read), markdown.ts and highlight.ts, importer.ts,
                 time.ts, main.ts (DOM + keys)
 src/shared/     Types, IPC channel names, key chords, and the rules for settings,
                 the note file format (notes-folder.ts), notes.json and the snapshot ring
 ```
 
-Every command in the app is one entry in `ACTIONS` in `src/renderer/main.ts`. The keyboard map, the shortcut sheet and the command palette are all generated from that list, so adding a command adds its key and both of its listings at once.
+Every command in the app is one entry in `ACTIONS` in `src/renderer/main.ts`. The keyboard map, the shortcut sheet, the command palette and the pane's own menus are all generated from that list, so adding a command adds its key and all three of its listings at once. An entry says where it sits in the menus with `menuSection`, and the four that earn a button of their own say so with `pill`.
