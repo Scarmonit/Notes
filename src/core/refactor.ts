@@ -1,4 +1,4 @@
-import { LINK_PATTERN, linkKey, titleOf } from '../renderer/notes';
+import { LINK_PATTERN, linkKey, linkMarkdown, linkParts, titleOf } from '../renderer/notes';
 import { headingAt, headingsIn } from '../renderer/outline';
 import type { Note } from '../shared/types';
 
@@ -69,11 +69,14 @@ const HEADING_LINE = /^[ \t]{0,3}#{1,6}[ \t]+\S/;
 
 const isHeadingLine = (line: string): boolean => HEADING_LINE.test(line);
 
-/** The line after the last line of the section a heading opens: up to the next heading of any level. */
+/**
+ * The line after the last line of the section a heading opens: up to the next
+ * heading of any level. The same headings the picker shows, so a `#` comment
+ * inside a code fence does not end the section early and put words in the code.
+ */
 function sectionEnd(lines: string[], headingLine: number): number {
-  let end = headingLine + 1;
-  while (end < lines.length && !isHeadingLine(lines[end])) end++;
-  return end;
+  const next = headingsIn(lines.join('\n')).find((h) => h.line > headingLine);
+  return next ? next.line : lines.length;
 }
 
 /** Joins two blocks with one blank line between them, as the capture box does. */
@@ -259,11 +262,10 @@ export function rewriteLinks(body: string, from: string, to: string): { body: st
   const want = linkKey(from);
   let count = 0;
   const next = body.replace(LINK, (whole, inner: string) => {
-    const bar = inner.indexOf('|');
-    const target = bar >= 0 ? inner.slice(0, bar) : inner;
+    const { target, alias } = linkParts(inner);
     if (linkKey(target) !== want) return whole;
     count++;
-    return `[[${to.trim()}${bar >= 0 ? inner.slice(bar) : ''}]]`;
+    return linkMarkdown(to, alias);
   });
   return { body: next, count };
 }
@@ -316,7 +318,8 @@ const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&'
 
 /** Every #from and #from/child rewritten to #to, whole tokens only, as tagsOf reads them. */
 export function rewriteTags(body: string, from: string, to: string): { body: string; count: number } {
-  const re = new RegExp(`(?:^|(?<=\\s))#${escapeRe(from)}(?=/[\\p{L}\\p{N}_-]|(?![\\p{L}\\p{N}_/-]))`, 'giu');
+  // A trailing slash (`#wow/`) is not part of the tag, as tagsOf reads it, so it ends the token too.
+  const re = new RegExp(`(?:^|(?<=\\s))#${escapeRe(from)}(?=/[\\p{L}\\p{N}_-]|(?![\\p{L}\\p{N}_-]))`, 'giu');
   let count = 0;
   const next = body.replace(re, () => {
     count++;

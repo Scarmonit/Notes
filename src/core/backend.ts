@@ -22,8 +22,13 @@ export interface Backend {
   status(id: string): Promise<NoteStatus>;
   /** The file a note is stored in, or null when it has not been written yet. */
   fileOf(id: string): Promise<string | null>;
-  /** Creates or replaces a note. Throws `busy` while the note is being typed in, unless forced. */
-  put(note: Note, options?: { force?: boolean }): Promise<Note>;
+  /**
+   * Creates or replaces a note. Throws `busy` while the note is being typed
+   * in, or when `expectUpdatedAt` is given and the note has changed since it
+   * was read at that moment (words typed in the window while an editor was
+   * open), unless forced.
+   */
+  put(note: Note, options?: { force?: boolean; expectUpdatedAt?: number }): Promise<Note>;
   /** Moves a note to the trash. */
   remove(id: string, options?: { force?: boolean }): Promise<boolean>;
   /** Files a quick note in the Inbox, the capture box's way. Resolves to the Inbox note's id. */

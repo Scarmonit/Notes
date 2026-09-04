@@ -48,7 +48,7 @@ function matchLine(note: Note, terms: string[]): { line: number; text: string } 
 
 /** Puts a note through the backend, turning a busy refusal into the hint the person needs. */
 export async function save(ctx: Ctx, note: Note, force?: boolean): Promise<Note> {
-  return (await ctx.backend()).put(note, { force });
+  return (await ctx.backend()).put(note, { force, expectUpdatedAt: ctx.readAt.get(note.id) });
 }
 
 /** The template a name means, expanded for a title; a clear failure when there is no such template. */
@@ -263,8 +263,9 @@ export function register(program: Command, use: () => Ctx): void {
     const dash = words.includes('-');
     const text = words.filter((w) => w !== '-').join(' ');
     const quiet = opts.divider || opts.template !== undefined;
-    // A divider or a template stands on its own, so no editor opens for the absence of words; piped text is still taken.
-    let addition = await gatherBody({ text, content: opts.content, file: opts.file, dash, edit: quiet ? false : opts.edit, noInput: c.opts.input === false });
+    // A divider or a template stands on its own, so no editor opens for the absence of words; piped text is still taken —
+    // unless the pipe carries the note's name (`append -`), which is not the addition.
+    let addition = await gatherBody({ text, content: opts.content, file: opts.file, dash, edit: quiet ? false : opts.edit, noInput: c.opts.input === false || selector === '-' });
     if (opts.divider) addition = addition ? `---\n\n${addition.trim()}` : '---';
     const note = await c.note(selector);
     if (opts.template) {
@@ -346,13 +347,16 @@ export function register(program: Command, use: () => Ctx): void {
       .action(async (selectors: string[]) => {
         const c = ctx();
         const notes = await (await c.backend()).notes();
+        const done: Note[] = [];
         for (const selector of selectors) {
           const note = await c.note(selector, notes);
           const { pinned: _was, ...rest } = note;
           const next: Note = pinned ? { ...rest, pinned: true } : rest;
           if ((note.pinned === true) !== pinned) await save(c, next, true);
-          c.out.value(describe(next), () => `${pinned ? 'Pinned' : 'Unpinned'} "${titleOf(note)}"`);
+          done.push(next);
         }
+        // One document however many notes: a list only when more than one was named.
+        c.out.value(done.length === 1 ? describe(done[0]) : done.map((n) => describe(n)), () => done.map((n) => `${pinned ? 'Pinned' : 'Unpinned'} "${titleOf(n)}"`).join('\n'));
       });
   }
 

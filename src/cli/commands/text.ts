@@ -141,8 +141,10 @@ export function register(program: Command, use: () => Ctx): void {
       const tasks = tasksIn(note.body);
       let line: number;
       const byLine = /^line:(\d+)$/i.exec(which);
-      if (byLine) line = Number(byLine[1]) - 1;
-      else {
+      if (byLine) {
+        line = Number(byLine[1]) - 1;
+        if (line < 0) throw new CliError('Lines count from 1: line:1 is the first', EXIT.usage);
+      } else {
         const n = Number(which);
         if (!Number.isInteger(n) || n < 1) throw new CliError(`Which task? A number from 1 to ${tasks.length}, or line:N`, EXIT.usage);
         const task = tasks[n - 1];

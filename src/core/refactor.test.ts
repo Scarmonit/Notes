@@ -38,6 +38,10 @@ describe('insert (the command line append)', () => {
   });
   it('puts text at the end of a heading section, or makes the heading', () => {
     expect(insert('# A\n\nx\n\n# B\n\ny', 'z', { heading: 'A' })).toBe('# A\n\nx\n\nz\n\n# B\n\ny');
+    // A `#` comment inside a code fence is not a heading: the section runs on past the fence.
+    const fenced = '# Setup\n\n```sh\n# install deps\nnpm i\n```\n\n# Next\n\ny';
+    expect(insert(fenced, 'z', { heading: 'Setup' })).toBe('# Setup\n\n```sh\n# install deps\nnpm i\n```\n\nz\n\n# Next\n\ny');
+    expect(placeBlock(fenced, 'z', { line: 0 })).toBe('# Setup\n\n```sh\n# install deps\nnpm i\n```\n\nz\n\n# Next\n\ny');
     expect(insert('# A\n\nx', 'z', { heading: 'b' })).toBe('# A\n\nx\n\n## b\n\nz');
     expect(insert('# A\n\nx\n\n# B', 'z', { heading: 'a', inline: true })).toBe('# A\n\nx z\n\n# B');
   });
@@ -189,6 +193,8 @@ describe('rewriteTags and planTagRename', () => {
   it('rewrites whole tags and nested ones, not words or URLs', () => {
     const body = '#wow and #wow/commands, #wowza, http://x.com/#wow, code#wow, #WOW';
     expect(rewriteTags(body, 'wow', 'games')).toEqual({ body: '#games and #games/commands, #wowza, http://x.com/#wow, code#wow, #games', count: 3 });
+    // A trailing slash is not part of the tag, as tagsOf reads it, so it is renamed too.
+    expect(rewriteTags('#wow/ then', 'wow', 'games')).toEqual({ body: '#games/ then', count: 1 });
   });
   it('renames across notes and counts', () => {
     const notes = [note('a', 'x #old'), note('b', '#old/kid'), note('c', '#other')];

@@ -57,6 +57,13 @@ describe('formatNoteFile / parseNoteFile', () => {
     expect(parsed.note.updatedAt).toBe(5000);
   });
 
+  it('takes a number past what a date can hold for no date, so the file can be written back', () => {
+    // Nanoseconds from another tool: a Date cannot hold them, and formatting one would throw on every save.
+    const parsed = parseNoteFile('---\nid: x\ncreated: 1756908000000000000\n---\nwords\n', facts);
+    expect(parsed.note.createdAt).toBe(5000);
+    expect(() => formatNoteFile(parsed.note, parsed.extra)).not.toThrow();
+  });
+
   it('records a deletion time when the file is in the trash', () => {
     const note: Note = { id: 'a', body: 'gone', createdAt: 1, updatedAt: 2 };
     const parsed = parseNoteFile(formatNoteFile(note, [], 90_000), facts);

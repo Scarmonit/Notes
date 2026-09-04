@@ -1,7 +1,7 @@
 import katex from 'katex';
 import { marked, type TokenizerAndRendererExtension, type Tokens } from 'marked';
 import { highlightCode } from '../renderer/highlight';
-import { LINK_PATTERN } from '../renderer/notes';
+import { LINK_PATTERN, linkParts } from '../renderer/notes';
 
 /**
  * How markdown becomes HTML, in one place: the wikilink and math
@@ -35,12 +35,14 @@ const wikilink: TokenizerAndRendererExtension = {
   start: (src: string) => src.indexOf('[['),
   tokenizer(src: string) {
     const m = WIKILINK.exec(src);
-    if (!m || !m[1].trim()) return undefined;
-    return { type: 'wikilink', raw: m[0], text: m[1].trim() };
+    if (!m) return undefined;
+    const { target, alias } = linkParts(m[1]);
+    if (!target) return undefined;
+    return { type: 'wikilink', raw: m[0], text: target, alias };
   },
   renderer(token) {
     const target = escapeHtml(token.text);
-    return `<span class="inline-link" data-link="${target}">${target}</span>`;
+    return `<span class="inline-link" data-link="${target}">${escapeHtml((token.alias as string | undefined) ?? token.text)}</span>`;
   },
 };
 

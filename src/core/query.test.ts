@@ -105,6 +105,8 @@ describe('parseQuery (the search box grammar)', () => {
     expect(parseQuery('-todo: pinned:no task:', now)).toMatchObject({ hasTodo: false, pinned: false, hasTasks: true });
     expect(parseQuery('created:>7d updated:<2026-01-01', now)).toMatchObject({ createdAfter: now - 7 * 86400 * 1000, updatedBefore: new Date(2026, 0, 1).getTime() });
     expect(parseQuery('created:2026-01-02', now)).toMatchObject({ createdAfter: new Date(2026, 0, 2).getTime(), createdBefore: new Date(2026, 0, 3).getTime() - 1 });
+    // A short bare number is a slip, not a date: Date.parse would make `5` the year 2001.
+    expect(parseQuery('created:>5', now).createdAfter).toBeUndefined();
     expect(parseQuery('links:"My plan" from:Shopping', now)).toMatchObject({ linksToTitle: 'My plan', linkedFromTitle: 'Shopping' });
     expect(parseQuery('due:today', now).due).toEqual({ until: new Date(2026, 8, 3, 23, 59, 59, 999).getTime() });
   });

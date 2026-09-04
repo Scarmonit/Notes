@@ -81,6 +81,10 @@ describe('note links', () => {
     expect(renderMarkdown('see [[Other note]]')).toContain('<span class="inline-link" data-link="Other note">Other note</span>');
   });
 
+  it('shows an aliased link by its alias, still carrying its target', () => {
+    expect(renderMarkdown('see [[Other note|that one]]')).toContain('<span class="inline-link" data-link="Other note">that one</span>');
+  });
+
   it('leaves a link inside code as the characters that were typed', () => {
     expect(renderMarkdown('`[[not a link]]`')).toContain('<code>[[not a link]]</code>');
     expect(renderMarkdown('```\n[[not a link]]\n```')).toContain('[[not a link]]');

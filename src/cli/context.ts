@@ -120,7 +120,15 @@ export class Ctx {
   async note(selector: string, notes?: Note[]): Promise<Note> {
     const text = await this.selectorText(selector);
     const all = notes ?? (await (await this.backend()).notes());
-    return this.settle(resolveNote(all, text), text, (n) => titleOf(n), 'note');
+    return this.read(await this.settle(resolveNote(all, text), text, (n) => titleOf(n), 'note'));
+  }
+
+  /** When each note named was read, so a save can be refused if the window changed it meanwhile. */
+  readonly readAt = new Map<string, number>();
+
+  private read(note: Note): Note {
+    this.readAt.set(note.id, note.updatedAt);
+    return note;
   }
 
   async trashed(selector: string, items?: TrashedNote[]): Promise<TrashedNote> {
@@ -153,7 +161,7 @@ export class Ctx {
   async pick(notes: Note[], message = 'Which note?'): Promise<Note> {
     if (!this.interactive()) throw new CliError('Picking a note needs a terminal; name the note instead', EXIT.usage);
     if (notes.length === 0) throw new CliError('There are no notes', EXIT.notFound);
-    return askSearch<Note>({
+    return this.read(await askSearch<Note>({
       message,
       source: (term) => {
         const q = (term ?? '').toLowerCase();
@@ -162,7 +170,7 @@ export class Ctx {
           .slice(0, 30)
           .map((n) => ({ name: titleOf(n), value: n, description: snippetOf(n, 60) }));
       },
-    });
+    }));
   }
 
   /**

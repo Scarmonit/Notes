@@ -79,9 +79,12 @@ export function createFileBackend(root: string, options: FileBackendOptions): Ba
       const name = store.fileNameOf(id);
       return name ? path.join(paths.notes, name) : null;
     },
-    put: async (note) => {
+    put: async (note, options) => {
       const notes = await all();
       const i = notes.findIndex((n) => n.id === note.id);
+      if (i >= 0 && options?.expectUpdatedAt !== undefined && notes[i].updatedAt !== options.expectUpdatedAt && !options.force) {
+        throw new CliError(`"${titleOf(notes[i])}" changed since it was read; pass --force to replace it anyway`, EXIT.busy);
+      }
       const next = i < 0 ? [note, ...notes] : notes.map((n) => (n.id === note.id ? note : n));
       await commit(next);
       return note;

@@ -11,6 +11,8 @@ import {
   allTags,
   backlinksOf,
   linksIn,
+  linkMarkdown,
+  linkParts,
   noteForLink,
   tagMatches,
   tagPath,
@@ -270,6 +272,12 @@ describe('links between notes', () => {
   });
   it('ignores an unclosed or empty link, and one broken across lines', () => {
     expect(linksIn('[[ ]] [[open and [[a\nb]]')).toEqual([]);
+  });
+  it('points an aliased link at its target, the way a rename already read it', () => {
+    expect(linksIn('see [[Plan|the plan]] and [[plan]]')).toEqual(['Plan']);
+    expect(linkParts('Plan|the plan')).toEqual({ target: 'Plan', alias: 'the plan' });
+    expect(linkParts('Plan|')).toEqual({ target: 'Plan' });
+    expect(linkMarkdown('Plan', 'the plan')).toBe('[[Plan|the plan]]');
   });
   it('reads a link through the title of the note it names', () => {
     const list = [note('a', 'body', 1), { ...note('b', 'body', 2), title: 'Reading list' }];

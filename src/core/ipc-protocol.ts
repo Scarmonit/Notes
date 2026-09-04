@@ -150,7 +150,8 @@ export interface Methods {
   /** The filename a live note is stored under, or null while it has never been written. */
   'note.file': { params: { id: string }; result: { path: string | null } };
   /** Creates or replaces a note. Refused with `busy` while the note is being typed in, unless forced. */
-  'note.put': { params: { note: Note; force?: boolean }; result: Note };
+  /** `expectUpdatedAt`: the note's `updatedAt` as read; refused as busy when the note has changed since, unless forced. */
+  'note.put': { params: { note: Note; force?: boolean; expectUpdatedAt?: number }; result: Note };
   'note.remove': { params: { id: string; force?: boolean }; result: { removed: boolean } };
   /** Appends a quick note to the Inbox, exactly as the capture box does. */
   inbox: { params: { text: string }; result: { id: string } };
@@ -225,4 +226,26 @@ export const MAIN_METHODS: ReadonlySet<MethodName> = new Set<MethodName>([
   'notify',
   'watch.subscribe',
   'watch.unsubscribe',
+]);
+
+/** Every method there is, so a name from a newer command line is refused as unknown rather than passed to the window. */
+export const ALL_METHODS: ReadonlySet<string> = new Set<MethodName>([
+  ...MAIN_METHODS,
+  'note.list',
+  'note.get',
+  'note.status',
+  'note.put',
+  'note.remove',
+  'inbox',
+  'refactor.apply',
+  'trash.restore',
+  'history.keep',
+  'history.restore',
+  'ui.get',
+  'ui.set',
+  'commands',
+  'run',
+  'open',
+  'export.render',
+  'render.html',
 ]);

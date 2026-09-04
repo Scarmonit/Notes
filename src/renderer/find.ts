@@ -20,11 +20,18 @@ const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$
 /** The pattern for a query, or null when it is empty or not a valid expression. */
 function patternOf(query: string, opts: FindOptions, mode: 'all' | 'here' | 'one'): RegExp | null {
   if (!query) return null;
-  const flags = `${mode === 'all' ? 'g' : mode === 'here' ? 'y' : ''}${opts.caseSensitive ? '' : 'i'}u`;
+  const flags = `${mode === 'all' ? 'g' : mode === 'here' ? 'y' : ''}${opts.caseSensitive ? '' : 'i'}`;
+  const source = opts.regex ? query : escapeRegex(query);
   try {
-    return new RegExp(opts.regex ? query : escapeRegex(query), flags);
+    return new RegExp(source, `${flags}u`);
   } catch {
-    return null;
+    // Unicode mode is stricter about escapes (`\-`, `\_`) that a typed expression may well use.
+    if (!opts.regex) return null;
+    try {
+      return new RegExp(source, flags);
+    } catch {
+      return null;
+    }
   }
 }
 

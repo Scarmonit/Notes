@@ -91,7 +91,11 @@ export function parseWhen(text: string, now = Date.now()): number | null {
   if (s === 'yesterday') return addDays(startOfDay(now), -1);
   const span = /^(\d+(?:\.\d+)?)\s*([mhdwy])$/.exec(s);
   if (span) return now - Number(span[1]) * UNIT_MS[span[2]];
-  if (/^\d+$/.test(s) && s.length >= 12) return Number(s);
+  if (/^\d+$/.test(s)) {
+    // Milliseconds are the one bare number the grammar takes; a shorter one
+    // (`created:>5`) is a slip, not the year 2001 Date.parse would make of it.
+    return s.length >= 12 ? Number(s) : null;
+  }
   // A bare date is that day here, as every other date in the grammar is; Date.parse would make it UTC midnight.
   const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
   if (day) return new Date(Number(day[1]), Number(day[2]) - 1, Number(day[3])).getTime();

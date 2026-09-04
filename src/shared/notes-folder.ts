@@ -70,10 +70,15 @@ function unquote(value: string): string {
 /** A date written as ISO text, or as a number of milliseconds. Null when it is neither. */
 function timeOf(value: string | undefined): number | null {
   if (!value) return null;
-  if (/^\d+$/.test(value)) return Number(value);
+  // Past what a Date can hold (nanoseconds from another tool, say) is no
+  // date: writing it back would throw, and every save formats every note.
+  if (/^\d+$/.test(value)) return Number(value) <= MAX_TIME ? Number(value) : null;
   const t = Date.parse(value);
   return Number.isFinite(t) ? t : null;
 }
+
+/** The largest number of milliseconds a Date can stand for. */
+const MAX_TIME = 8.64e15;
 
 /**
  * Reads one note file. Never throws: every field has a fallback in the facts

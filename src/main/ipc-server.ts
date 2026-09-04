@@ -5,6 +5,7 @@ import net from 'node:net';
 import path from 'node:path';
 import readline from 'node:readline';
 import {
+  ALL_METHODS,
   EXIT,
   IpcError,
   MAIN_METHODS,
@@ -148,7 +149,12 @@ export async function startIpcServer(deps: ServerDeps): Promise<IpcServer> {
       }
       case 'attach': {
         const p = params as Params<'attach'>;
-        return { url: await deps.attachments.saveAttachment(new Uint8Array(Buffer.from(p.bytes, 'base64')), p.name) };
+        try {
+          return { url: await deps.attachments.saveAttachment(new Uint8Array(Buffer.from(p.bytes, 'base64')), p.name) };
+        } catch (err) {
+          // A file that is not an image is the caller's mistake, the same exit code as with no app running.
+          throw new IpcError(errorShape(RPC_ERROR.invalidParams, err instanceof Error ? err.message : String(err), EXIT.usage));
+        }
       }
       case 'settings.get':
         return deps.settings.settings();
@@ -173,6 +179,8 @@ export async function startIpcServer(deps: ServerDeps): Promise<IpcServer> {
   }
 
   async function dispatch(method: MethodName, params: unknown, socket: net.Socket): Promise<unknown> {
+    // A newer command line's method: named as unknown, so it can say "update the app" rather than "the window cannot".
+    if (!ALL_METHODS.has(method)) throw new IpcError(errorShape(RPC_ERROR.methodNotFound, `Unknown method ${String(method)}`, EXIT.appError));
     if (MAIN_METHODS.has(method)) return handleMain(method, params as Params<typeof method>, socket);
     // The window's business. Bringing it up first when the call is about showing something.
     if (method === 'open') deps.showWindow();

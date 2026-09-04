@@ -170,18 +170,30 @@ const LINK = new RegExp(LINK_PATTERN, 'g');
 /** How a link's target is compared: by title, ignoring case and stray spaces. */
 export const linkKey = (target: string): string => target.trim().toLowerCase();
 
+/**
+ * The inside of a link taken apart: `[[Target|shown as this]]` points at
+ * Target and reads as the alias, the way Obsidian writes it. Everything that
+ * follows, lists, renders or rewrites a link agrees on this one split.
+ */
+export function linkParts(inner: string): { target: string; alias?: string } {
+  const bar = inner.indexOf('|');
+  if (bar < 0) return { target: inner.trim() };
+  const alias = inner.slice(bar + 1).trim();
+  return alias ? { target: inner.slice(0, bar).trim(), alias } : { target: inner.slice(0, bar).trim() };
+}
+
 /** The titles a note links to, in order of appearance, without repeats. */
 export function linksIn(body: string): string[] {
   const out: string[] = [];
   for (const m of body.matchAll(LINK)) {
-    const target = m[1].trim();
+    const { target } = linkParts(m[1]);
     if (target && !out.some((t) => linkKey(t) === linkKey(target))) out.push(target);
   }
   return out;
 }
 
-/** The markdown for a link to a note title. */
-export const linkMarkdown = (target: string): string => `[[${target.trim()}]]`;
+/** The markdown for a link to a note title, shown as its alias when it has one. */
+export const linkMarkdown = (target: string, alias?: string): string => `[[${target.trim()}${alias?.trim() ? `|${alias.trim()}` : ''}]]`;
 
 /** The note a link points at: the one whose title it names, or nothing. */
 export function noteForLink(notes: Note[], target: string): Note | null {

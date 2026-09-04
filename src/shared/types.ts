@@ -22,6 +22,12 @@ export interface Note {
 export interface NotesFile {
   version: 1;
   notes: Note[];
+  /**
+   * The `seq` of the last change from outside the caller has taken in. A
+   * note the store found after that is missing from the list only because
+   * the caller has not heard of it yet, not because it was deleted.
+   */
+  seen?: number;
 }
 
 /** One markdown or text file chosen for import, read as text. */
@@ -69,6 +75,8 @@ export interface ExternalChanges {
   upserts: Note[];
   /** Ids whose files went away. */
   removed: string[];
+  /** Which change this is, counting up; a save quotes the last one it took in as `seen`. */
+  seq: number;
 }
 
 /** What the preload script exposes to the renderer as `window.notesApi`. */

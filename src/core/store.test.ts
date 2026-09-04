@@ -159,4 +159,72 @@ describe('store, re-reading the folder', () => {
     await store.loadNotes();
     expect(store.fileNameOf('b')).toBeNull();
   });
+
+  it('takes a folder that cannot be listed for an error, not for an empty one', async () => {
+    const store = createStore(root);
+    await store.saveNotes({ version: 1, notes: [note('a', 'Keep')] });
+    // A file where the trash folder should be lists as ENOTDIR: not there is fine, not listable is not.
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(store.trashDir, 'not a folder', 'utf8');
+    await expect(store.listTrash()).rejects.toThrow();
+  });
+
+  it('keeps the id of a file whose front matter was dropped by another editor', async () => {
+    const store = createStore(root);
+    await store.saveNotes({ version: 1, notes: [note('a', 'Keep'), note('b', 'Plan', { title: 'Plan' })] });
+    const dir = pathsFor(root).notes;
+    await fs.writeFile(path.join(dir, 'Plan.md'), 'Plan, rewritten\n', 'utf8');
+    const { notes } = await store.loadNotes();
+    const plan = notes.find((n) => n.id === 'b');
+    expect(plan?.body).toBe('Plan, rewritten');
+    expect(plan?.createdAt).toBe(1000);
+    expect(store.fileNameOf('b')).toBe('Plan.md');
+    expect(await fs.readFile(path.join(dir, 'Plan.md'), 'utf8')).toMatch(/^---\nid: b\n/);
+    expect(await fs.readdir(dir)).toEqual(['Keep.md', 'Plan.md']);
+  });
+
+  it('does not trash a note found from outside that a save made earlier has not heard of', async () => {
+    const store = createStore(root);
+    await store.saveNotes({ version: 1, notes: [note('a', 'Keep')] });
+    const dir = pathsFor(root).notes;
+    let seq = 0;
+    store.onChange((changes) => {
+      seq = changes.seq;
+    });
+    await fs.writeFile(path.join(dir, 'New.md'), '---\nid: n\n---\nDropped in\n', 'utf8');
+    await store.refresh();
+    expect(seq).toBeGreaterThan(0);
+    // A list made before that change: the new note is missing because it is unknown, not deleted.
+    await store.saveNotes({ version: 1, notes: [note('a', 'Keep')], seen: seq - 1 });
+    expect(store.fileNameOf('n')).toBe('New.md');
+    // A list made after it, still without the note, means what it says.
+    await store.saveNotes({ version: 1, notes: [note('a', 'Keep')], seen: seq });
+    expect(store.fileNameOf('n')).toBeNull();
+    expect((await store.listTrash()).map((t) => t.id)).toEqual(['n']);
+  });
+
+  it('on a first read, keeps the id with the file named for its title, not the copy that sorts first', async () => {
+    const dir = pathsFor(root).notes;
+    await fs.mkdir(dir, { recursive: true });
+    const text = '---\nid: p\ntitle: "Plan"\n---\nPlan\n';
+    await fs.writeFile(path.join(dir, 'Plan.md'), text, 'utf8');
+    await fs.writeFile(path.join(dir, 'Plan (conflicted copy).md'), text.replace('Plan\n', 'Plan, elsewhere\n'), 'utf8');
+    const store = createStore(root);
+    await store.loadNotes();
+    expect(store.fileNameOf('p')).toBe('Plan.md');
+  });
+
+  it('gives a sync tool’s copy of a note the new id, not the note itself, whichever sorts first', async () => {
+    const store = createStore(root);
+    await store.saveNotes({ version: 1, notes: [note('p', 'Plan', { title: 'Plan' })] });
+    const dir = pathsFor(root).notes;
+    const text = await fs.readFile(path.join(dir, 'Plan.md'), 'utf8');
+    // "Plan (conflicted copy).md" sorts before "Plan.md".
+    await fs.writeFile(path.join(dir, 'Plan (conflicted copy).md'), text.replace('Plan\n', 'Plan, elsewhere\n'), 'utf8');
+    const { notes } = await store.loadNotes();
+    expect(store.fileNameOf('p')).toBe('Plan.md');
+    const copy = notes.find((n) => n.id !== 'p');
+    expect(copy?.body).toBe('Plan, elsewhere');
+    expect(store.fileNameOf(copy?.id ?? '')).toBe('Plan (conflicted copy).md');
+  });
 });

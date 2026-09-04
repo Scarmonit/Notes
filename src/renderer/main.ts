@@ -15,6 +15,7 @@ import {
   createNote,
   exportBody,
   linkKey,
+  linkParts,
   neighborOf,
   noteForLink,
   removeNote,
@@ -291,10 +292,15 @@ const selected = (): Note | null => notes.find((n) => n.id === ui.selectedId) ??
 
 const SAVE_DELAY = 300;
 let dirty = false;
+/** The note with words typed into it since the last save, if any: the one a file arriving from outside must not replace. */
+let typedId: string | null = null;
 let saveTimer: number | null = null;
 let statusTimer: number | null = null;
 
-const toFile = (): NotesFile => ({ version: 1, notes });
+/** The last change from outside taken in, quoted with every save: a note found after it is not deleted by a list made before it. */
+let seenSeq = 0;
+
+const toFile = (): NotesFile => ({ version: 1, notes, seen: seenSeq });
 
 function scheduleSave(): void {
   dirty = true;
@@ -309,6 +315,7 @@ async function flush(): Promise<void> {
   }
   if (!dirty) return;
   dirty = false;
+  typedId = null;
   try {
     await window.notesApi.save(toFile());
     // A failure left on the line stays until a save goes through: this one did.
@@ -353,8 +360,10 @@ function clearStatus(): void {
 
 // The main process asks for this when the window is closing.
 window.notesApi.onFlushRequest(() => {
+  settlePendingTitle();
   if (!dirty) return null;
   dirty = false;
+  typedId = null;
   return toFile();
 });
 
@@ -668,7 +677,8 @@ function convertLinkOnClose(): void {
   range.setStart(pos.node, pos.offset - m[0].length);
   range.setEnd(pos.node, pos.offset);
   range.deleteContents();
-  const chip = makeLink(m[1].trim());
+  const typed = linkParts(m[1]);
+  const chip = makeLink(typed.target, typed.alias);
   range.insertNode(chip);
   caretAfter(chip);
 }
@@ -940,7 +950,8 @@ function select(id: string | null): void {
       const here = placeHere();
       if (here) journey = leave(journey, here);
     }
-    pendingTitle = null;
+    // A title still being typed goes onto the note being left, not away with it.
+    settlePendingTitle();
     if (id && !incidental) ui.recent = visited(ui.recent, id, Date.now());
   }
   // Choosing the note the search had landed on makes the arrival deliberate.
@@ -949,6 +960,11 @@ function select(id: string | null): void {
   saveUi();
   renderList();
   renderEditor();
+  // The title box may keep the focus across a chord: what it types next is this note's.
+  if (document.activeElement === el.title) {
+    const n = selected();
+    titleAtFocus = n ? { id: n.id, title: n.title } : null;
+  }
 }
 
 function focusEditor(): void {
@@ -1090,6 +1106,8 @@ function deleteSelected(): void {
   if (!n) return;
   const next = neighborOf(visibleNotes(), n.id);
   const title = titleOf(n);
+  // Words typed since the last save go to the file first, so the trash holds them.
+  void flush();
   notes = removeNote(notes, n.id);
   editLogs.delete(n.id);
   scheduleSave();
@@ -1155,6 +1173,7 @@ function commitEditor(): void {
   // Whatever was taken before an edit is now behind the model, not ahead of it.
   pendingEdit = null;
   markEmpty(el.editor);
+  typedId = n.id;
   scheduleSave();
   renderList();
   renderMeta();
@@ -1519,6 +1538,8 @@ function applyBody(body: string): void {
   editorNoteId = null;
   renderList();
   renderEditor();
+  // The find bar's hits were offsets into the old text.
+  if (!el.findBar.hidden) refreshFind();
 }
 
 // --- undo -------------------------------------------------------------------
@@ -1914,12 +1935,11 @@ async function runExport(kind: ExportKind): Promise<void> {
   const title = titleOf(n);
   const body = exportBody(n);
   showStatus('Exporting…', 0);
-  let request: ExportRequest;
-  if (kind === 'md') request = { kind, title, body };
-  else if (kind === 'txt') request = { kind, title, text: markdownToText(body) };
-  else request = { kind, ...(await renderedExport(n, kind === 'pdf' ? 'paper' : 'ink')) };
-
   try {
+    let request: ExportRequest;
+    if (kind === 'md') request = { kind, title, body };
+    else if (kind === 'txt') request = { kind, title, text: markdownToText(body) };
+    else request = { kind, ...(await renderedExport(n, kind === 'pdf' ? 'paper' : 'ink')) };
     const savedTo = await window.notesApi.exportNote(request);
     if (savedTo) showStatus(`Exported to ${fileNameOf(savedTo)}`, 4000);
     else clearStatus();
@@ -2072,6 +2092,8 @@ el.editor.addEventListener('keydown', (e) => {
   // Tab indents by two spaces instead of leaving the editor; Escape is the way out.
   if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey) {
     e.preventDefault();
+    // A selected picture or rule is not text to indent: the spaces would take its place.
+    if (chip) return;
     if (e.shiftKey) {
       const sel = window.getSelection();
       const node = sel?.anchorNode;
@@ -2121,6 +2143,22 @@ function shownTitle(n: Note): string {
 
 /** True while a rename waits on its question, so the blur that the question causes does not start another. */
 let committingTitle = false;
+
+/**
+ * Puts a title still being typed onto its note, without the question about
+ * links: for leaving the note by a chord, or the window closing, when there
+ * is no blur to commit it and no moment for a question.
+ */
+function settlePendingTitle(): void {
+  const n = selected();
+  const pending = pendingTitle;
+  pendingTitle = null;
+  if (pending === null || !n || committingTitle) return;
+  const next = pending.trim();
+  if (next === (n.title ?? '').trim()) return;
+  notes = updateTitle(notes, n.id, next);
+  scheduleSave();
+}
 
 /** Puts the title in the box onto the note; when links pointed at the old one, offers to update them. */
 async function commitTitle(): Promise<void> {
@@ -3284,11 +3322,14 @@ window.notesApi.onCapture(captureToInbox);
  * Files in the notes folder changed by something else — a sync tool, an
  * editor on another machine. They are taken as they are, except for the note
  * being written in this moment, whose unsaved words are not to be lost to a
- * file that arrived while they were typed.
+ * file that arrived while they were typed. That is the note typed in, not
+ * whichever is open: a save pending for some other note (a quick note filed
+ * in the Inbox, say) must not hold a file for the open note off for good.
  */
 function applyExternal(changes: ExternalChanges): void {
+  seenSeq = Math.max(seenSeq, changes.seq);
   let touched = 0;
-  const keep = dirty ? ui.selectedId : null;
+  const keep = dirty ? typedId : null;
   for (const id of changes.removed) {
     if (id === keep || !notes.some((n) => n.id === id)) continue;
     notes = removeNote(notes, id);
@@ -3799,7 +3840,9 @@ function travel(dir: -1 | 1): void {
   let step = dir < 0 ? goBack(journey, here) : goForward(journey, here);
   // A note deleted meanwhile is nowhere to go; skip past it.
   while (step && !notes.some((n) => n.id === step?.to.id)) {
-    journey = forget(step.journey, step.to.id);
+    // Forgotten from the journey as it was, not from the step's: the step
+    // already put `here` on the other stack, and the next try puts it again.
+    journey = forget(journey, step.to.id);
     step = dir < 0 ? goBack(journey, here) : goForward(journey, here);
   }
   if (!step) return;
@@ -3886,6 +3929,8 @@ const refactorHost: RefactorHost = {
     }
   },
   trash: (id) => {
+    // The trash copy is taken from the file: what was typed since the last save goes there first.
+    void flush();
     notes = removeNote(notes, id);
   },
   restore: async (id) => {
@@ -4604,6 +4649,12 @@ const CLI_NOT_FOUND = 3;
 const CLI_BUSY = 4;
 const CLI_APP_ERROR = 6;
 
+/** The layout state as the command line sees it: the settings alone, the same shape from `ui get` and `ui set`. */
+function uiState(): Omit<UiState, 'recent'> {
+  const { recent: _recent, ...rest } = ui;
+  return rest;
+}
+
 function noteById(id: string): Note {
   const n = notes.find((x) => x.id === id);
   if (!n) throw new CliRefusal(`No note with id ${id}`, CLI_NOT_FOUND);
@@ -4672,8 +4723,13 @@ const cliHandlers: Record<string, CliHandler> = {
   'note.list': () => notes,
   'note.get': ({ id }: { id: string }) => notes.find((n) => n.id === id) ?? null,
   'note.status': ({ id }: { id: string }) => ({ open: ui.selectedId === id, dirty: beingTyped(id) }),
-  'note.put': async ({ note, force }: { note: Note; force?: boolean }) => {
-    if (notes.some((n) => n.id === note.id)) refuseIfTyping(note.id, force);
+  'note.put': async ({ note, force, expectUpdatedAt }: { note: Note; force?: boolean; expectUpdatedAt?: number }) => {
+    const current = notes.find((n) => n.id === note.id);
+    if (current) refuseIfTyping(note.id, force);
+    // Words typed here while a command's editor was open are not to be replaced by what it read before them.
+    if (current && expectUpdatedAt !== undefined && current.updatedAt !== expectUpdatedAt && !force) {
+      throw new CliRefusal('That note changed in the window since it was read; pass --force to replace it anyway', CLI_BUSY);
+    }
     takeIn(note);
     await flush();
     return note;
@@ -4683,6 +4739,7 @@ const cliHandlers: Record<string, CliHandler> = {
     refuseIfTyping(id, force);
     const wasSelected = ui.selectedId === id;
     const next = wasSelected ? neighborOf(visibleNotes(), id) : ui.selectedId;
+    void flush();
     notes = removeNote(notes, id);
     scheduleSave();
     if (wasSelected) select(next);
@@ -4749,10 +4806,7 @@ const cliHandlers: Record<string, CliHandler> = {
     await flush();
     return { applied: touched };
   },
-  'ui.get': () => {
-    const { recent: _recent, ...rest } = ui;
-    return rest;
-  },
+  'ui.get': () => uiState(),
   'ui.set': ({ key, value }: { key: string; value: boolean | number | string | null }) => {
     if (key in UI_TOGGLES) {
       if (typeof value !== 'boolean') throw new CliRefusal(`${key} is on or off`, 2);
@@ -4769,7 +4823,7 @@ const cliHandlers: Record<string, CliHandler> = {
     } else {
       throw new CliRefusal(`No layout setting "${key}"`, 2);
     }
-    return { ...ui };
+    return uiState();
   },
   commands: () =>
     ACTIONS.map((a) => ({

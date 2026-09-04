@@ -42,6 +42,13 @@ interface Entry {
   text: string;
   /** Front-matter lines the app does not understand, written back unchanged. */
   extra: string[];
+  /**
+   * The change (`ExternalChanges.seq`) that first brought the file in from
+   * outside, or 0 for one the store wrote or read at the start. A save whose
+   * list was made before that change is missing the note because it has not
+   * heard of it, not because it was deleted.
+   */
+  since: number;
 }
 
 interface ReadFile extends ParsedNoteFile {
@@ -68,6 +75,8 @@ export interface Store {
   trashBodies(): Promise<string[]>;
   /** Resolves once every write queued so far has reached the disk. */
   drain(): Promise<void>;
+  /** Reads the folder for changes made outside now, as the watcher would, telling the listeners. */
+  refresh(): Promise<void>;
   watchNotes(onChange: ChangeListener): void;
   stopWatching(): void;
   /** Called after every write this store makes and every change it notices, with what differs. */
@@ -112,8 +121,12 @@ async function readNoteFiles(dir: string, unreadable?: Set<string>): Promise<Rea
   let names: string[];
   try {
     names = await fs.readdir(dir);
-  } catch {
-    return [];
+  } catch (err) {
+    // A folder that is not there is empty. One that cannot be listed just now
+    // (a sync tool or antivirus holding it) is not: taking it for empty would
+    // read as every note deleted at once, and a re-scan would trash them all.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
   }
   const out: ReadFile[] = [];
   for (const name of names.filter(isNoteFileName).sort()) {
@@ -146,6 +159,8 @@ export function createStore(root: string): Store {
   /** The ids waiting in the trash, so their history is kept while they wait. */
   const trashed = new Set<string>();
   const listeners = new Set<ChangeListener>();
+  /** Counts the passes over the folder made for changes from outside; see `Entry.since`. */
+  let changeSeq = 0;
 
   function emit(changes: ExternalChanges): void {
     if (changes.upserts.length === 0 && changes.removed.length === 0) return;
@@ -176,8 +191,45 @@ export function createStore(root: string): Store {
     const seen = new Set<string>();
     const notes: Note[] = [];
     const changed: Note[] = [];
+    /** The filenames in this pass, and the ids their front matter states. */
+    const present = new Set(files.map((f) => lower(f.name)));
+    const stated = new Set(files.filter((f) => !f.needsWrite).map((f) => f.note.id));
+    /** Which id each filename held last time, so a file keeps its identity through a rewrite. */
+    const owners = new Map<string, string>();
+    for (const [id, entry] of index) owners.set(lower(entry.name), id);
+    /**
+     * On a first read, with nothing known yet, two files stating one id are
+     * told apart by their names: the one named for its title is the note,
+     * the "(conflicted copy)" is the copy — not whichever sorts first.
+     */
+    const keeper = new Map<string, string>();
+    for (const f of files) {
+      if (f.needsWrite || index.has(f.note.id)) continue;
+      const held = keeper.get(f.note.id);
+      const base = fileNameFor(titleOf(f.note));
+      if (held === undefined || (!nameSuits(held, base) && nameSuits(f.name, base))) keeper.set(f.note.id, f.name);
+    }
     for (const f of files) {
       let { note, needsWrite } = f;
+      const owner = owners.get(lower(f.name));
+      if (needsWrite && owner !== undefined && !stated.has(owner)) {
+        // A file whose front matter was dropped by an editor is still the note
+        // it was: minting a fresh id would make its old one "removed", and the
+        // trash would take the very file just stamped with the new one.
+        const was = index.get(owner);
+        const created = was ? parseNoteFile(was.text, { id: owner, name: f.name, mtime: note.createdAt }).note.createdAt : note.createdAt;
+        note = { ...note, id: owner, createdAt: created };
+      } else if (!needsWrite) {
+        // A copy of a note, made by a sync tool under another name with the
+        // id intact, is the newcomer: the file the index already knows by
+        // that id stays the note, whichever of the two sorts first.
+        const held = index.get(note.id);
+        const keep = held ? held.name : keeper.get(note.id);
+        if (keep !== undefined && lower(keep) !== lower(f.name) && present.has(lower(keep))) {
+          note = { ...note, id: randomUUID() };
+          needsWrite = true;
+        }
+      }
       if (seen.has(note.id)) {
         note = { ...note, id: randomUUID() };
         needsWrite = true;
@@ -190,7 +242,7 @@ export function createStore(root: string): Store {
       }
       const before = index.get(note.id);
       if (!before || before.text !== text) changed.push(note);
-      index.set(note.id, { name: f.name, text, extra: f.extra });
+      index.set(note.id, { name: f.name, text, extra: f.extra, since: before?.since ?? changeSeq });
       notes.push(note);
     }
     // A file still on disk but unreadable this pass is not gone: its entry stays as last read.
@@ -280,10 +332,13 @@ export function createStore(root: string): Store {
     return queue(async () => {
       await fs.mkdir(notesDir, { recursive: true });
       const live = new Set(file.notes.map((n) => n.id));
-      const changes: ExternalChanges = { upserts: [], removed: [] };
+      const seen = file.seen ?? Infinity;
+      const changes: ExternalChanges = { upserts: [], removed: [], seq: changeSeq };
       // Removals first, so a renamed note can take a name a deleted one freed.
       for (const [id, entry] of [...index]) {
         if (live.has(id)) continue;
+        // Found from outside after this list was made: not deleted, just not heard of yet.
+        if (entry.since > seen) continue;
         await trashEntry(id, entry);
         changes.removed.push(id);
       }
@@ -308,7 +363,7 @@ export function createStore(root: string): Store {
           }
         }
         await writeAtomic(path.join(notesDir, name), text);
-        index.set(note.id, { name, text, extra });
+        index.set(note.id, { name, text, extra, since: 0 });
         changes.upserts.push(note);
       }
       emit(changes);
@@ -370,9 +425,9 @@ export function createStore(root: string): Store {
       const text = formatNoteFile(f.note, f.extra);
       await writeAtomic(path.join(notesDir, name), text);
       await fs.unlink(path.join(trashDir, f.name)).catch(() => undefined);
-      index.set(f.note.id, { name, text, extra: f.extra });
+      index.set(f.note.id, { name, text, extra: f.extra, since: 0 });
       trashed.delete(f.note.id);
-      emit({ upserts: [f.note], removed: [] });
+      emit({ upserts: [f.note], removed: [], seq: changeSeq });
       return f.note;
     });
   }
@@ -419,6 +474,8 @@ export function createStore(root: string): Store {
   function checkExternal(onChange: ChangeListener): Promise<void> {
     return queue(async () => {
       const before = new Map(index);
+      // Counted before the read, so a file first seen in this pass is dated to the change that reports it.
+      changeSeq++;
       const { changed, removed } = await readIntoIndex(notesDir);
       // A file taken away by hand still deserves the trash: what the app last
       // knew of it is written there, so a mis-drag in Explorer costs nothing.
@@ -427,7 +484,7 @@ export function createStore(root: string): Store {
         if (entry) await trashEntry(id, entry);
       }
       if (changed.length > 0 || removed.length > 0) {
-        const changes = { upserts: changed, removed };
+        const changes: ExternalChanges = { upserts: changed, removed, seq: changeSeq };
         onChange(changes);
         emit(changes);
       }
@@ -477,6 +534,7 @@ export function createStore(root: string): Store {
     expireTrash,
     trashBodies: () => queue(async () => (await readNoteFiles(trashDir)).map((f) => f.note.body)),
     drain: () => queue(async () => undefined),
+    refresh: () => checkExternal(() => undefined),
     watchNotes,
     stopWatching,
     onChange: (listener) => {

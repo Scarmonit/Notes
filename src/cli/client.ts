@@ -9,6 +9,7 @@ import {
   EXIT,
   IpcError,
   PROTOCOL,
+  RPC_ERROR,
   type IpcInfo,
   type MethodName,
   type Notifications,
@@ -198,7 +199,7 @@ export class AppBackend implements Backend {
     try {
       return await this.conn.call(method, params);
     } catch (err) {
-      if (err instanceof IpcError && err.code === -32601) {
+      if (err instanceof IpcError && err.code === RPC_ERROR.methodNotFound) {
         throw new CliError(`The running Notes (${this.version}) does not know '${method}'; update it or use --no-app`, EXIT.appError);
       }
       throw err;
@@ -210,7 +211,7 @@ export class AppBackend implements Backend {
   get = (id: string) => this.call('note.get', { id });
   status = (id: string) => this.call('note.status', { id });
   fileOf = (id: string) => this.call('note.file', { id }).then((r) => r.path);
-  put = (note: Note, options?: { force?: boolean }) => this.call('note.put', { note, force: options?.force });
+  put = (note: Note, options?: { force?: boolean; expectUpdatedAt?: number }) => this.call('note.put', { note, force: options?.force, expectUpdatedAt: options?.expectUpdatedAt });
   remove = (id: string, options?: { force?: boolean }) => this.call('note.remove', { id, force: options?.force }).then((r) => r.removed);
   inbox = (text: string) => this.call('inbox', { text }).then((r) => r.id);
   applyPlan = (plan: Parameters<Backend['applyPlan']>[0], options?: { force?: boolean }) => this.call('refactor.apply', { plan, force: options?.force });
@@ -260,7 +261,9 @@ export class AppBackend implements Backend {
         if (method === 'note.closed' && (params as { id: string }).id === id) resolve();
       });
     });
-    return Promise.race([closed, this.conn.whenLost()]).finally(off);
+    // The app quitting closes the note as surely as the window does: not an error.
+    const gone = this.conn.whenLost().catch(() => undefined);
+    return Promise.race([closed, gone]).finally(off);
   }
 
   async close(): Promise<void> {

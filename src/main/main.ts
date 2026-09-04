@@ -132,7 +132,7 @@ function createWindow(): BrowserWindow {
     };
     const onReply = async (_event: Electron.IpcMainEvent, file: NotesFile | null) => {
       clearTimeout(timer);
-      if (file) await saveNotes(file).catch((err) => console.error('[notes] flush on close failed', err));
+      if (file) await persist(file).catch((err) => console.error('[notes] flush on close failed', err));
       finish();
     };
     const timer = setTimeout(finish, 1500);
@@ -151,7 +151,7 @@ function createWindow(): BrowserWindow {
 /** Asks the renderer for anything unsaved without waiting on the answer. */
 function requestFlush(win: BrowserWindow): void {
   ipcMain.once(IPC.flushReply, (_event, file: NotesFile | null) => {
-    if (file) void saveNotes(file).catch((err) => console.error('[notes] flush to tray failed', err));
+    if (file) void persist(file).catch((err) => console.error('[notes] flush to tray failed', err));
   });
   win.webContents.send(IPC.flushRequest);
 }
@@ -166,6 +166,23 @@ function windowFor(event: Electron.IpcMainInvokeEvent): BrowserWindow {
 let mainWin: BrowserWindow | null = null;
 let ipcServer: IpcServer | null = null;
 let reminders: Reminders | null = null;
+/** The notes as last loaded or saved, for anything in main that needs them without a read of the folder. */
+let lastNotes: Note[] = [];
+
+/**
+ * Writes the notes and does what follows a write — reminders brought up to
+ * date, a snapshot taken, orphaned attachments swept — whether the save came
+ * on the timer, on the way to the tray, or on closing.
+ */
+async function persist(file: NotesFile): Promise<void> {
+  await saveNotes(file);
+  lastNotes = file.notes;
+  reminders?.update(file.notes);
+  // Both run behind the save, never in front of it: neither the snapshot
+  // ring nor the attachment sweep may delay or endanger the write itself.
+  void record(file.notes, trashedIds());
+  void sweepOrphans(file, trashBodies).catch((err) => console.error('[notes] attachment sweep failed', err));
+}
 
 /** Brings the window up at a note: from a reminder, or a notes:// link. */
 function openNoteInWindow(id: string): void {
@@ -188,8 +205,10 @@ function applyHotkeys(): { hotkeyFailed: boolean; captureHotkeyFailed: boolean }
 async function applySettings(next: Settings, fromWindow: boolean): Promise<Settings & { hotkeyFailed: boolean; captureHotkeyFailed: boolean }> {
   const stored = await saveSettings(next);
   const result = { ...stored, ...applyHotkeys() };
-  // Turning reminders on or off takes effect at once.
-  reminders?.update(await loadNotes().then((f) => f.notes));
+  // Turning reminders on or off takes effect at once — from the notes as last
+  // loaded or saved, not a fresh read of the folder: a file found by such a
+  // read would reach the store without the window hearing of it.
+  reminders?.update(lastNotes);
   if (!fromWindow && mainWin && !mainWin.isDestroyed()) mainWin.webContents.send(IPC.settingsChanged, stored);
   return result;
 }
@@ -282,17 +301,11 @@ if (squirrelLaunch) {
         .then((gone) => Promise.all(gone.map(forgetHistory)))
         .catch((err) => console.error('[notes] emptying the trash failed', err));
     }
+    lastNotes = file.notes;
     reminders?.update(file.notes);
     return file;
   });
-  ipcMain.handle(IPC.notesSave, async (_event, file: NotesFile) => {
-    await saveNotes(file);
-    reminders?.update(file.notes);
-    // Both run behind the save, never in front of it: neither the snapshot
-    // ring nor the attachment sweep may delay or endanger the write itself.
-    void record(file.notes, trashedIds());
-    void sweepOrphans(file, trashBodies).catch((err) => console.error('[notes] attachment sweep failed', err));
-  });
+  ipcMain.handle(IPC.notesSave, (_event, file: NotesFile) => persist(file));
   ipcMain.handle(IPC.openFolder, () => shell.openPath(notesDir()).then(() => undefined));
   ipcMain.handle(IPC.attach, (_event, bytes: Uint8Array, name: string) => saveAttachment(bytes, name));
   ipcMain.handle(IPC.pickAttachments, (event) => pickAttachments(windowFor(event)));

@@ -28,6 +28,13 @@ describe('findMatches', () => {
     expect(validQuery('(', plain)).toBe(true);
   });
 
+  it('takes the escapes a typed expression uses that Unicode mode refuses', () => {
+    // `\-` is a syntax error with the u flag; as a typed pattern it means a hyphen.
+    expect(findMatches('a-b a_b', 'a\\-b', re)).toEqual([{ start: 0, end: 3 }]);
+    expect(findMatches('a-b a_b', '[\\w-.]+', re)).toHaveLength(2);
+    expect(validQuery('a\\-b', re)).toBe(true);
+  });
+
   it('matches across lines', () => {
     expect(findMatches('one\ntwo\none', 'one', plain)).toHaveLength(2);
   });

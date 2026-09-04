@@ -4,6 +4,7 @@ import { EXIT } from '../../core/ipc-protocol';
 import { parseWhen } from '../../core/query';
 import { TRASH_AGE_MS } from '../../core/store';
 import { titleOf } from '../../renderer/notes';
+import type { Note } from '../../shared/types';
 import { describe, type Ctx } from '../context';
 import { iso, relative, type Column } from '../output';
 
@@ -54,12 +55,15 @@ export function register(program: Command, use: () => Ctx): void {
       const c = ctx();
       const backend = await c.backend();
       const items = await backend.trashList();
+      const back: Note[] = [];
       for (const selector of selectors) {
         const item = await c.trashed(selector, items);
         const note = await backend.trashRestore(item.id);
         if (!note) throw new CliError(`Could not put back ${item.id}`, EXIT.failure);
-        c.out.value(describe(note), () => `Put back "${titleOf(note)}"`);
+        back.push(note);
       }
+      // One document however many notes: a list only when more than one was named.
+      c.out.value(back.length === 1 ? describe(back[0]) : back.map((n) => describe(n)), () => back.map((n) => `Put back "${titleOf(n)}"`).join('\n'));
     });
 
   trash

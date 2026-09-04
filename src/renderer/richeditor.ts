@@ -1,6 +1,6 @@
 import { assetNameFromUrl, assetUrl, isSafeAssetName } from '../shared/assets';
 import { isFenceLine } from './fences';
-import { LINK_PATTERN, linkMarkdown } from './notes';
+import { LINK_PATTERN, linkMarkdown, linkParts } from './notes';
 
 /**
  * The editor is a contenteditable surface, not a textarea, so attached images
@@ -97,7 +97,7 @@ export interface Span {
 export type BodyToken =
   | ({ kind: 'image' } & ImageRef & Span)
   | ({ kind: 'rule'; marker: string } & Span)
-  | ({ kind: 'link'; target: string } & Span);
+  | ({ kind: 'link'; target: string; alias?: string } & Span);
 
 /** Every image, section rule and note link in a body, in order, with the span of text each occupies. */
 export function bodyTokens(body: string): BodyToken[] {
@@ -115,8 +115,8 @@ export function bodyTokens(body: string): BodyToken[] {
       continue;
     }
     if (match[5] !== undefined) {
-      const target = match[5].trim();
-      if (target) out.push({ kind: 'link', target, ...span });
+      const { target, alias } = linkParts(match[5]);
+      if (target) out.push(alias ? { kind: 'link', target, alias, ...span } : { kind: 'link', target, ...span });
       continue;
     }
     const ref = refOf(match);
@@ -174,14 +174,15 @@ export function isRule(node: unknown): node is HTMLHRElement {
  */
 const LINK_CLASS = 'inline-link';
 
-export function makeLink(target: string): HTMLSpanElement {
+export function makeLink(target: string, alias?: string): HTMLSpanElement {
   const span = document.createElement('span');
   span.className = LINK_CLASS;
   // The attribute rather than the property: the property does not always
   // reflect into the DOM, and the serializer reads what is actually there.
   span.setAttribute('contenteditable', 'false');
   span.dataset.link = target;
-  span.textContent = target;
+  if (alias) span.dataset.alias = alias;
+  span.textContent = alias ?? target;
   span.title = `Go to “${target}”`;
   return span;
 }
@@ -264,7 +265,7 @@ export function renderEditor(root: HTMLElement, body: string): void {
   let last = 0;
   for (const tok of bodyTokens(body)) {
     if (tok.start > last) doc.appendChild(document.createTextNode(body.slice(last, tok.start)));
-    doc.appendChild(tok.kind === 'rule' ? makeRule(tok.marker) : tok.kind === 'link' ? makeLink(tok.target) : makeChip(tok));
+    doc.appendChild(tok.kind === 'rule' ? makeRule(tok.marker) : tok.kind === 'link' ? makeLink(tok.target, tok.alias) : makeChip(tok));
     last = tok.end;
   }
   if (last < body.length) doc.appendChild(document.createTextNode(body.slice(last)));
@@ -366,7 +367,7 @@ function analyze(root: HTMLElement, keepTrailing = false): Analysis {
       // A link chip is a span, and a span is also what the browser makes on
       // its own, so it is recognised by its class before its tag is looked at.
       if (elm.classList.contains(LINK_CLASS)) {
-        const md = linkMarkdown(linkTargetOf(elm));
+        const md = linkMarkdown(linkTargetOf(elm), elm.dataset.alias);
         block(elm, md.length, wrapped);
         out += md;
         return;

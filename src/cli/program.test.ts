@@ -420,4 +420,20 @@ describe('0.15: refile, section move, rename with links, tag rename, merge', () 
     expect(stdout).toContain('Dup');
     expect(await run('merge', 'plan', 'plan')).toBe(2);
   });
+
+  it('refuses line:0 as a usage error rather than doing nothing', async () => {
+    await run('new', 'Zero', '--content', '- [ ] one');
+    expect(await run('task', 'zero', 'line:0', '--cycle')).toBe(2);
+    expect(await run('task', 'zero', 'line:1', '--done')).toBe(0);
+  });
+
+  it('emits one JSON document for pin and unpin however many notes are named', async () => {
+    await run('new', 'Alpha', '--content', 'a');
+    await run('new', 'Beta', '--content', 'b');
+    expect(await run('pin', 'alpha', 'beta', '--json')).toBe(0);
+    const both = JSON.parse(stdout) as Array<{ title: string; pinned?: boolean }>;
+    expect(both.map((n) => n.title).sort()).toEqual(['Alpha', 'Beta']);
+    expect(await run('unpin', 'alpha', '--json')).toBe(0);
+    expect((JSON.parse(stdout) as { title: string }).title).toBe('Alpha');
+  });
 });

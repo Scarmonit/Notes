@@ -357,6 +357,15 @@ describe('note links', () => {
     expect(serializeEditor(root)).toBe('[[Other note]]');
   });
 
+  it('shows an aliased link by its alias and writes both back', () => {
+    const root = editor();
+    renderEditor(root, 'see [[Other note|that one]]');
+    const chip = root.querySelector('.inline-link') as HTMLElement;
+    expect(chip.textContent).toBe('that one');
+    expect(chip.dataset.link).toBe('Other note');
+    expect(serializeEditor(root)).toBe('see [[Other note|that one]]');
+  });
+
   it('leaves the index of an image alone', () => {
     const body = `[[a link]] ![one](note-asset://${NAME}) [[another]] ![two](note-asset://${NAME})`;
     expect(bodyTokens(body).map((t) => t.kind)).toEqual(['link', 'image', 'link', 'image']);

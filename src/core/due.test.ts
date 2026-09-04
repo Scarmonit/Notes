@@ -43,6 +43,9 @@ describe('dueTasks', () => {
     ]);
     expect(dueTasks(notes, { includeDone: true })).toHaveLength(3);
     expect(taskText('  - [x] a  @2026-09-10 14:00  b')).toBe('a b');
+    // A numbered or quoted task is a task too: its marker is not part of the words.
+    expect(taskText('1. [ ] rent @2026-09-10')).toBe('rent');
+    expect(taskText('> - [ ] rent')).toBe('rent');
   });
   it('understands the windows the command line and the search box use', () => {
     expect(parseDueWindow('today', now)).toEqual({ until: local(2026, 9, 3, 23, 59) + 59999 });

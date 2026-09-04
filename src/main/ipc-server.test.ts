@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createAttachments } from '../core/attachments';
 import { createHistory } from '../core/history';
 import { pathsFor } from '../core/paths';
-import { RPC_ERROR } from '../core/ipc-protocol';
+import { EXIT, RPC_ERROR } from '../core/ipc-protocol';
 import { createSettings } from '../core/settings';
 import { createStore } from '../core/store';
 
@@ -70,6 +70,12 @@ describe('ipc server', () => {
       expect((await next()).error).toMatchObject({ code: RPC_ERROR.invalidRequest });
       socket.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'hello', params: { token: info.token } })}\n`);
       expect((await next()).result).toBeTruthy();
+      // A method this app does not have is named as unknown, so the command line can say "update the app".
+      socket.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'note.frobnicate', params: {} })}\n`);
+      expect((await next()).error).toMatchObject({ code: RPC_ERROR.methodNotFound, data: { exit: EXIT.appError } });
+      // A file that is not an image is the caller's mistake: the same exit code as with no app running.
+      socket.write(`${JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'attach', params: { bytes: Buffer.from('not an image').toString('base64'), name: 'x.txt' } })}\n`);
+      expect((await next()).error).toMatchObject({ code: RPC_ERROR.invalidParams, data: { exit: EXIT.usage } });
       socket.destroy();
     } finally {
       await server.close();
