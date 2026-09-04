@@ -372,3 +372,47 @@ If any one of those interactions steals or discards the writing context, 0.24.0 
 - Workspaces holding the folder, the search text or any reading setting.
 - Workspaces in `settings.json`, in the sidebar, or on the command line.
 - Separate save / switch / rename / delete registry actions for workspaces.
+
+## What the build settled differently, and why
+
+Three things came out of building it that the brainstorm could not have known.
+
+**`Ctrl+Shift+D` was already Delete.** Codex chose it for today's note in
+0.23.0 without the chord table to hand. `journal.today` took **`Ctrl+Alt+D`**
+instead, joining `Ctrl+Alt+F` (go to folders) and `Ctrl+Alt+M` (move this
+note) — the family that already means "go to a place in the notebook". The
+clash is now a test: `registry.test.ts` refuses two commands on one chord,
+because the second would never run and the shortcuts sheet would print a key
+that does something else.
+
+**A cancelled chooser leaves the query removed, not in place.** The spec asked
+for `/query` to stay in the note while a secondary chooser is open and be
+replaced only on success. What is built takes the query out when the command
+runs, and the command's own insertion joins that same undo step — so one
+`Ctrl+Z` restores the query exactly, whether the chooser completed or was
+cancelled. The reason is that every insert command computes its offsets from
+the note as it stands; leaving the query in would put the date, the template
+or the link *after* the words `/the date`. Cancelling therefore costs one
+`Ctrl+Z` rather than nothing, which is the smaller of the two wrongs.
+
+**Replacing an arrangement is not the same as building one.** `openPanes()`
+appends, because it runs once at startup. Switching workspaces needed
+`setPanes()`, which tears the panes down and puts the saved ones up — without
+it the first switch left the panes it came from behind and the window grew a
+pane every time.
+
+## What the live check found
+
+`scratchpad/context-check.mjs` is 47 checks against the packaged build. Two of
+them are there because they failed first:
+
+- **The pinned card closed itself.** `el.focus()` on a card opened by `Alt+P`
+  scrolls it into view, and the capture-phase `scroll` listener that closes a
+  hovered card took that for a scroll. Scrolling still closes a card the
+  pointer opened; it never closes one asked for by name, and never fires on a
+  scroll from inside the card itself.
+- **The undo latch.** Taking the query out and inserting the command's words
+  were two `setBody` calls and therefore two undo steps, so one `Ctrl+Z` left
+  the query gone and the date gone. `joinNextEdit` holds the note's id until
+  the next edit is remembered, whenever that comes — which is what makes an
+  asynchronous chooser one step as well.

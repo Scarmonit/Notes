@@ -39,7 +39,19 @@ export interface Action {
    * its menu, so nothing is ever out of reach.
    */
   pill?: { label: string; priority: number };
+  /**
+   * Whether typing `/` in a note offers this command.
+   *
+   * Only commands that put something at the body caret may set it. The palette
+   * answers "what can Notes do?"; the `/` menu answers "what can Notes insert
+   * here?", and that is the whole of the difference between them — it is not a
+   * second catalogue, and it is not a door for formatting commands.
+   */
+  slash?: boolean;
 }
+
+/** The insert-shaped commands, in registry order: what a `/` offers. */
+export const slashActions = (actions: readonly Action[]): Action[] => actions.filter((a) => a.slash === true);
 
 /**
  * What the button for a group says. The groups are named for sets of things;

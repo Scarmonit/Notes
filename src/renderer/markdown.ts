@@ -39,3 +39,23 @@ export function renderMarkdown(source: string, embeds?: EmbedSource): string {
     ALLOWED_URI_REGEXP: ALLOWED_URI,
   });
 }
+
+/**
+ * The same, cut down for a glance.
+ *
+ * A peek must not cost what the preview costs: no mermaid import, no
+ * highlighting pass, no typesetting, and above all no embeds — a hover that
+ * expanded an embed would render a second note, and that one's embeds after
+ * it. What is dropped is dropped visibly: a diagram says it is a diagram, an
+ * embed says what it would have shown.
+ */
+export function renderGlance(source: string): string {
+  const plain = source
+    // A fence keeps its words and loses its colours.
+    .replace(/^([ \t]*)```mermaid[^\n]*\n[\s\S]*?^\1```[ \t]*$/gm, '$1`Mermaid diagram`\n')
+    // An embed is named, not followed.
+    .replace(/^!\[\[([^\[\]\n]+)\]\][ \t]*$/gm, (_m, inner: string) => `\`Embedded: ${inner.split('|')[0].trim()}\``);
+  // No embed source at all: an unresolved `![[…]]` past the rewrite above is
+  // one written mid-line, and drawing it as an empty embed is the honest answer.
+  return renderMarkdown(plain);
+}

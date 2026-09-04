@@ -16,18 +16,19 @@ import {
   type FolderNode,
 } from '../shared/folders';
 import type { CliStatus, ExportKind, ExportRequest, FolderResult, ImportedFile, Note, NotesFile } from '../shared/types';
-import { keyMap, matchActions, menuModel, pillActions, type Action, type Match } from './actions';
+import { keyMap, matchActions, menuModel, pillActions, slashActions, type Action, type Match } from './actions';
 import { toggleFence } from './fences';
 import { findMatches, matchFrom, replaceAll, replaceOne, validQuery, type FindMatch, type FindOptions } from './find';
 import { isTextFile, noteFromFile } from './importer';
 import { decorateLines, isDecorated, type Protected } from './inline';
-import { renderMarkdown } from './markdown';
+import { renderGlance, renderMarkdown } from './markdown';
 import { headingAt, headingsIn, type Heading } from './outline';
 import { addColumn, addRow, newTable, removeRow, stepCell, tidyTable, type TableEdit } from './tables';
 import { cycleTaskLine, toggleTaskAt, toggleTaskLine } from './tasks';
 import {
   backlinksOf,
   createNote,
+  newId,
   exportBody,
   linkKey,
   parseLinkAddress,
@@ -104,6 +105,10 @@ import { hasDiagrams, hasMath } from '../shared/markdown-core';
 import { renderDiagrams } from './diagrams';
 import { layoutGraph, nodeAt, type LaidOut } from './graph';
 import { blockOf } from '../core/blocks';
+import { createPeek } from './peek';
+import { createSlash } from './slash';
+import { createWorkspacesUi } from './workspaces-ui';
+import { nameKey, parseWorkspaces, resolveWorkspace, withWorkspace, type Workspace } from './workspaces';
 import { dateOf, DEFAULT_JOURNAL_PATH, isoDate, journalNoteAt, journalPathError, journalPlace, momentOf, parseJournalDate, type JournalDate } from '../core/journal';
 import { createPropertiesUi } from './properties-ui';
 import { createBlocksUi } from './blocks-ui';
@@ -235,6 +240,7 @@ const el = {
   cliNote: $<HTMLParagraphElement>('cli-note'),
   searchOps: $<HTMLParagraphElement>('search-ops'),
   remindersOn: $<HTMLInputElement>('reminders-on'),
+  peekOn: $<HTMLInputElement>('peek-on'),
   journalPath: $<HTMLInputElement>('journal-path'),
   journalTemplate: $<HTMLButtonElement>('journal-template'),
   journalNote: $('journal-note'),
@@ -386,6 +392,13 @@ interface UiState {
   folder: string;
   /** Whether the tag rail is unfolded. */
   tags: boolean;
+  /** Hovering a link shows what it points at. The command works either way. */
+  linkPeek: boolean;
+  /**
+   * Named arrangements of panes and tabs. Window state, kept beside the panes
+   * they are snapshots of — nothing outside the window can act on one.
+   */
+  workspaces: Workspace[];
 }
 
 /** What there is to remember about a pane: the notes open in it, and which of them is showing. */
@@ -433,6 +446,8 @@ function loadUi(): UiState {
     paneAt: 0,
     folder: ROOT_FOLDER,
     tags: false,
+    linkPeek: true,
+    workspaces: [],
   };
   try {
     const raw = localStorage.getItem(UI_KEY);
@@ -444,6 +459,10 @@ function loadUi(): UiState {
     state.paneAt = Number.isInteger(state.paneAt) ? Math.max(0, state.paneAt) : 0;
     state.folder = typeof state.folder === 'string' ? normalizeFolder(state.folder) : ROOT_FOLDER;
     state.tags = state.tags === true;
+    // Missing means on: hover preview is the promised feature, and a 450ms
+    // dwell is what stops ordinary pointer travel opening it constantly.
+    state.linkPeek = state.linkPeek !== false;
+    state.workspaces = parseWorkspaces(state.workspaces);
     return state;
   } catch {
     return fallback;
@@ -664,6 +683,32 @@ function splitPane(): void {
   renderEditor();
   focusEditor();
   showStatus('Pane split · Ctrl+Alt+← and → move between panes', 3000);
+}
+
+/**
+ * Puts a whole arrangement on screen, in place of whatever is there.
+ *
+ * `openPanes` builds the first one at startup and appends; this replaces, so
+ * switching workspaces does not leave the panes it came from behind.
+ */
+function setPanes(shapes: readonly PaneShape[], at: number): void {
+  for (const p of panes) p.root.remove();
+  panes.length = 0;
+  const wanted = shapes.length > 0 ? shapes : [{ tabs: [], activeId: null, preview: false }];
+  for (const shape of wanted.slice(0, MAX_PANES)) {
+    const p = makePane({ ...keepTabs(shape, (id) => notes.some((n) => n.id === id)), preview: shape.preview });
+    panes.push(p);
+    el.panes.append(p.root);
+  }
+  paneAt = Math.max(0, Math.min(panes.length - 1, at));
+  paneCtx = paneAt;
+  unstash(panes[paneAt]);
+  ui.selectedId = panes[paneAt].activeId;
+  ui.preview = panes[paneAt].preview;
+  markFocused();
+  renderList();
+  renderEditor();
+  focusEditor();
 }
 
 /** Closes a pane. The last one stays: a window with no pane has nowhere to write. */
@@ -1231,6 +1276,7 @@ function renderList(): void {
     const elsewhere = !isSelected && panes.some((p) => activeIn(p) === n.id);
     item.className = `item${isSelected ? ' selected' : ''}${elsewhere ? ' open' : ''}${title === 'Untitled' ? ' untitled' : ''}`;
     item.dataset.id = n.id;
+    item.dataset.peek = qualifiedLink(notes, n);
     item.setAttribute('role', 'option');
     item.setAttribute('aria-selected', String(isSelected));
     item.tabIndex = isSelected ? 0 : -1;
@@ -1416,6 +1462,8 @@ function renderBacklinks(): void {
     chip.className = 'backlink';
     chip.type = 'button';
     chip.textContent = titleOf(other);
+    // What a click opens is what a hover shows: the one rule for peeking.
+    chip.dataset.peek = qualifiedLink(notes, other);
     chip.title = `Go to “${titleOf(other)}”`;
     chip.addEventListener('click', () => {
       select(other.id);
@@ -1446,6 +1494,7 @@ function renderRelated(): void {
     chip.className = 'backlink';
     chip.type = 'button';
     chip.textContent = titleOf(r.note);
+    chip.dataset.peek = qualifiedLink(notes, r.note);
     chip.title = r.reasons.join(' · ');
     chip.addEventListener('click', () => {
       select(r.note.id);
@@ -1479,6 +1528,7 @@ function renderMentions(): void {
     open.type = 'button';
     open.className = 'mention-name';
     open.textContent = titleOf(m.note);
+    open.dataset.peek = qualifiedLink(notes, m.note);
     open.title = m.text;
     open.addEventListener('click', () => {
       select(m.note.id);
@@ -1645,6 +1695,100 @@ function convertLinkOnClose(): void {
   range.insertNode(chip);
   caretAfter(chip);
 }
+
+/**
+ * Peeks whatever the keyboard is on: a link chip at the caret, or a focused
+ * row that opens a note. Pinned, because a card asked for by name should not
+ * vanish the moment the pointer moves.
+ */
+function peekHere(): void {
+  if (peek.isOpen()) {
+    peek.hide();
+    return;
+  }
+  const found = peekableAtFocus();
+  if (!found) {
+    showStatus('Put the caret in a link, or choose a backlink, to peek it', 3500);
+    return;
+  }
+  peek.show({ address: found.address, fromId: selected()?.id }, found.box, true);
+}
+
+/** The link the keyboard is on: a chip beside the caret, or a focused row. */
+function peekableAtFocus(): { address: string; box: DOMRect } | null {
+  const active = document.activeElement as HTMLElement | null;
+  const row = active?.closest<HTMLElement>('[data-peek]');
+  if (row) return { address: row.dataset.peek ?? '', box: row.getBoundingClientRect() };
+  const chip = selectedChip() ?? chipBesideCaret();
+  if (chip && isLink(chip)) return { address: chip.dataset.link ?? '', box: chip.getBoundingClientRect() };
+  return null;
+}
+
+/** A link chip immediately before or after the caret. */
+function chipBesideCaret(): HTMLElement | null {
+  const pos = caretPos();
+  if (!pos) return null;
+  const near: Array<Node | null> = [];
+  if (pos.node.nodeType === Node.TEXT_NODE) near.push(pos.node.previousSibling, pos.node.nextSibling, pos.node.parentElement);
+  else near.push(pos.node.childNodes[pos.offset] ?? null, pos.node.childNodes[pos.offset - 1] ?? null);
+  for (const node of near) {
+    if (node && isLink(node)) return node;
+    const el = node instanceof Element ? node.querySelector<HTMLElement>('.inline-link') : null;
+    if (el) return el;
+  }
+  return null;
+}
+
+/**
+ * Anything a pointer can peek: the rule is that a stable element whose click
+ * opens a specific note or address may show what it points at. Everything
+ * that qualifies is delegated from one listener rather than wired per row —
+ * a hover must not cost anything while nothing is being hovered.
+ */
+const PEEKABLE = '.inline-link, [data-link], [data-peek]';
+
+document.addEventListener(
+  'pointerover',
+  (e) => {
+    if (!ui.linkPeek) return;
+    const target = (e.target as HTMLElement | null)?.closest<HTMLElement>(PEEKABLE);
+    if (!target) return;
+    // A palette row, a picker row, an outline heading and a folder row are
+    // not peekable: a sheet must not spawn a second floating surface.
+    if (target.closest('#palette, #pick-sheet, .sheet, #outline, #folder-tree')) return;
+    const address = target.dataset.peek ?? target.dataset.link ?? '';
+    if (!address) return;
+    peek.hover({ address, fromId: selected()?.id }, () => {
+      const box = target.getBoundingClientRect();
+      return box.width === 0 && box.height === 0 ? null : box;
+    });
+  },
+  true,
+);
+
+document.addEventListener(
+  'pointerout',
+  (e) => {
+    const target = (e.target as HTMLElement | null)?.closest<HTMLElement>(PEEKABLE);
+    if (target && !peek.isPinned()) peek.unhover();
+  },
+  true,
+);
+
+// Scrolling moves what a card is anchored to, so the card goes — but not the
+// one that was asked for by name, and never because the card scrolled itself
+// or took the focus and brought itself into view.
+document.addEventListener(
+  'scroll',
+  (e) => {
+    if (peek.isPinned()) return;
+    const from = e.target;
+    if (from instanceof Node && document.querySelector('.peek')?.contains(from)) return;
+    peek.hide();
+  },
+  true,
+);
+window.addEventListener('blur', () => peek.hide());
 
 /** Clears the search box and any tag filter, so a note can always be shown. */
 function clearFilters(): void {
@@ -2627,6 +2771,7 @@ function setBody(body: string): void {
 function applyBody(body: string): void {
   const n = selected();
   if (!n || n.body === body) return;
+  peek.forget(n.id);
   notes = updateBody(notes, n.id, body);
   scheduleSave();
   // The editor only re-renders on a note switch, so tell it this counts as one.
@@ -2726,10 +2871,28 @@ function rememberFor(id: string): void {
 }
 
 /** Keeps the state before an edit of `kind`, folding a run of typing into one step. */
+/**
+ * While this holds a note's id, the next edit remembered for that note joins
+ * the step already on the log rather than pushing one of its own.
+ *
+ * The `/` menu needs it: taking the query out and putting the command's own
+ * words in are two calls, and one Ctrl+Z has to undo both. The command may
+ * open a chooser first, so a time window would not do — the latch is cleared
+ * by the edit it was armed for, whenever that comes.
+ */
+let joinNextEdit: string | null = null;
+
 function rememberEdit(before: EditState, kind: string): void {
   const n = selected();
   if (!n) return;
   const log = editLogFor(n.id);
+  if (joinNextEdit === n.id) {
+    joinNextEdit = null;
+    log.lastAt = Date.now();
+    log.lastKind = kind;
+    log.redo = [];
+    return;
+  }
   const now = Date.now();
   const sameRun = RUN_KINDS.has(kind) && kind === log.lastKind && now - log.lastAt < UNDO_RUN_MS && log.undo.length > 0;
   if (!sameRun) {
@@ -3087,6 +3250,15 @@ let composing = false;
 onPane('editor', 'compositionstart', () => {
   composing = true;
 });
+// Moving the caret out of the query, or leaving the editor, closes the menu
+// and leaves what was typed: it is the note's own text either way.
+onPane('editor', 'keyup', (e) => {
+  if (slash.isOpen() && e instanceof KeyboardEvent && e.key.startsWith('Arrow')) slash.sync();
+});
+onPane('editor', 'pointerup', () => {
+  if (slash.isOpen()) slash.sync();
+});
+onPane('editor', 'blur', () => slash.close());
 onPane('editor', 'compositionend', () => {
   composing = false;
   decorateAfterInput();
@@ -3105,6 +3277,9 @@ onPane('editor', 'input', (e) => {
   commitEditor();
   if (!composing) decorateAfterInput();
   syncWriting();
+  // The menu is read from the caret's own line every time, so it opens,
+  // filters and closes without holding any state of its own about the text.
+  if (!composing) slash.sync();
 });
 
 // What leaves the editor is markdown, whatever the browser would have made
@@ -3516,6 +3691,7 @@ const hotkeyRows: HotkeyRow[] = [
 
 function renderSettings(warnings: Partial<Record<HotkeyRow['key'], string>> = {}): void {
   el.closeTray.checked = settings.closeToTray;
+  el.peekOn.checked = ui.linkPeek;
   el.remindersOn.checked = settings.reminders;
   if (document.activeElement !== el.journalPath) el.journalPath.value = settings.journalPath;
   const template = settings.journalTemplateId ? notes.find((n) => n.id === settings.journalTemplateId) : null;
@@ -3592,6 +3768,13 @@ el.journalTemplate.addEventListener('click', () => {
     })),
   ];
   openPicker('Which template does a journal entry start from?', items);
+});
+
+el.peekOn.addEventListener('change', () => {
+  ui.linkPeek = el.peekOn.checked;
+  // Turning it off means now, not next time: any card the pointer opened goes.
+  if (!ui.linkPeek) peek.hide();
+  saveUi();
 });
 
 el.remindersOn.addEventListener('change', () => {
@@ -4583,6 +4766,8 @@ function applyExternal(changes: ExternalChanges): void {
   }
   // A sheet showing what a note carries must show what it carries now.
   if (touched > 0 && propertiesUi.isOpen()) propertiesUi.refresh();
+  for (const note of changes.upserts) peek.forget(note.id);
+  for (const id of changes.removed) peek.forget(id);
   if (touched === 0) return;
   // A note may have arrived in a folder nobody here has heard of, or left the
   // last one in another; the tree is the disk's to say, so ask it again.
@@ -5442,6 +5627,123 @@ function withProperties(note: Note, props: NoteProperty[]): Note {
   return next;
 }
 
+const peek = createPeek({
+  notes: () => notes,
+  render: renderGlance,
+  open: (id, address) => {
+    const n = notes.find((x) => x.id === id);
+    if (n && address) goToAddress(n, address);
+    else goToLinked(id);
+  },
+  hoverAllowed: () => ui.linkPeek,
+  root: document.body,
+});
+
+const slash = createSlash({
+  items: () =>
+    slashActions(ACTIONS).map((a) => ({
+      id: a.id,
+      label: a.label,
+      hint: a.hint,
+      terms: a.terms,
+      chord: a.chord,
+      run: a.run,
+    })),
+  caret: () => {
+    const n = selected();
+    if (!n || ui.preview) return null;
+    const at = caretOffsetOrStart();
+    const before = n.body.slice(0, at);
+    const start = before.lastIndexOf('\n') + 1;
+    const end = n.body.indexOf('\n', at);
+    return { line: n.body.slice(start, end < 0 ? n.body.length : end), column: at - start };
+  },
+  caretBox: () => {
+    const rect = caretRect();
+    return rect ? { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom } : null;
+  },
+  runWith: (typed, run) => {
+    // Taking the query out is the step; whatever the command puts here joins
+    // it, so one Ctrl+Z restores exactly what was typed. A command that opens
+    // a chooser first inserts later, and the latch is still waiting for it.
+    const n = selected();
+    if (!n) return;
+    const at = caretOffsetOrStart();
+    setBody(`${n.body.slice(0, at - typed)}${n.body.slice(at)}`);
+    placeCaretAt(at - typed);
+    joinNextEdit = n.id;
+    run();
+  },
+  root: document.body,
+});
+
+const workspacesUi = createWorkspacesUi({
+  held: () => ui.workspaces,
+  current: () => {
+    syncPanes();
+    return { panes: ui.panes.map((p) => ({ ...p })), paneAt: ui.paneAt };
+  },
+  loadedId: () => loadedWorkspace,
+  save: (name) => {
+    syncPanes();
+    const now = new Date().toISOString();
+    const made: Workspace = { id: newId(), name, panes: ui.panes.map((p) => ({ ...p })), paneAt: ui.paneAt, createdAt: now, updatedAt: now };
+    ui.workspaces = withWorkspace(ui.workspaces, made);
+    loadedWorkspace = ui.workspaces.find((w) => nameKey(w.name) === nameKey(name))?.id ?? null;
+    saveUi();
+  },
+  update: (id) => {
+    syncPanes();
+    ui.workspaces = ui.workspaces.map((w) => (w.id === id ? { ...w, panes: ui.panes.map((p) => ({ ...p })), paneAt: ui.paneAt, updatedAt: new Date().toISOString() } : w));
+    saveUi();
+  },
+  load: (id) => void loadWorkspace(id),
+  rename: (id, name) => {
+    ui.workspaces = ui.workspaces.map((w) => (w.id === id ? { ...w, name, updatedAt: new Date().toISOString() } : w));
+    saveUi();
+  },
+  remove: (id) => {
+    ui.workspaces = ui.workspaces.filter((w) => w.id !== id);
+    if (loadedWorkspace === id) loadedWorkspace = null;
+    saveUi();
+  },
+  status: showStatus,
+  focusEditor,
+  titleOf: (id) => {
+    const n = notes.find((x) => x.id === id);
+    return n ? shownTitle(n) : null;
+  },
+  root: document.body,
+});
+
+/** The workspace most recently loaded or saved, for the sheet's update row. */
+let loadedWorkspace: string | null = null;
+
+/**
+ * Switches to a saved arrangement.
+ *
+ * Everything on screen goes to disk first and the switch is abandoned if that
+ * fails: an arrangement is not worth a lost sentence. Notes that are gone are
+ * left out rather than refusing the whole thing, and the snapshot itself is
+ * not rewritten — a file that is missing today may be back tomorrow.
+ */
+async function loadWorkspace(id: string): Promise<void> {
+  const workspace = ui.workspaces.find((w) => w.id === id);
+  if (!workspace) return;
+  try {
+    await flush();
+  } catch (err) {
+    console.error('[notes] could not save before switching workspace', err);
+    showStatus('Could not save what is open; the workspace was not opened', 5000);
+    return;
+  }
+  const resolved = resolveWorkspace(workspace, (noteId) => notes.some((n) => n.id === noteId));
+  setPanes(resolved.panes, resolved.paneAt);
+  loadedWorkspace = id;
+  saveUi();
+  showStatus(resolved.missing > 0 ? `Opened “${workspace.name}”. ${resolved.missing} unavailable ${resolved.missing === 1 ? 'note was' : 'notes were'} omitted.` : `Opened “${workspace.name}”`, 4000);
+}
+
 const hasNote = (): boolean => selected() !== null;
 
 const ACTIONS: Action[] = [
@@ -5858,6 +6160,7 @@ const ACTIONS: Action[] = [
   },
   {
     id: 'attach',
+    slash: true,
     label: 'Attach an image…',
     hint: 'Pasting or dropping a picture does the same',
     group: 'Writing',
@@ -5869,6 +6172,7 @@ const ACTIONS: Action[] = [
   },
   {
     id: 'divider',
+    slash: true,
     label: 'Insert a section divider',
     hint: 'Or type --- on its own line and press Enter',
     group: 'Writing',
@@ -5890,6 +6194,7 @@ const ACTIONS: Action[] = [
   },
   {
     id: 'task',
+    slash: true,
     label: 'Checklist item on this line',
     hint: 'Cycles the line: plain text, then to do, then done',
     group: 'Writing',
@@ -5901,6 +6206,7 @@ const ACTIONS: Action[] = [
   },
   {
     id: 'template-insert',
+    slash: true,
     label: 'Insert a template…',
     hint: 'A note tagged #template, its {{date}}, {{time}} and {{title}} filled in, at the caret',
     group: 'Writing',
@@ -5922,6 +6228,7 @@ const ACTIONS: Action[] = [
   },
   {
     id: 'block-link',
+    slash: true,
     label: 'Link to a block…',
     hint: 'Choose a note, then the paragraph or list item in it to point at',
     group: 'Writing',
@@ -5932,6 +6239,7 @@ const ACTIONS: Action[] = [
   },
   {
     id: 'date',
+    slash: true,
     label: 'Insert the date',
     hint: 'Today, as 2026-09-03; with Shift held, the time as well',
     group: 'Writing',
@@ -5945,6 +6253,7 @@ const ACTIONS: Action[] = [
   },
   {
     id: 'table',
+    slash: true,
     label: 'Table',
     hint: 'A table where the caret is, or the one it is in lined up again. Tab moves between cells and the last one makes a row',
     group: 'Writing',
@@ -6062,6 +6371,16 @@ const ACTIONS: Action[] = [
     run: toggleTypewriter,
   },
   {
+    id: 'peek',
+    label: 'Peek the linked note',
+    hint: 'Shows what a link points at, without going there',
+    group: 'View',
+    chord: 'alt+p',
+    terms: 'preview hover glance link look',
+    enabled: () => hasNote(),
+    run: peekHere,
+  },
+  {
     id: 'graph',
     label: 'Graph of the notes…',
     hint: 'Every note as a dot, every [[link]] as a line; click a dot to go there',
@@ -6122,6 +6441,15 @@ const ACTIONS: Action[] = [
     chord: 'ctrl+alt+f',
     terms: 'tree rail sidebar browse where',
     run: focusFolders,
+  },
+  {
+    id: 'workspaces',
+    label: 'Workspaces…',
+    hint: 'Named arrangements of which notes are open in which panes',
+    group: 'Window',
+    menuSection: 'Workspace',
+    terms: 'layout arrangement session panes save switch',
+    run: () => workspacesUi.open(),
   },
   {
     id: 'layout',
@@ -6760,7 +7088,13 @@ function onEscape(): void {
     caretAfter(chip);
     return;
   }
-  if (!el.palette.hidden) {
+  if (slash.isOpen()) {
+    slash.close();
+  } else if (peek.isOpen()) {
+    peek.hide();
+  } else if (workspacesUi.isOpen()) {
+    workspacesUi.close();
+  } else if (!el.palette.hidden) {
     togglePalette(false);
   } else if (openMenuButton) {
     closeMenu(true);
@@ -6810,6 +7144,9 @@ let altAlone = false;
 
 document.addEventListener('keydown', (e) => {
   altAlone = e.key === 'Alt' && !e.ctrlKey && !e.shiftKey && !e.metaKey && !e.repeat;
+  // Arrows, Enter, Tab and Esc belong to the slash menu while it is open —
+  // and only those, so every other key goes on typing into the note.
+  if (slash.isOpen() && slash.key(e)) return;
   if (e.key === 'F10' && !e.ctrlKey && !e.shiftKey && !e.altKey) {
     e.preventDefault();
     focusMenuBar();

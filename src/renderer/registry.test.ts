@@ -18,6 +18,7 @@ interface Entry {
   menuSection: string | null;
   pill: { label: string; priority: number } | null;
   chord: string | null;
+  slash: boolean;
 }
 
 function registry(): Entry[] {
@@ -43,6 +44,7 @@ function registry(): Entry[] {
       group: one(/group: '([^']+)'/, String) ?? '',
       menuSection: one(/menuSection: '([^']+)'/, String),
       chord: one(/chord: '([^']+)'/, String),
+      slash: /\n\s*slash: true,/.test(chunk),
       pill: (() => {
         const m = chunk.match(/pill: \{ label: '([^']+)', priority: (\d+) \}/);
         return m ? { label: m[1], priority: Number(m[2]) } : null;
@@ -66,8 +68,17 @@ const sectionOrder = (group: string): string[] => {
 
 describe('the command registry', () => {
   it('reads every command out of main.ts', () => {
-    expect(ACTIONS.length).toBe(71);
+    expect(ACTIONS.length).toBe(73);
     expect(new Set(ACTIONS.map((a) => a.id)).size).toBe(ACTIONS.length);
+  });
+
+  it('offers only the insert-shaped commands behind a slash', () => {
+    // The palette answers "what can Notes do?"; a slash answers "what can
+    // Notes insert here?". A command that does not put something at the
+    // caret has no business in this menu, and no formatting command has any
+    // business in the registry at all.
+    expect(ACTIONS.filter((a) => a.slash).map((a) => a.id)).toEqual(['attach', 'divider', 'task', 'template-insert', 'block-link', 'date', 'table']);
+    for (const a of ACTIONS.filter((x) => x.slash)) expect([a.id, a.group], a.id).toEqual([a.id, 'Writing']);
   });
 
   it('never gives one chord to two commands', () => {
@@ -89,8 +100,8 @@ describe('the command registry', () => {
     expect(homeless.map((a) => a.id)).toEqual([]);
   });
 
-  it('leaves View unsectioned, because six related commands need no headings', () => {
-    expect(inGroup('View').map((a) => a.menuSection)).toEqual([null, null, null, null, null, null]);
+  it('leaves View unsectioned, because a handful of related commands need no headings', () => {
+    expect(inGroup('View').every((a) => a.menuSection === null)).toBe(true);
   });
 
   it('keeps each heading in one run, so a section is never drawn twice', () => {
@@ -123,7 +134,7 @@ describe('the command registry', () => {
 
   it('splits Window between the workspace and the application', () => {
     expect(sectionOrder('Window')).toEqual(['Workspace', 'Application']);
-    expect(idsUnder('Window', 'Workspace')).toEqual(['sidebar', 'split', 'pane-close', 'pane-next', 'pane-prev', 'folders-go']);
+    expect(idsUnder('Window', 'Workspace')).toEqual(['sidebar', 'split', 'pane-close', 'pane-next', 'pane-prev', 'folders-go', 'workspaces']);
     expect(idsUnder('Window', 'Application')).toEqual(['layout', 'palette', 'help']);
   });
 

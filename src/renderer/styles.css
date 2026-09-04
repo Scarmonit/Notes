@@ -2891,3 +2891,272 @@ html.export.paper .markdown img {
   outline: none;
   border-color: var(--paper-dim);
 }
+
+/* --- peek, the slash menu, workspaces ----------------------------------- */
+
+/* A glance at another note. Never more than one, anchored beside whatever
+   raised it, and set a little smaller than the page it is over. */
+.peek {
+  z-index: 60;
+  width: clamp(320px, 34vw, 440px);
+  max-height: min(520px, 60vh);
+  overflow-y: auto;
+  padding: 12px 14px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
+  font-size: 15px;
+  color: var(--paper);
+}
+
+@media (max-width: 420px) {
+  .peek {
+    width: calc(100vw - 24px);
+  }
+}
+
+.peek:focus-visible {
+  outline: none;
+}
+
+.peek-name {
+  margin: 0 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--paper-faint);
+}
+
+.peek-body {
+  font-family: var(--serif);
+  line-height: 1.5;
+}
+
+.peek-body > :first-child {
+  margin-top: 0;
+}
+
+.peek-body > :last-child {
+  margin-bottom: 0;
+}
+
+.peek-body h1,
+.peek-body h2,
+.peek-body h3 {
+  font-size: 16px;
+  margin: 12px 0 6px;
+}
+
+.peek-body pre {
+  overflow-x: auto;
+  font-size: 12px;
+}
+
+.peek-body img {
+  max-width: 100%;
+  max-height: 200px;
+}
+
+.peek-body input {
+  pointer-events: none;
+}
+
+.peek-why,
+.peek-more {
+  margin: 0;
+  color: var(--paper-faint);
+  font-size: 12px;
+}
+
+.peek-more {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  letter-spacing: 0.06em;
+}
+
+/* An ambiguous link shows its candidates, with the folder that tells them
+   apart — which is the whole reason a name matching two notes is a question. */
+.peek-candidate {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 10px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 8px;
+  text-align: left;
+  font: inherit;
+  color: var(--paper);
+  cursor: pointer;
+}
+
+.peek-candidate:hover,
+.peek-candidate:focus-visible {
+  background: var(--hover);
+  outline: none;
+}
+
+.peek-candidate-title {
+  font-family: var(--serif);
+}
+
+.peek-candidate-where {
+  font-size: 11px;
+  color: var(--paper-faint);
+}
+
+.peek-candidate-lines {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--paper-dim);
+}
+
+/* The slash menu: anchored to the caret, and the editor keeps the focus. */
+.slash {
+  z-index: 60;
+  width: 300px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.slash-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.slash-row.at {
+  background: var(--selected);
+}
+
+.slash-label {
+  font-size: 13px;
+  color: var(--paper);
+}
+
+.slash-keys {
+  display: flex;
+  gap: 3px;
+  flex: none;
+}
+
+.slash-empty {
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--paper-faint);
+}
+
+/* Workspaces. */
+.ws-card {
+  width: min(560px, 92vw);
+}
+
+.ws-note {
+  margin: -6px 0 16px;
+  color: var(--paper-faint);
+}
+
+.ws-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.ws-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 12px;
+  align-items: baseline;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.ws-row:last-child {
+  border-bottom: none;
+}
+
+.ws-name {
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 14px;
+  color: var(--paper);
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+
+.ws-name:hover,
+.ws-name:focus-visible {
+  text-decoration: underline;
+  outline: none;
+}
+
+.ws-what {
+  grid-column: 1;
+  font-size: 11px;
+  color: var(--paper-faint);
+}
+
+.ws-actions {
+  grid-row: 1 / 3;
+  grid-column: 2;
+  display: flex;
+  gap: 10px;
+  align-self: center;
+}
+
+.ws-act,
+.ws-update {
+  background: none;
+  border: none;
+  color: var(--paper-faint);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  padding: 0;
+}
+
+.ws-act:hover,
+.ws-update:hover,
+.ws-act:focus-visible,
+.ws-update:focus-visible {
+  color: var(--paper);
+  outline: none;
+}
+
+.ws-act.armed,
+.ws-act.armed:hover,
+.ws-act.armed:focus-visible {
+  color: var(--margin);
+}
+
+.ws-update {
+  grid-column: 1 / -1;
+  text-align: left;
+  padding-top: 4px;
+}
+
+.ws-save {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.ws-new,
+.ws-rename {
+  width: 100%;
+}
