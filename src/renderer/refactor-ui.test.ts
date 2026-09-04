@@ -341,3 +341,21 @@ describe('dismiss', () => {
     expect(ui.isOpen()).toBe(false);
   });
 });
+
+describe('one sheet at a time', () => {
+  it('answers a waiting confirm "no" when another question takes the sheet, so no caller waits forever', async () => {
+    const h = fakeHost([note('a', 'x', 'Old'), note('b', 'see [[old]]'), note('t', 'keep', 'Plan')], 'a', null);
+    const ui = createRefactorUi(h.host);
+    const rename = ui.commitRename('a', 'Old', 'New');
+    await flush();
+    expect(document.querySelector('.confirm-text')?.textContent).toBe("Rename 'Old' to 'New' and update 1 link in 1 note?");
+    // A merge started meanwhile asks its own question on the same sheet.
+    ui.mergeInto();
+    h.choose('Plan');
+    expect(document.querySelector('.confirm-text')?.textContent).toContain("Merge 'Old' into 'Plan'");
+    expect(await rename).toBe('title');
+    key(document.querySelector('.confirm-card')!, 'Escape');
+    await flush();
+    expect(ui.isOpen()).toBe(false);
+  });
+});

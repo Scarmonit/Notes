@@ -102,8 +102,13 @@ export async function writeAtomic(target: string, text: string): Promise<void> {
 // Windows does not tell filenames apart by case, so neither does the store.
 const lower = (s: string): string => s.toLowerCase();
 
-/** Every note file in a folder, parsed. A file that cannot be read is skipped, not fatal. */
-async function readNoteFiles(dir: string): Promise<ReadFile[]> {
+/**
+ * Every note file in a folder, parsed. A file that cannot be read is skipped,
+ * not fatal; one that is there but locked (a sync tool or antivirus holding it
+ * for a moment) is also named in `unreadable`, so a re-scan does not mistake
+ * it for a file that was deleted.
+ */
+async function readNoteFiles(dir: string, unreadable?: Set<string>): Promise<ReadFile[]> {
   let names: string[];
   try {
     names = await fs.readdir(dir);
@@ -119,6 +124,7 @@ async function readNoteFiles(dir: string): Promise<ReadFile[]> {
       out.push({ ...parsed, name, text });
     } catch (err) {
       console.error(`[notes] could not read ${name}`, err);
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') unreadable?.add(lower(name));
     }
   }
   return out;
@@ -165,7 +171,8 @@ export function createStore(root: string): Store {
    * id — is given one and written back, so it keeps that id from now on.
    */
   async function readIntoIndex(dir: string): Promise<{ notes: Note[]; changed: Note[]; removed: string[] }> {
-    const files = await readNoteFiles(dir);
+    const unreadable = new Set<string>();
+    const files = await readNoteFiles(dir, unreadable);
     const seen = new Set<string>();
     const notes: Note[] = [];
     const changed: Note[] = [];
@@ -186,7 +193,8 @@ export function createStore(root: string): Store {
       index.set(note.id, { name: f.name, text, extra: f.extra });
       notes.push(note);
     }
-    const removed = [...index.keys()].filter((id) => !seen.has(id));
+    // A file still on disk but unreadable this pass is not gone: its entry stays as last read.
+    const removed = [...index].filter(([id, entry]) => !seen.has(id) && !unreadable.has(lower(entry.name))).map(([id]) => id);
     for (const id of removed) index.delete(id);
     return { notes, changed, removed };
   }
@@ -228,13 +236,6 @@ export function createStore(root: string): Store {
    * notes.json across, one file per note, and sets it aside as a backup rather
    * than deleting it.
    */
-  async function loadNotes(): Promise<NotesFile> {
-    if (!existsSync(notesDir)) await migrate(notesDir);
-    await fs.mkdir(notesDir, { recursive: true });
-    const { notes } = await readIntoIndex(notesDir);
-    return { version: 1, notes };
-  }
-
   // One pass over the folder at a time: saves come every few hundred
   // milliseconds while typing, and a re-read must never interleave with one.
   let chain: Promise<void> = Promise.resolve();
@@ -246,6 +247,17 @@ export function createStore(root: string): Store {
       () => undefined,
     );
     return result;
+  }
+
+  function loadNotes(): Promise<NotesFile> {
+    // Queued like every other folder pass: a load that overlaps a save rewrites
+    // the index from a folder the save is still changing.
+    return queue(async () => {
+      if (!existsSync(notesDir)) await migrate(notesDir);
+      await fs.mkdir(notesDir, { recursive: true });
+      const { notes } = await readIntoIndex(notesDir);
+      return { version: 1, notes };
+    });
   }
 
   /** Moves one note's file into the trash, stamped with the moment it left. */

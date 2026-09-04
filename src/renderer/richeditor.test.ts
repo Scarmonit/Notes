@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   MIN_IMAGE_WIDTH,
   bodyTokens,
+  imageMarkdown,
   chipWidth,
   imageTokens,
   paragraphBounds,
@@ -253,7 +254,7 @@ describe('section rules', () => {
 
   it('renders a rule line as a non-editable hr', () => {
     const div = editor();
-    renderEditor(div, 'a\n---\nb');
+    renderEditor(div, 'a\n\n---\nb');
     const hr = div.querySelector('hr.inline-rule') as HTMLHRElement;
     expect(hr).toBeTruthy();
     expect(hr.contentEditable).toBe('false');
@@ -269,10 +270,33 @@ describe('section rules', () => {
     }
   });
 
-  it('normalises *** and long dashes to --- when written back', () => {
+  it('writes a rule back with the marker it was written with: under a paragraph, --- would make a heading', () => {
     const div = editor();
     renderEditor(div, 'a\n*****\nb');
-    expect(serializeEditor(div)).toBe('a\n---\nb');
+    expect(div.querySelector('hr.inline-rule')).toBeTruthy();
+    expect(serializeEditor(div)).toBe('a\n*****\nb');
+    renderEditor(div, 'a\n\n-----\n\n___\nb');
+    expect(div.querySelectorAll('hr.inline-rule')).toHaveLength(2);
+    expect(serializeEditor(div)).toBe('a\n\n-----\n\n___\nb');
+  });
+
+  it('leaves --- under a line of text as the setext underline it is, but keeps it a rule after a heading, a list or a fence', () => {
+    const div = editor();
+    renderEditor(div, 'Intro\n---\nMore');
+    expect(div.querySelector('hr')).toBeNull();
+    expect(serializeEditor(div)).toBe('Intro\n---\nMore');
+    for (const body of ['# H\n---', '- item\n---', '> q\n---', '```\nx\n```\n---', '---\n---']) {
+      renderEditor(div, body);
+      expect(div.querySelectorAll('hr.inline-rule').length, body).toBeGreaterThan(0);
+      expect(serializeEditor(div)).toBe(body);
+    }
+  });
+
+  it('falls back to the img form for an alt the markdown form could not read back', () => {
+    const md = imageMarkdown({ name: 'abcdef12.png', alt: 'x]y', width: null });
+    expect(md).toBe('<img src="note-asset://abcdef12.png" alt="x]y">');
+    expect(imageTokens(md)).toMatchObject([{ name: 'abcdef12.png', alt: 'x]y', width: null }]);
+    expect(imageMarkdown({ name: 'abcdef12.png', alt: 'plain', width: null })).toBe('![plain](note-asset://abcdef12.png)');
   });
 
   it('keeps image indices stable with rules in between', () => {

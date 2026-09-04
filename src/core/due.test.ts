@@ -82,3 +82,14 @@ describe('parseDueMoment', () => {
     expect(parseDueMoment('whenever', now)).toBeNull();
   });
 });
+
+describe('dates the calendar does not have', () => {
+  it('refuses an impossible month or day instead of rolling it over', () => {
+    expect(parseDueMoment('2026-13-01', now)).toBeNull();
+    expect(parseDueMoment('2026-02-30', now)).toBeNull();
+    expect(parseDueMoment('2026-02-28', now)).toEqual({ at: local(2026, 2, 28), withTime: false });
+    expect(parseDueWindow('2026-13-01', now)).toBeNull();
+    expect(parseDueWindow('2026-02-30', now)).toBeNull();
+    expect(parseDueWindow('2026-02-28', now)?.from).toBe(local(2026, 2, 28));
+  });
+});

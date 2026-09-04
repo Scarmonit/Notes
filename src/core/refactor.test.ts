@@ -276,3 +276,22 @@ describe('checkPlan, applyPlanTo and invertPlan', () => {
     expect(applyPlanTo(back, applyPlanTo(p, [note('a', 'x', 'Old')]))[0].title).toBe('Old');
   });
 });
+
+describe('the fixes of 0.15.1', () => {
+  it('places lines under a heading above the gap when the note starts with a blank line', () => {
+    // The leading blank line is stripped by the cut; a target above the gap moves up by that alone.
+    const a = note('a', '\n# A\ntext\n# B\nmore');
+    const found = must(planRefile([a], { from: 'a', first: 4, last: 4, to: 'a', target: { line: 1 } }));
+    expect(found.writes[0].after.body).toBe('# A\ntext\n\nmore\n\n# B');
+    const b = note('b', '\n# A\n# B\ntext\n# C\nmore');
+    const under = must(planRefile([b], { from: 'b', first: 5, last: 5, to: 'b', target: { line: 1 } }));
+    expect(under.writes[0].after.body).toBe('# A\n\nmore\n\n# B\ntext\n# C');
+    const section = note('c', '\n# A\n\n# B\ntext');
+    expect(planMoveSection([section], { from: 'c', line: 3, to: 'c', target: { line: 1 } }).ok).toBe(true);
+  });
+  it('appends under a heading without touching blank lines elsewhere in the note', () => {
+    const body = '# A\nx\n\n# B\n```\na\n\n\nb\n```';
+    expect(insert(body, 'new', { heading: 'A' })).toBe('# A\nx\n\nnew\n\n# B\n```\na\n\n\nb\n```');
+    expect(insert('# A\n\nx\n\n\n\n# B\n\ny', 'z', { heading: 'A' })).toBe('# A\n\nx\n\nz\n\n# B\n\ny');
+  });
+});

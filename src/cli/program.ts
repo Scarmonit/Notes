@@ -50,7 +50,7 @@ export function commandReference(root: Command): string {
       }
       const args = sub.registeredArguments.map((a) => (a.required ? `<${a.name()}${a.variadic ? '...' : ''}>` : `[${a.name()}${a.variadic ? '...' : ''}]`)).join(' ');
       const alias = sub.aliases().length > 0 ? ` (${sub.aliases().join(', ')})` : '';
-      rows.push(`| \`notes ${name}${args ? ` ${args}` : ''}\`${alias} | ${sub.description().replace(/\|/g, '\|')} |`);
+      rows.push(`| \`notes ${name}${args ? ` ${args}` : ''}\`${alias} | ${sub.description().replace(/\|/g, '\\|')} |`);
     }
   };
   walk(root, '');

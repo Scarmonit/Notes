@@ -61,12 +61,28 @@ export function taskDue(line: string): Due | null {
 export function tasksIn(body: string): Task[] {
   const out: Task[] = [];
   let inFence = false;
+  // An indented code block (four spaces after a blank line, outside a list)
+  // draws no checkbox either, however task-like its lines look.
+  let inCode = false;
+  let prevBlank = true;
+  let inList = false;
   body.split('\n').forEach((text, line) => {
     if (isFenceLine(text)) {
       inFence = !inFence;
       return;
     }
     if (inFence) return;
+    const blank = !text.trim();
+    const indent = (/^[ \t]*/.exec(text) as RegExpExecArray)[0].replace(/\t/g, '    ').length;
+    if (inCode) {
+      if (blank || indent >= 4) return;
+      inCode = false;
+    } else if (!blank && indent >= 4 && prevBlank && !inList) {
+      inCode = true;
+      return;
+    }
+    if (!blank) inList = BULLET.test(text) || (inList && (indent >= 2 || !prevBlank));
+    prevBlank = blank;
     const m = TASK.exec(text);
     if (!m) return;
     const due = taskDue(text);

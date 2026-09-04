@@ -150,8 +150,8 @@ export function register(program: Command, use: () => Ctx): void {
         line = task.line;
       }
       let body: string;
+      if (line >= note.body.split('\n').length) throw new CliError(`"${titleOf(note)}" has no line ${line + 1}`, EXIT.usage);
       if (opts.due !== undefined || opts.clearDue) {
-        if (line >= note.body.split('\n').length) throw new CliError(`"${titleOf(note)}" has no line ${line + 1}`, EXIT.usage);
         let moment: { at: number; withTime: boolean } | null = null;
         if (opts.due !== undefined) {
           moment = parseDueMoment(opts.due);

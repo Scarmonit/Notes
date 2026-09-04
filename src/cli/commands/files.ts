@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { CliError } from '../../core/backend';
 import { createAttachments } from '../../core/attachments';
-import { EXIT } from '../../core/ipc-protocol';
+import { EXIT, IpcError } from '../../core/ipc-protocol';
 import { isTextFile, noteFromFile } from '../../renderer/importer';
 import { createNote, exportBody, titleOf, updateBody } from '../../renderer/notes';
 import { markdownToText } from '../../renderer/plaintext';
@@ -55,7 +55,13 @@ export function register(program: Command, use: () => Ctx): void {
         } catch (err) {
           throw new CliError(`Could not read ${file}: ${(err as Error).message}`, EXIT.usage);
         }
-        const url = await backend.attach(new Uint8Array(bytes), path.basename(file));
+        let url: string;
+        try {
+          url = await backend.attach(new Uint8Array(bytes), path.basename(file));
+        } catch (err) {
+          if (err instanceof CliError || err instanceof IpcError) throw err;
+          throw new CliError(`Could not attach ${file}: ${(err as Error).message}`, EXIT.usage);
+        }
         urls.push(url);
         body = insertAtLine(body, imageMarkdown(url, opts.alt ?? path.basename(file, path.extname(file))), atLine === undefined ? undefined : atLine + urls.length - 1);
       }
@@ -149,6 +155,13 @@ export function register(program: Command, use: () => Ctx): void {
     if (toStdout && (kind === 'png' || kind === 'pdf')) throw new CliError(`A ${kind.toUpperCase()} cannot go to stdout; give a file with -o`, EXIT.usage);
     if (toStdout && targets.length > 1) throw new CliError('Only one note can go to stdout', EXIT.usage);
     const folder = targets.length > 1 || (opts.out && (await fs.stat(opts.out).catch(() => null))?.isDirectory());
+    if (!toStdout) {
+      // The folder the files go in has to exist before the first write, whether named or implied by the file's path.
+      const dir = folder ? (opts.out ?? '.') : path.dirname(opts.out ?? '.');
+      await fs.mkdir(dir, { recursive: true }).catch((err) => {
+        throw new CliError(`Could not create ${dir}: ${(err as Error).message}`, EXIT.usage);
+      });
+    }
     const written: string[] = [];
     const attachments = createAttachments(c.userData);
     for (const note of targets) {

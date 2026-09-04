@@ -109,3 +109,19 @@ describe('setTaskDue keeps the line where it was', () => {
     expect(setTaskDue('- [ ] @2026-09-10 first', 0, null)).toBe('- [ ] first');
   });
 });
+
+describe('tasksIn and indented code', () => {
+  it('draws no checkbox for a task-looking line in an indented code block, as the preview does not', () => {
+    expect(tasksIn('para\n\n    - [ ] code\n- [ ] real')).toEqual([{ line: 3, done: false }]);
+    expect(tasksIn('para\n\n    - [ ] code\n    - [x] more code\n\n- [ ] real')).toEqual([{ line: 5, done: false }]);
+    expect(toggleTaskAt('para\n\n    - [ ] code\n- [ ] real', 0)).toBe('para\n\n    - [ ] code\n- [x] real');
+  });
+  it('still counts a nested task after a blank line inside a list, and a lazily continued one', () => {
+    expect(tasksIn('- [ ] a\n\n    - [ ] b')).toEqual([
+      { line: 0, done: false },
+      { line: 2, done: false },
+    ]);
+    expect(tasksIn('- item\ntext\n\n    - [ ] under')).toEqual([{ line: 3, done: false }]);
+    expect(tasksIn('    - [ ] first line of the note')).toEqual([]);
+  });
+});

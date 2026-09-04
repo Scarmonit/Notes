@@ -311,6 +311,8 @@ async function flush(): Promise<void> {
   dirty = false;
   try {
     await window.notesApi.save(toFile());
+    // A failure left on the line stays until a save goes through: this one did.
+    if (statusUntil === Infinity && el.status.textContent === 'Save failed') clearStatus();
     showAutosave();
   } catch (err) {
     dirty = true;
@@ -1238,7 +1240,14 @@ async function pickImports(): Promise<void> {
 }
 
 async function pickImages(): Promise<void> {
-  const urls = await window.notesApi.pickAttachments();
+  let urls: string[];
+  try {
+    urls = await window.notesApi.pickAttachments();
+  } catch (err) {
+    console.error('[notes] attach failed', err);
+    showStatus(err instanceof Error ? err.message.replace(/^.*Error: /, '') : 'Could not attach that image', 4000);
+    return;
+  }
   if (urls.length === 0) return;
   ensureEditable();
   for (const url of urls) {
@@ -2255,7 +2264,9 @@ function toggleHistory(force?: boolean): void {
   if (open && !selected()) return;
   el.historySheet.hidden = !open;
   if (!open) {
-    focusEditor();
+    // Closed from inside, the focus goes back to the editor; closed because
+    // another note was chosen from the search box, the box keeps it.
+    if (el.historySheet.contains(document.activeElement)) focusEditor();
     return;
   }
   el.historySheet.querySelector<HTMLElement>('.sheet-card')?.focus();
@@ -2741,12 +2752,16 @@ function setReplaceRow(show: boolean): void {
 /** Closes the bar. With `land`, the caret goes to the current match, so Esc means "take me there". */
 function closeFind(land: boolean): void {
   if (el.findBar.hidden) return;
+  // Only a close from the bar itself hands the focus to the editor: closed
+  // because another note was chosen from the search box, the keystrokes
+  // being typed there must not land in the note.
+  const back = el.findBar.contains(document.activeElement);
   el.findBar.hidden = true;
   const hit = findHits[findAt];
   findHits = [];
   findAt = -1;
   paintFind();
-  el.editor.focus();
+  if (back) el.editor.focus();
   if (land && hit) {
     const { segments } = readEditor(el.editor);
     const range = rangeBetween(el.editor, segments, hit.start, hit.end);
@@ -3251,10 +3266,13 @@ function captureToInbox(text: string): void {
   else rememberFor(inbox.id);
   notes = updateBody(notes, inbox.id, body);
   scheduleSave();
-  // If the Inbox is the note on screen, it must show the new line.
+  // If the Inbox is the note on screen, it must show the new line, with the
+  // caret left where the writer had it rather than at the top of the note.
+  const caret = ui.selectedId === inbox.id && document.activeElement === el.editor ? caretOffsetOrStart() : null;
   if (ui.selectedId === inbox.id) editorNoteId = null;
   renderList();
   renderEditor();
+  if (caret !== null) placeCaretAt(caret);
   showStatus('Added to Inbox', 2500);
 }
 
@@ -3286,7 +3304,9 @@ function applyExternal(changes: ExternalChanges): void {
     if (note.id === ui.selectedId) editorNoteId = null;
   }
   if (touched === 0) return;
-  if (ui.selectedId && !notes.some((n) => n.id === ui.selectedId)) ui.selectedId = sortByEdited(notes)[0]?.id ?? null;
+  // Through select(), so the note taken away is left the way any other is:
+  // `notes open --wait` told, the provisional title and the Back stack settled.
+  if (ui.selectedId && !notes.some((n) => n.id === ui.selectedId)) select(sortByEdited(notes)[0]?.id ?? null);
   renderList();
   renderEditor();
   showStatus(touched === 1 ? 'A note changed on disk' : `${touched} notes changed on disk`, 3000);

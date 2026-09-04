@@ -146,6 +146,9 @@ export function createRefactorUi(host: RefactorHostUi): RefactorUi {
   });
 
   function confirm(plan: Plan, options: ConfirmOptions = {}): Promise<boolean> {
+    // One sheet, one question: a caller still waiting on it is answered "no"
+    // rather than left waiting forever.
+    settleConfirm(false);
     confirmText.textContent = `${describePlan(plan)}?`;
     confirmCount.textContent = `${plural(plan.touched.length, 'note')} ›`;
     confirmList.replaceChildren(
@@ -210,6 +213,7 @@ export function createRefactorUi(host: RefactorHostUi): RefactorUi {
   });
 
   function prompt(label: string, initial: string): Promise<string | null> {
+    settlePrompt(null);
     promptLabel.textContent = label;
     promptSheet.setAttribute('aria-label', label);
     promptInput.value = initial;

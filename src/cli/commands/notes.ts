@@ -97,8 +97,8 @@ export function register(program: Command, use: () => Ctx): void {
     const dash = words.includes('-') || title === '-';
     const text = words.filter((w) => w !== '-').join(' ');
     const explicitTitle = title && title !== '-' && title.trim() ? title.trim() : '';
-    // With a template the words are an addition, not the whole note, so no editor opens for their absence.
-    const given = await gatherBody({ text, content: opts.content, file: opts.file, dash, edit: opts.edit, noInput: c.opts.input === false || (opts.template !== undefined && !opts.edit) });
+    // With a template the words are an addition, not the whole note, so no editor opens for their absence (piped text still counts).
+    const given = await gatherBody({ text, content: opts.content, file: opts.file, dash, edit: opts.edit ?? (opts.template !== undefined ? false : undefined), noInput: c.opts.input === false });
     let body = given ?? '';
     if (opts.template) {
       const fromTemplate = await templateBody(c, opts.template, explicitTitle || 'Untitled');
@@ -263,7 +263,8 @@ export function register(program: Command, use: () => Ctx): void {
     const dash = words.includes('-');
     const text = words.filter((w) => w !== '-').join(' ');
     const quiet = opts.divider || opts.template !== undefined;
-    let addition = await gatherBody({ text, content: opts.content, file: opts.file, dash, edit: opts.edit && !quiet, noInput: c.opts.input === false || quiet });
+    // A divider or a template stands on its own, so no editor opens for the absence of words; piped text is still taken.
+    let addition = await gatherBody({ text, content: opts.content, file: opts.file, dash, edit: quiet ? false : opts.edit, noInput: c.opts.input === false });
     if (opts.divider) addition = addition ? `---\n\n${addition.trim()}` : '---';
     const note = await c.note(selector);
     if (opts.template) {

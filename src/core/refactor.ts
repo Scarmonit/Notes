@@ -121,7 +121,9 @@ export function insert(body: string, addition: string, opts: { prepend?: boolean
     const end = sectionEnd(lines, at);
     const section = lines.slice(at, end).join('\n');
     const merged = opts.inline ? `${section.trimEnd()} ${addition}` : paragraphs(section, addition);
-    return [...lines.slice(0, at), ...merged.split('\n'), ...(end < lines.length ? ['', ...lines.slice(end)] : [])].join('\n').replace(/\n{3,}/g, '\n\n');
+    // Only the seam is tidied: blank lines elsewhere in the note (a code block's, say) are its own.
+    const rest = lines.slice(end).join('\n').replace(/^\n+/, '');
+    return [...lines.slice(0, at), ...merged.split('\n'), ...(rest ? ['', rest] : [])].join('\n');
   }
   if (opts.prepend) return body.trim() ? `${addition}\n\n${body.replace(/^\n+/, '')}` : addition;
   if (opts.inline) return body.trimEnd() ? `${body.trimEnd()} ${addition}` : addition;
@@ -130,10 +132,11 @@ export function insert(body: string, addition: string, opts: { prepend?: boolean
 
 /**
  * A body with lines first..last taken out and the blank lines around the gap
- * closed up, and how many lines at or before the gap went with them, so a
- * line number below the gap can be carried over.
+ * closed up, and how many lines went with them: `removed` for a line number
+ * below the gap to carry over, `leading` (blank lines stripped from the top)
+ * for one above it.
  */
-function cutLines(body: string, first: number, last: number): { body: string; removed: number } {
+function cutLines(body: string, first: number, last: number): { body: string; removed: number; leading: number } {
   const lines = body.split('\n');
   const kept = [...lines.slice(0, first), ...lines.slice(last + 1)];
   let removed = last - first + 1;
@@ -144,7 +147,7 @@ function cutLines(body: string, first: number, last: number): { body: string; re
   }
   let leading = 0;
   while (leading < kept.length && !kept[leading].trim()) leading++;
-  return { body: kept.slice(leading).join('\n').replace(/\s+$/, ''), removed: removed + leading };
+  return { body: kept.slice(leading).join('\n').replace(/\s+$/, ''), removed: removed + leading, leading };
 }
 
 const whereText = (to: Note, target: Target, createHeading?: string): string => {
@@ -186,8 +189,9 @@ export function planRefile(notes: Note[], req: RefileRequest, kind: PlanKind = '
       if (target.line >= req.first && target.line <= req.last) return fail('same_note', 'That heading is inside the lines being moved');
     }
     const cut = cutLines(from.body, req.first, req.last);
-    // The destination was found before the cut; below the gap it moves up by what went.
-    if (typeof target === 'object' && target.line > req.last) target = { line: target.line - cut.removed };
+    // The destination was found before the cut; below the gap it moves up by
+    // what went, above it only by the blank lines stripped from the top.
+    if (typeof target === 'object') target = { line: target.line - (target.line > req.last ? cut.removed : cut.leading) };
     toBody = placeBlock(cut.body, block, target, req.createHeading);
     fromBody = toBody ?? from.body;
   } else {

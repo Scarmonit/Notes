@@ -142,3 +142,21 @@ describe('settings', () => {
     expect(await again.loadSettings()).toEqual({ closeToTray: true, hotkey: null, captureHotkey: 'ctrl+alt+j', reminders: true });
   });
 });
+
+describe('store, re-reading the folder', () => {
+  it('keeps a note whose file is there but cannot be read, rather than taking it for deleted', async () => {
+    const store = createStore(root);
+    await store.saveNotes({ version: 1, notes: [note('a', 'Keep'), note('b', 'Locked')] });
+    const dir = pathsFor(root).notes;
+    // A directory under the file's name reads as EISDIR: present, unreadable, the way a lock looks.
+    await fs.rm(path.join(dir, 'Locked.md'));
+    await fs.mkdir(path.join(dir, 'Locked.md'));
+    const { notes } = await store.loadNotes();
+    expect(notes.map((n) => n.id)).toEqual(['a']);
+    expect(store.fileNameOf('b')).toBe('Locked.md');
+    // Once the file is really gone, so is the entry.
+    await fs.rmdir(path.join(dir, 'Locked.md'));
+    await store.loadNotes();
+    expect(store.fileNameOf('b')).toBeNull();
+  });
+});

@@ -28,8 +28,21 @@ const TOKEN = new RegExp(
   'gim',
 );
 
-/** The markdown written back for a section rule. */
+/** The markdown written for a section rule that was made in the editor. */
 export const RULE_MD = '---';
+
+/**
+ * Whether the line starting at `at` sits directly under a line of paragraph
+ * text. There, `---` is not a rule but a setext underline (the paragraph
+ * becomes a heading), so it must stay the characters typed.
+ */
+function underParagraph(body: string, at: number): boolean {
+  if (at === 0) return false;
+  const prevStart = body.lastIndexOf('\n', at - 2) + 1;
+  const prev = body.slice(prevStart, at - 1).trim();
+  if (!prev || isFenceLine(prev)) return false;
+  return !/^(#{1,6}\s|>|[-*+]\s|\d{1,9}[.)]\s|(?:-{3,}|\*{3,}|_{3,})$)/.test(prev);
+}
 
 export const MIN_IMAGE_WIDTH = 48;
 
@@ -68,10 +81,11 @@ function parseWidth(raw: string | null | undefined): number | null {
   return Number.isFinite(n) && n >= MIN_IMAGE_WIDTH ? n : null;
 }
 
-/** The markdown (or HTML, when sized) for one attached image. */
+/** The markdown (or HTML, when sized or when the alt would not survive the markdown form) for one attached image. */
 export function imageMarkdown(ref: ImageRef): string {
-  if (ref.width === null) return `![${ref.alt}](${assetUrl(ref.name)})`;
-  return `<img src="${assetUrl(ref.name)}" alt="${escapeAttr(ref.alt)}" width="${ref.width}">`;
+  if (ref.width === null && !/[\]\n]/.test(ref.alt)) return `![${ref.alt}](${assetUrl(ref.name)})`;
+  const width = ref.width === null ? '' : ` width="${ref.width}"`;
+  return `<img src="${assetUrl(ref.name)}" alt="${escapeAttr(ref.alt)}"${width}>`;
 }
 
 /** Where a token sits in the body text. */
@@ -82,7 +96,7 @@ export interface Span {
 
 export type BodyToken =
   | ({ kind: 'image' } & ImageRef & Span)
-  | ({ kind: 'rule' } & Span)
+  | ({ kind: 'rule'; marker: string } & Span)
   | ({ kind: 'link'; target: string } & Span);
 
 /** Every image, section rule and note link in a body, in order, with the span of text each occupies. */
@@ -96,7 +110,8 @@ export function bodyTokens(body: string): BodyToken[] {
     // Inside a code fence it is the characters that were typed, as the preview shows them.
     if (fenced.some((f) => span.start >= f.start && span.start < f.end)) continue;
     if (match[4] !== undefined) {
-      out.push({ kind: 'rule', ...span });
+      if (match[4].startsWith('-') && underParagraph(body, span.start)) continue;
+      out.push({ kind: 'rule', marker: match[4], ...span });
       continue;
     }
     if (match[5] !== undefined) {
@@ -139,11 +154,12 @@ export function ruleHtml(): string {
   return '<hr class="inline-rule" contenteditable="false">';
 }
 
-/** A fresh section rule element. */
-export function makeRule(): HTMLHRElement {
+/** A fresh section rule element, carrying the marker it was written with so that is what goes back. */
+export function makeRule(marker: string = RULE_MD): HTMLHRElement {
   const hr = document.createElement('hr');
   hr.className = 'inline-rule';
   hr.contentEditable = 'false';
+  hr.dataset.md = marker;
   return hr;
 }
 
@@ -248,7 +264,7 @@ export function renderEditor(root: HTMLElement, body: string): void {
   let last = 0;
   for (const tok of bodyTokens(body)) {
     if (tok.start > last) doc.appendChild(document.createTextNode(body.slice(last, tok.start)));
-    doc.appendChild(tok.kind === 'rule' ? makeRule() : tok.kind === 'link' ? makeLink(tok.target) : makeChip(tok));
+    doc.appendChild(tok.kind === 'rule' ? makeRule(tok.marker) : tok.kind === 'link' ? makeLink(tok.target) : makeChip(tok));
     last = tok.end;
   }
   if (last < body.length) doc.appendChild(document.createTextNode(body.slice(last)));
@@ -366,10 +382,12 @@ function analyze(root: HTMLElement, keepTrailing = false): Analysis {
           }
           break;
         }
-        case 'HR':
-          block(elm, RULE_MD.length, wrapped);
-          out += RULE_MD;
+        case 'HR': {
+          const md = elm.dataset.md ?? RULE_MD;
+          block(elm, md.length, wrapped);
+          out += md;
           break;
+        }
         case 'BR': {
           const i = indexIn(elm);
           block(elm, 1, wrapped);
