@@ -1,6 +1,7 @@
 import type { Snapshot, SnapshotSummary } from '../shared/history';
 import type { Settings } from '../shared/settings';
 import type { ExternalChanges, Note, SettingsResult, TrashedNote } from '../shared/types';
+import type { NoteProperty, PropertyChange } from '../shared/properties';
 import { EXIT, type CommandInfo, type ExitCode, type NoteStatus, type PathsInfo, type UiState } from './ipc-protocol';
 import type { Plan } from './refactor';
 
@@ -35,6 +36,8 @@ export interface Backend {
   folderDelete(folder: string): Promise<void>;
   /** Files a note in another folder; resolves to its path inside the notes folder. */
   noteMove(id: string, folder: string): Promise<string>;
+  /** Sets or removes one front-matter property; resolves to the note's properties as they now stand. */
+  noteProperty(id: string, change: PropertyChange): Promise<NoteProperty[]>;
   /**
    * Creates or replaces a note. Throws `busy` while the note is being typed
    * in, or when `expectUpdatedAt` is given and the note has changed since it

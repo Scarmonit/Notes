@@ -1,3 +1,5 @@
+import { blockOf, normalizeId } from '../../core/blocks';
+import { blockRecords } from './journal-props';
 import type { Command } from 'commander';
 import { CliError } from '../../core/backend';
 import { EXIT } from '../../core/ipc-protocol';
@@ -200,11 +202,28 @@ export function register(program: Command, use: () => Ctx): void {
     .option('--created', 'when it was made (ISO)')
     .option('--words', 'the word count')
     .option('--tags', 'its tags, one per line')
+    .option('--block <id>', 'just the block that address names; ^abc123 or abc123')
     .action(async (selector: string, opts: Record<string, boolean>) => {
       const c = ctx();
       const backend = await c.backend();
       const note = await c.note(selector);
       const record = describe(note, await backend.notes());
+      // Every address in the note, so a script can see what a link may point
+      // at; the content of one comes from --block rather than from here.
+      record.blocks = blockRecords(note.body);
+      const wantBlock = typeof opts.block === 'string' ? opts.block : '';
+      if (wantBlock) {
+        const hit = blockOf(note.body, wantBlock);
+        if (hit.kind === 'none') throw new CliError(`"${titleOf(note)}" has no block ^${normalizeId(wantBlock)}`, EXIT.notFound);
+        if (hit.kind === 'many') throw new CliError(`^${normalizeId(wantBlock)} is written more than once in "${titleOf(note)}"`, EXIT.ambiguous);
+        const block = { id: hit.block.id, kind: hit.block.kind, line: hit.block.start + 1, content: hit.block.content };
+        c.out.value({ noteId: note.id, path: record.path, block }, () =>
+          c.out.mode === 'plain' ? block.content : `${titleOf(note)} · ^${block.id} · ${block.kind} · line ${block.line}
+
+${block.content}`,
+        );
+        return;
+      }
       const getter = ['body', 'title', 'id', 'updated', 'created', 'words'].find((k) => opts[k]);
       if (opts.path) {
         const file = await backend.fileOf(note.id);

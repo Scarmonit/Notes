@@ -26,6 +26,7 @@ const api: NotesApi = {
   moveFolder: (folder, into) => ipcRenderer.invoke(IPC.folderMove, folder, into),
   deleteFolder: (folder) => ipcRenderer.invoke(IPC.folderDelete, folder),
   moveNote: (id, folder) => ipcRenderer.invoke(IPC.noteMove, id, folder),
+  setProperty: (id, change) => ipcRenderer.invoke(IPC.noteProperty, id, change),
   notesFolder: () => ipcRenderer.invoke(IPC.notesFolder),
   clipperBookmarklet: () => ipcRenderer.invoke(IPC.clipperBookmarklet),
   pickNotesFolder: () => ipcRenderer.invoke(IPC.pickNotesFolder),

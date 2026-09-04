@@ -173,22 +173,84 @@ const LINK = new RegExp(LINK_PATTERN, 'g');
 export const linkKey = (target: string): string => target.trim().toLowerCase();
 
 /**
- * The inside of a link taken apart: `[[Target|shown as this]]` points at
- * Target and reads as the alias, the way Obsidian writes it. Everything that
- * follows, lists, renders or rewrites a link agrees on this one split.
+ * Everything a `[[link]]` says, taken apart once.
+ *
+ * There is one grammar and this is where it lives — the editor's chips, the
+ * preview, backlinks, embeds, the rewriter, the command line and the peek
+ * card all read a link through here, because a second place that split the
+ * string would be a second grammar that could disagree with this one.
+ *
+ * `[[Work/Plan#^k3n9dq|as this]]` is read in this order: the alias is what
+ * follows the first `|`; the address is split at its first `#`; a fragment
+ * beginning `^` is a block id and every other fragment is a heading. An empty
+ * note name means this note, so `[[#^k3n9dq]]` and `[[#Heading]]` point
+ * inside the note they are written in.
  */
-export function linkParts(inner: string): { target: string; alias?: string } {
-  const bar = inner.indexOf('|');
-  if (bar < 0) return { target: inner.trim() };
-  const alias = inner.slice(bar + 1).trim();
-  return alias ? { target: inner.slice(0, bar).trim(), alias } : { target: inner.slice(0, bar).trim() };
+export interface LinkAddress {
+  /** The note named — a title, an alias or a `Folder/Title` path. Empty means this note. */
+  target: string;
+  /** A heading inside it, when the fragment named one. */
+  heading?: string;
+  /** A block id inside it, when the fragment began with `^`. */
+  block?: string;
+  /** What the link reads as, when it was given one. */
+  alias?: string;
 }
 
-/** The titles a note links to, in order of appearance, without repeats. */
+/** The inside of a `[[…]]`, taken apart. */
+export function parseLinkAddress(inner: string): LinkAddress {
+  const bar = inner.indexOf('|');
+  const alias = bar < 0 ? '' : inner.slice(bar + 1).trim();
+  const address = (bar < 0 ? inner : inner.slice(0, bar)).trim();
+  const hash = address.indexOf('#');
+  const out: LinkAddress = { target: (hash < 0 ? address : address.slice(0, hash)).trim() };
+  const fragment = hash < 0 ? '' : address.slice(hash + 1).trim();
+  // `#^` is the block address and nothing else; every other fragment is a heading.
+  if (fragment.startsWith('^')) out.block = fragment.slice(1).trim();
+  else if (fragment) out.heading = fragment;
+  if (alias) out.alias = alias;
+  return out;
+}
+
+/** The inside of a `[[…]]` put back together, fragment and alias in place. */
+export function formatLinkAddress(a: LinkAddress): string {
+  const fragment = a.block ? `#^${a.block}` : a.heading ? `#${a.heading}` : '';
+  return `${a.target.trim()}${fragment}${a.alias ? `|${a.alias}` : ''}`;
+}
+
+/**
+ * What a link reads as when it was given no alias.
+ *
+ * A block address written out is honest but ugly, so it is set apart with a
+ * dot — `Plan · ^k3n9dq`, and `This note · ^k3n9dq` for one pointing inside
+ * the note it stands in — and a heading keeps the ` › ` an embed already
+ * uses. The editor's chips and the rendered preview both read a link through
+ * here, so the same link cannot say two things on two surfaces.
+ */
+export function linkLabel(target: string): string {
+  const address = parseLinkAddress(target);
+  const name = address.target.trim() || 'This note';
+  if (address.block) return `${name} · ^${address.block}`;
+  if (address.heading) return `${name} › ${address.heading}`;
+  return target;
+}
+
+/** The address a `[[link]]`'s inside names, without its alias — what a click follows. */
+export const addressOf = (inner: string): string => {
+  const a = parseLinkAddress(inner);
+  return formatLinkAddress({ ...a, alias: undefined });
+};
+
+/**
+ * The notes a note links to, in order of appearance, without repeats.
+ *
+ * A link carrying a fragment counts as a link to its note: `[[Plan#Decision]]`
+ * points at Plan, whatever part of it the reader is being sent to.
+ */
 export function linksIn(body: string): string[] {
   const out: string[] = [];
   for (const m of body.matchAll(LINK)) {
-    const { target } = linkParts(m[1]);
+    const { target } = parseLinkAddress(m[1]);
     if (target && !out.some((t) => linkKey(t) === linkKey(target))) out.push(target);
   }
   return out;

@@ -340,6 +340,14 @@
             <span class="layout-text">A Windows notification when a task’s @date comes due, while Notes runs</span>
           </label>
 
+          <h3 class="layout-head">Journal</h3>
+          <div class="layout-row">
+            <span class="u">Where entries go</span>
+            <input id="journal-path" class="layout-input" type="text" spellcheck="false" aria-label="Where journal entries go" />
+            <button id="journal-template" class="link-btn u" type="button">Template…</button>
+          </div>
+          <p id="journal-note" class="layout-note u">A path for the dated note, where a slash makes a folder. YYYY, MM, DD, MMM and DDD become the date; anything else is the word it is. Changing this affects the days you open from now on — notes already written are not moved.</p>
+
           <h3 class="layout-head">Files</h3>
           <div class="layout-row">
             <span class="u">Notes folder</span>

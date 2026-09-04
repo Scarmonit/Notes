@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { fileNameFor, formatNoteFile, isNoteFileName, parseNoteFile, uniqueFileName } from './notes-folder';
+import { fileNameFor, formatNoteFile, isNoteFileName, parseNoteFile, uniqueFileName, type FrontMatterEntry } from './notes-folder';
+
+/** The entries the app does not own: the ones a rewrite must carry through unchanged. */
+const theirs = (entries: readonly FrontMatterEntry[]): FrontMatterEntry[] => entries.filter((e) => e.owned === undefined);
 import type { Note } from './types';
 
 const facts = { id: 'fallback-id', name: 'Dropped file', mtime: 5000 };
@@ -9,7 +12,8 @@ describe('formatNoteFile / parseNoteFile', () => {
     const note: Note = { id: 'abc', body: 'first line\n\nsecond **para**', createdAt: 1000, updatedAt: 2000, pinned: true, title: 'Plan: today' };
     const text = formatNoteFile(note);
     expect(text.startsWith('---\nid: abc\n')).toBe(true);
-    expect(parseNoteFile(text, facts)).toMatchObject({ note, extra: [], needsWrite: false });
+    expect(parseNoteFile(text, facts)).toMatchObject({ note, needsWrite: false });
+    expect(theirs(parseNoteFile(text, facts).frontMatter)).toEqual([]);
   });
 
   it('keeps a body that ends in a newline, and one that is empty', () => {
@@ -27,9 +31,9 @@ describe('formatNoteFile / parseNoteFile', () => {
   it('carries front-matter lines it does not understand through a rewrite', () => {
     const text = '---\nid: abc\ntags: [wow, commands]\ncreated: 1970-01-01T00:00:01.000Z\nupdated: 1970-01-01T00:00:02.000Z\nsource: somewhere\n---\nbody\n';
     const parsed = parseNoteFile(text, facts);
-    expect(parsed.extra).toEqual(['tags: [wow, commands]', 'source: somewhere']);
-    const again = parseNoteFile(formatNoteFile(parsed.note, parsed.extra), facts);
-    expect(again.extra).toEqual(parsed.extra);
+    expect(theirs(parsed.frontMatter).map((e) => e.source.join('\n'))).toEqual(['tags: [wow, commands]', 'source: somewhere']);
+    const again = parseNoteFile(formatNoteFile(parsed.note, parsed.frontMatter), facts);
+    expect(again.frontMatter).toEqual(parsed.frontMatter);
     expect(again.note).toEqual(parsed.note);
   });
 
@@ -37,7 +41,7 @@ describe('formatNoteFile / parseNoteFile', () => {
     const text = '---\nid: abc\naliases:\n  - Doggo\n  - "Woofer, the"\ncreated: 1970-01-01T00:00:01.000Z\nupdated: 1970-01-01T00:00:02.000Z\n---\nbody\n';
     const parsed = parseNoteFile(text, facts);
     expect(parsed.note.aliases).toEqual(['Doggo', 'Woofer, the']);
-    expect(parsed.extra).toEqual([]);
+    expect(theirs(parsed.frontMatter)).toEqual([]);
   });
 
   it('reads aliases written on one line, in brackets or without', () => {
@@ -93,7 +97,7 @@ describe('formatNoteFile / parseNoteFile', () => {
     // Nanoseconds from another tool: a Date cannot hold them, and formatting one would throw on every save.
     const parsed = parseNoteFile('---\nid: x\ncreated: 1756908000000000000\n---\nwords\n', facts);
     expect(parsed.note.createdAt).toBe(5000);
-    expect(() => formatNoteFile(parsed.note, parsed.extra)).not.toThrow();
+    expect(() => formatNoteFile(parsed.note, parsed.frontMatter)).not.toThrow();
   });
 
   it('records a deletion time when the file is in the trash', () => {

@@ -30,7 +30,8 @@ import {
   createNote,
   exportBody,
   linkKey,
-  linkParts,
+  parseLinkAddress,
+  type LinkAddress,
   neighborOf,
   noteForLink,
   qualifiedLink,
@@ -102,6 +103,11 @@ import { DATE_FORMAT, expandTemplate, formatDate, templatesOf, TIME_FORMAT, uses
 import { hasDiagrams, hasMath } from '../shared/markdown-core';
 import { renderDiagrams } from './diagrams';
 import { layoutGraph, nodeAt, type LaidOut } from './graph';
+import { blockOf } from '../core/blocks';
+import { dateOf, DEFAULT_JOURNAL_PATH, isoDate, journalNoteAt, journalPathError, journalPlace, momentOf, parseJournalDate, type JournalDate } from '../core/journal';
+import { createPropertiesUi } from './properties-ui';
+import { createBlocksUi } from './blocks-ui';
+import type { NoteProperty } from '../shared/properties';
 import './generated/katex.css';
 import katexText from './generated/katex.css?inline';
 
@@ -229,6 +235,9 @@ const el = {
   cliNote: $<HTMLParagraphElement>('cli-note'),
   searchOps: $<HTMLParagraphElement>('search-ops'),
   remindersOn: $<HTMLInputElement>('reminders-on'),
+  journalPath: $<HTMLInputElement>('journal-path'),
+  journalTemplate: $<HTMLButtonElement>('journal-template'),
+  journalNote: $('journal-note'),
   pickSheet: $('pick-sheet'),
   pickInput: $<HTMLInputElement>('pick-input'),
   pickList: $('pick-list'),
@@ -1510,13 +1519,17 @@ async function linkMentionHere(m: Mention): Promise<void> {
  * in every app that has them.
  */
 function openLink(target: string): void {
-  // An embed names a section as `Note#Heading`; the note is what a click opens.
-  const hash = target.indexOf('#');
-  const name = (hash > 0 && !noteForLink(notes, target.trim()) ? target.slice(0, hash) : target).trim();
+  // A whole title may itself contain a #, so the plain name is tried first;
+  // only when nothing answers to it is the address read apart.
+  const whole = target.trim();
+  const address = noteForLink(notes, whole) ? { target: whole } : parseLinkAddress(whole);
+  const here = selected();
+  // An empty name means this note: `[[#^k3n9dq]]` and `[[#Heading]]`.
+  const name = address.target.trim() || (here ? titleOf(here) : '');
   if (!name) return;
   const hit = resolveLink(notes, name);
   if (hit.kind === 'one') {
-    goToLinked(hit.note.id);
+    goToAddress(hit.note, address);
     return;
   }
   // Folders make two notes called Plan legal, so the link can no longer say
@@ -1535,6 +1548,40 @@ function goToLinked(id: string): void {
   if (filtering()) clearFilters();
   select(id);
   focusEditor();
+}
+
+/**
+ * Follows a link all the way to what it named: the note, and then the heading
+ * or the block inside it.
+ *
+ * A block that is missing or written twice is said out loud and goes nowhere.
+ * It never falls back to the note, and never offers to make one — the note is
+ * right there; it is the paragraph that has gone.
+ */
+function goToAddress(note: Note, address: LinkAddress): void {
+  if (address.block) {
+    const hit = blockOf(note.body, address.block);
+    if (hit.kind === 'none') {
+      showStatus(`Block \u005e${address.block} was not found in “${titleOf(note)}”`, 4000);
+      return;
+    }
+    if (hit.kind === 'many') {
+      showStatus(`Block \u005e${address.block} is written more than once in “${titleOf(note)}”`, 4000);
+      return;
+    }
+    if (filtering()) clearFilters();
+    openAtLine(note.id, hit.block.start);
+    return;
+  }
+  if (address.heading) {
+    const found = headingsIn(note.body).find((h) => h.text.toLowerCase() === address.heading?.toLowerCase());
+    if (found) {
+      if (filtering()) clearFilters();
+      openAtLine(note.id, found.line);
+      return;
+    }
+  }
+  goToLinked(note.id);
 }
 
 /**
@@ -1588,7 +1635,7 @@ function convertLinkOnClose(): void {
   range.setStart(pos.node, pos.offset - m[0].length - (bang ? 1 : 0));
   range.setEnd(pos.node, pos.offset);
   range.deleteContents();
-  const typed = linkParts(m[1]);
+  const typed = parseLinkAddress(m[1]);
   // A name that is only some note's alias is written the way it will be read:
   // `[[Dog|Doggo]]`, so the file says which note it means and the page still
   // says what the writer typed — as Obsidian writes an alias reference.
@@ -1948,6 +1995,77 @@ function newNote(title = ''): void {
   if (ui.preview) ui.preview = false;
   select(n.id);
   focusEditor();
+}
+
+/**
+ * Opens the note for a date, making it if there is none.
+ *
+ * Occupancy is the whole of a journal entry's identity: whatever note is at
+ * the path the format produces *is* that date's note. One that is already
+ * there is opened and **nothing is written to it** — no template reapplied,
+ * no title repaired, no front matter touched because somebody looked at it.
+ */
+async function openJournal(date: JournalDate): Promise<void> {
+  const place = journalPlace(date, settings.journalPath);
+  const already = journalNoteAt(notes, place);
+  if (already) {
+    clearFilters();
+    select(already.id);
+    focusEditor();
+    showStatus(`Journal for ${isoDate(date)}`, 2000);
+    return;
+  }
+  const template = settings.journalTemplateId ? notes.find((n) => n.id === settings.journalTemplateId) : null;
+  if (settings.journalTemplateId && !template) showStatus('The journal template is gone; starting an empty entry', 4000);
+  const n = createNote();
+  n.title = place.title;
+  // The entry's own day, not the moment it is being written: a back-filled
+  // note stamped with today would say the wrong date in its own heading.
+  if (template) n.body = expandTemplate(template, { title: place.title, now: momentOf(date) });
+  notes = [n, ...notes];
+  scheduleSave();
+  clearFilters();
+  if (ui.preview) ui.preview = false;
+  select(n.id);
+  focusEditor();
+  caretToEnd();
+  if (place.folder) {
+    // Today's note is the one thing allowed to make a folder while filing,
+    // and only because a command asked it to.
+    await flush();
+    if (tookFolders(await window.notesApi.createFolder(place.folder))) {
+      if (tookFolders(await window.notesApi.moveNote(n.id, place.folder))) {
+        renderList();
+        renderEditor();
+      }
+    }
+  }
+  showStatus(`Started the journal for ${isoDate(date)}`, 3000);
+}
+
+/** Asks which day, in the words the app already reads for a date. */
+function pickJournalDate(): void {
+  const now = new Date();
+  const offer = ['today', 'yesterday', 'tomorrow', '-2d', '-7d', '+7d'];
+  const rowFor = (said: string): PickItem | null => {
+    const date = parseJournalDate(said, now);
+    if (!date) return null;
+    const place = journalPlace(date, settings.journalPath);
+    return {
+      label: isoDate(date),
+      hint: `${said} · ${journalNoteAt(notes, place) ? 'written' : 'new'} · ${place.path}`,
+      run: () => void openJournal(date),
+    };
+  };
+  const items = offer.map(rowFor).filter((row): row is PickItem => row !== null);
+  openPicker('Journal for which day?', items, focusEditor, {
+    typed: (raw) => {
+      const date = parseJournalDate(raw, now);
+      if (!date) return null;
+      const place = journalPlace(date, settings.journalPath);
+      return { label: isoDate(date), hint: `${journalNoteAt(notes, place) ? 'written' : 'new'} · ${place.path}`, run: () => void openJournal(date) };
+    },
+  });
 }
 
 /** A note whose title is what was typed into the search box. */
@@ -3396,9 +3514,16 @@ const hotkeyRows: HotkeyRow[] = [
   { key: 'captureHotkey', failed: 'captureHotkeyFailed', btn: el.captureHotkeyBtn, clear: el.captureHotkeyClear, note: el.captureHotkeyNote, recording: false },
 ];
 
-function renderSettings(notes: Partial<Record<HotkeyRow['key'], string>> = {}): void {
+function renderSettings(warnings: Partial<Record<HotkeyRow['key'], string>> = {}): void {
   el.closeTray.checked = settings.closeToTray;
   el.remindersOn.checked = settings.reminders;
+  if (document.activeElement !== el.journalPath) el.journalPath.value = settings.journalPath;
+  const template = settings.journalTemplateId ? notes.find((n) => n.id === settings.journalTemplateId) : null;
+  el.journalTemplate.textContent = template ? `Template: ${titleOf(template)}` : 'Template…';
+  // Today's path, worked out from the format as it stands, so the setting can
+  // be read rather than imagined.
+  const place = journalPlace(dateOf(new Date()), settings.journalPath);
+  el.journalNote.textContent = `Today would be ${place.path}.md. A slash makes a folder; YYYY, MM, DD, MMM and DDD become the date, and anything else is the word it is. Changing this affects the days you open from now on — notes already written are not moved.`;
   for (const row of hotkeyRows) {
     const chord = settings[row.key];
     row.btn.classList.toggle('recording', row.recording);
@@ -3415,7 +3540,7 @@ function renderSettings(notes: Partial<Record<HotkeyRow['key'], string>> = {}): 
       row.btn.append('None');
     }
     row.clear.hidden = !chord || row.recording;
-    row.note.textContent = notes[row.key] ?? '';
+    row.note.textContent = warnings[row.key] ?? '';
   }
 }
 
@@ -3426,7 +3551,7 @@ async function saveSettings(next: Settings): Promise<void> {
   renderSettings();
   try {
     const stored = await window.notesApi.setSettings(next);
-    settings = { closeToTray: stored.closeToTray, hotkey: stored.hotkey, captureHotkey: stored.captureHotkey, reminders: stored.reminders, views: stored.views, notesFolder: stored.notesFolder };
+    settings = { closeToTray: stored.closeToTray, hotkey: stored.hotkey, captureHotkey: stored.captureHotkey, reminders: stored.reminders, views: stored.views, notesFolder: stored.notesFolder, journalPath: stored.journalPath, journalTemplateId: stored.journalTemplateId };
     const notes: Partial<Record<HotkeyRow['key'], string>> = {};
     for (const row of hotkeyRows) if (stored[row.failed]) notes[row.key] = 'Another program already uses that combination.';
     renderSettings(notes);
@@ -3440,6 +3565,35 @@ async function saveSettings(next: Settings): Promise<void> {
 el.closeTray.addEventListener('change', () => {
   void saveSettings({ ...settings, closeToTray: el.closeTray.checked });
 });
+el.journalPath.addEventListener('change', () => {
+  const said = el.journalPath.value.trim() || DEFAULT_JOURNAL_PATH;
+  const wrong = journalPathError(said);
+  if (wrong) {
+    showStatus(wrong, 4000);
+    el.journalPath.value = settings.journalPath;
+    return;
+  }
+  void saveSettings({ ...settings, journalPath: said });
+});
+
+el.journalTemplate.addEventListener('click', () => {
+  const templates = templatesOf(notes);
+  if (templates.length === 0) {
+    showStatus('No templates yet: tag a note #template to make it one', 4000);
+    return;
+  }
+  const items: PickItem[] = [
+    { label: 'No template', hint: 'A journal entry starts empty', run: () => void saveSettings({ ...settings, journalTemplateId: null }) },
+    ...templates.map((t) => ({
+      label: titleOf(t),
+      hint: t.id === settings.journalTemplateId ? 'the one in use' : snippetOf(t, 40),
+      // The id, not the name: renaming or moving the template must not quietly break this.
+      run: () => void saveSettings({ ...settings, journalTemplateId: t.id }),
+    })),
+  ];
+  openPicker('Which template does a journal entry start from?', items);
+});
+
 el.remindersOn.addEventListener('change', () => {
   void saveSettings({ ...settings, reminders: el.remindersOn.checked });
 });
@@ -4390,6 +4544,14 @@ window.notesApi.onCapture(captureToInbox);
  * whichever is open: a save pending for some other note (a quick note filed
  * in the Inbox, say) must not hold a file for the open note off for good.
  */
+/** Whether two notes carry the same front-matter properties, in the same order. */
+function samePropertyList(a: NoteProperty[] | undefined, b: NoteProperty[] | undefined): boolean {
+  const one = a ?? [];
+  const two = b ?? [];
+  if (one.length !== two.length) return false;
+  return one.every((p, i) => p.key === two[i].key && p.occurrence === two[i].occurrence && p.complex === two[i].complex && JSON.stringify(p.value) === JSON.stringify(two[i].value));
+}
+
 function applyExternal(changes: ExternalChanges): void {
   seenSeq = Math.max(seenSeq, changes.seq);
   let touched = 0;
@@ -4408,7 +4570,10 @@ function applyExternal(changes: ExternalChanges): void {
       (notes[i].title ?? '') === (note.title ?? '') &&
       notes[i].pinned === note.pinned &&
       notes[i].updatedAt === note.updatedAt &&
-      (notes[i].folder ?? ROOT_FOLDER) === (note.folder ?? ROOT_FOLDER)
+      (notes[i].folder ?? ROOT_FOLDER) === (note.folder ?? ROOT_FOLDER) &&
+      // A property changed from the command line moves no other byte of the
+      // note: without this the window would never hear about it.
+      samePropertyList(notes[i].properties, note.properties)
     )
       continue;
     else notes = notes.map((n) => (n.id === note.id ? note : n));
@@ -4416,6 +4581,8 @@ function applyExternal(changes: ExternalChanges): void {
     if (note.id === ui.selectedId) editorNoteId = null;
     forgetDrawn(note.id);
   }
+  // A sheet showing what a note carries must show what it carries now.
+  if (touched > 0 && propertiesUi.isOpen()) propertiesUi.refresh();
   if (touched === 0) return;
   // A note may have arrived in a folder nobody here has heard of, or left the
   // last one in another; the tree is the disk's to say, so ask it again.
@@ -5078,27 +5245,6 @@ function pickView(): void {
   openPicker('Which saved search?', items);
 }
 
-/**
- * The other names this note answers to, typed as a comma-separated line —
- * which is how they are stored, so there is nothing to learn twice. They go
- * into the note's own front matter, where Obsidian keeps them too.
- */
-async function editAliases(): Promise<void> {
-  const n = selected();
-  if (!n) return;
-  keepCaret();
-  const typed = await refactorUi.prompt(`Other names for “${titleOf(n)}”, separated by commas`, (n.aliases ?? []).join(', '));
-  returnToEditor();
-  if (typed === null) return;
-  const next = cleanAliases(typed.split(','));
-  const before = n.aliases ?? [];
-  if (before.join('\u0000') === next.join('\u0000')) return;
-  notes = updateAliases(notes, n.id, next);
-  scheduleSave();
-  renderList();
-  renderEditor();
-  showStatus(next.length === 0 ? 'Other names cleared' : `Also known as ${next.join(', ')}`, 3000);
-}
 
 /** A note to open beside this one, most recently edited first. */
 function pickForTab(): void {
@@ -5237,6 +5383,65 @@ const refactorUi = createRefactorUi({
   root: document.body,
 });
 
+/** The line the caret is on in the open note, for anything that works on a block. */
+function caretLine(): number | null {
+  const sel = editorLines();
+  return sel ? sel.first : null;
+}
+
+const propertiesUi = createPropertiesUi({
+  notes: () => notes,
+  selected,
+  write: async (id, change) => {
+    try {
+      const props = await window.notesApi.setProperty(id, change);
+      // The store is the one that writes; the window catches up from what it says.
+      notes = notes.map((n) => (n.id === id ? withProperties(n, props) : n));
+      renderList();
+      renderEditor();
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : 'That property could not be written';
+    }
+  },
+  writeAliases: (id, names) => {
+    notes = updateAliases(notes, id, cleanAliases(names));
+    scheduleSave();
+    renderList();
+    renderEditor();
+  },
+  search: (q) => {
+    query = q;
+    el.search.value = q;
+    renderList();
+    renderSearchOps();
+    el.search.focus();
+  },
+  status: showStatus,
+  focusEditor,
+  root: document.body,
+});
+
+const blocksUi = createBlocksUi({
+  notes: () => notes,
+  selected,
+  caretLine,
+  apply: applyPlanHere,
+  insertAtCaret,
+  pick: (placeholder, items, options, onClose) => openPicker(placeholder, items, onClose, options),
+  copy: (text) => navigator.clipboard.writeText(text),
+  status: showStatus,
+  focusEditor,
+});
+
+/** A note with the properties the store just reported, or none at all. */
+function withProperties(note: Note, props: NoteProperty[]): Note {
+  const next = { ...note };
+  if (props.length > 0) next.properties = props;
+  else delete next.properties;
+  return next;
+}
+
 const hasNote = (): boolean => selected() !== null;
 
 const ACTIONS: Action[] = [
@@ -5260,6 +5465,27 @@ const ACTIONS: Action[] = [
     chord: 'ctrl+shift+o',
     terms: 'open md txt',
     run: () => void pickImports(),
+  },
+  {
+    id: 'journal-today',
+    label: "Today's note",
+    hint: 'The dated note for today, made if it is not written yet',
+    group: 'Notes',
+    menuSection: 'Create',
+    // Ctrl+Shift+D is Delete. Ctrl+Alt+D joins Ctrl+Alt+F and Ctrl+Alt+M,
+    // which is already the family that means "go to a place in the notebook".
+    chord: 'ctrl+alt+d',
+    terms: 'journal daily diary log today date',
+    run: () => void openJournal(dateOf(new Date())),
+  },
+  {
+    id: 'journal-date',
+    label: 'Journal for a day…',
+    hint: 'today, yesterday, friday, +3d, or a date like 2026-09-01',
+    group: 'Notes',
+    menuSection: 'Create',
+    terms: 'journal daily diary log yesterday tomorrow date',
+    run: pickJournalDate,
   },
   {
     id: 'folder-new',
@@ -5334,9 +5560,21 @@ const ACTIONS: Action[] = [
     group: 'Notes',
     menuSection: 'This note',
     chord: 'ctrl+shift+a',
-    terms: 'alias aka also known as nickname',
+    terms: 'alias aka also known as nickname property',
     enabled: () => hasNote(),
-    run: () => void editAliases(),
+    // The same sheet, opened at the aliases row: there is one property editor
+    // in this app, not one for aliases and another for everything else.
+    run: () => propertiesUi.open('aliases'),
+  },
+  {
+    id: 'properties',
+    label: 'Properties…',
+    hint: "The keys in this note's own front matter — status, and anything else it carries",
+    group: 'Notes',
+    menuSection: 'This note',
+    terms: 'front matter yaml metadata field property key value',
+    enabled: () => hasNote(),
+    run: () => propertiesUi.open(),
   },
   {
     id: 'pin',
@@ -5550,6 +5788,15 @@ const ACTIONS: Action[] = [
     run: () => refactorUi.renameTag(),
   },
   {
+    id: 'properties-all',
+    label: 'All properties…',
+    hint: 'Every front-matter key the notebook uses, and what it says',
+    group: 'Notes',
+    menuSection: 'Library',
+    terms: 'front matter yaml metadata vocabulary keys fields',
+    run: () => propertiesUi.openVocabulary(),
+  },
+  {
     id: 'trash',
     label: 'Deleted notes…',
     hint: 'What was deleted in the last month, to look at or put back',
@@ -5662,6 +5909,26 @@ const ACTIONS: Action[] = [
     terms: 'snippet boilerplate expand',
     enabled: hasNote,
     run: () => pickTemplate('insert'),
+  },
+  {
+    id: 'block-copy',
+    label: 'Copy a link to this block',
+    hint: 'Gives the paragraph or list item at the caret an address, and copies a link to it',
+    group: 'Writing',
+    menuSection: 'Insert',
+    terms: 'block reference address anchor paragraph copy link',
+    enabled: () => hasNote() && blocksUi.canAddress(),
+    run: () => blocksUi.copyLink(),
+  },
+  {
+    id: 'block-link',
+    label: 'Link to a block…',
+    hint: 'Choose a note, then the paragraph or list item in it to point at',
+    group: 'Writing',
+    menuSection: 'Insert',
+    terms: 'block reference address anchor paragraph link',
+    enabled: hasNote,
+    run: () => blocksUi.insertLink(),
   },
   {
     id: 'date',
@@ -6499,6 +6766,8 @@ function onEscape(): void {
     closeMenu(true);
   } else if (!el.pickSheet.hidden) {
     closePicker();
+  } else if (propertiesUi.isOpen()) {
+    propertiesUi.close();
   } else if (!el.dueSheet.hidden) {
     toggleDue(false);
   } else if (!el.graphSheet.hidden) {

@@ -1,3 +1,4 @@
+import { DEFAULT_JOURNAL_PATH, journalPathError } from '../../core/journal';
 import type { Command } from 'commander';
 import { CliError } from '../../core/backend';
 import { EXIT } from '../../core/ipc-protocol';
@@ -7,7 +8,7 @@ import { type Ctx } from '../context';
 
 /** Settings, hotkeys, the window's layout, and the window's own commands. */
 
-const SETTING_KEYS = ['closeToTray', 'hotkey', 'captureHotkey', 'reminders'] as const;
+const SETTING_KEYS = ['closeToTray', 'hotkey', 'captureHotkey', 'reminders', 'journalPath', 'journalTemplateId'] as const;
 
 /** A setting's value from the words someone typed. */
 export function parseSettingValue(key: string, text: string): boolean | string | null {
@@ -15,6 +16,16 @@ export function parseSettingValue(key: string, text: string): boolean | string |
     if (/^(true|on|yes|1)$/i.test(text)) return true;
     if (/^(false|off|no|0)$/i.test(text)) return false;
     throw new CliError(`${key} wants true or false`, EXIT.usage);
+  }
+  if (key === 'journalPath') {
+    const said = text.trim() || DEFAULT_JOURNAL_PATH;
+    const wrong = journalPathError(said);
+    if (wrong) throw new CliError(wrong, EXIT.usage);
+    return said;
+  }
+  if (key === 'journalTemplateId') {
+    // A note id, not a name: renaming or moving the template must not break it.
+    return /^(none|null|off|-|)$/i.test(text) ? null : text.trim();
   }
   if (key === 'hotkey' || key === 'captureHotkey') {
     if (/^(none|null|off|-|)$/i.test(text)) return null;
@@ -38,7 +49,7 @@ const chordText = (chord: string | null): string => (chord ? keyLabel(chord).joi
 export function register(program: Command, use: () => Ctx): void {
   const ctx = use;
 
-  const settings = program.command('settings').description('the settings the app keeps in settings.json: closeToTray, hotkey, captureHotkey, reminders');
+  const settings = program.command('settings').description(`the settings the app keeps in settings.json: ${SETTING_KEYS.join(', ')}`);
   settings
     .command('get', { isDefault: true })
     .description('show the settings, or one of them')

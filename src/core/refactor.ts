@@ -1,4 +1,5 @@
-import { LINK_PATTERN, linkKey, linkMarkdown, linkParts, titleOf } from '../renderer/notes';
+import { blockAtLine, blocksIn, withBlockId } from './blocks';
+import { LINK_PATTERN, formatLinkAddress, linkKey, parseLinkAddress, titleOf } from '../renderer/notes';
 import { headingAt, headingsIn } from '../renderer/outline';
 import { linkMention } from './mentions';
 import type { Note } from '../shared/types';
@@ -16,9 +17,9 @@ import type { Note } from '../shared/types';
  * so the two can never disagree about what an operation means.
  */
 
-export type PlanKind = 'refile' | 'move-section' | 'rename' | 'tag-rename' | 'merge' | 'link-mention';
+export type PlanKind = 'refile' | 'move-section' | 'rename' | 'tag-rename' | 'merge' | 'link-mention' | 'block-id';
 
-export type ChangeKind = 'text added' | 'lines removed' | 'links rewritten' | 'tags rewritten' | 'renamed' | 'trashed';
+export type ChangeKind = 'text added' | 'lines removed' | 'links rewritten' | 'tags rewritten' | 'renamed' | 'trashed' | 'address added';
 
 /** A note as it must be for the Plan to apply, and as it will be afterwards. */
 export interface NoteState {
@@ -258,15 +259,22 @@ export function planMoveSection(notes: Note[], req: MoveSectionRequest): PlanRes
 
 const LINK = new RegExp(LINK_PATTERN, 'g');
 
-/** Every [[link]] to a title rewritten to another, aliases kept; how many were changed. */
+/**
+ * Every [[link]] to a title rewritten to another; how many were changed.
+ *
+ * Only the note the link names moves. Its fragment and its alias are separate
+ * parts of the address and come through untouched, so `[[Plan#^k3n9dq|the
+ * decision]]` becomes `[[Work/Plan#^k3n9dq|the decision]]` and points at the
+ * same words it always did.
+ */
 export function rewriteLinks(body: string, from: string, to: string): { body: string; count: number } {
   const want = linkKey(from);
   let count = 0;
   const next = body.replace(LINK, (whole, inner: string) => {
-    const { target, alias } = linkParts(inner);
-    if (linkKey(target) !== want) return whole;
+    const address = parseLinkAddress(inner);
+    if (linkKey(address.target) !== want) return whole;
     count++;
-    return linkMarkdown(to, alias);
+    return `[[${formatLinkAddress({ ...address, target: to.trim() })}]]`;
   });
   return { body: next, count };
 }
@@ -377,6 +385,101 @@ export function planTagRename(notes: Note[], req: { from: string; to: string }):
   if (writes.length === 0) return fail('nothing_to_do', `No note carries #${from}`);
   const sentence = `Rename #${from} to #${to} in ${plural(writes.length, 'note')} (${plural(tags, 'tag')})`;
   return { ok: true, plan: { kind: 'tag-rename', writes, trash: [], restore: [], summary: { notes: writes.length, tags }, touched, sentence } };
+}
+
+// --- block addresses -----------------------------------------------------------
+
+/**
+ * Writes a `^id` onto one block of a note, so a link can point at it.
+ *
+ * A Plan rather than a bare edit because the block may be in a note nobody is
+ * looking at: this way the write is checked against the note as it now stands,
+ * lands on that note's own undo log, and can be taken back with one Ctrl+Z
+ * from the note it happened to.
+ */
+export function planBlockId(notes: Note[], req: { id: string; line: number; blockId: string }): PlanResult {
+  const note = notes.find((n) => n.id === req.id);
+  if (!note) return fail('not_found', 'That note is gone');
+  const block = blockAtLine(note.body, req.line);
+  if (!block) return fail('nothing_selected', 'There is nothing there a link can point at');
+  if (block.id) return fail('nothing_to_do', `That block is already ^${block.id}`);
+  const after = { ...stateOf(note), body: withBlockId(note.body, block, req.blockId) };
+  const sentence = `Give that block of '${titleOf(note)}' the address ^${req.blockId}`;
+  return {
+    ok: true,
+    plan: {
+      kind: 'block-id',
+      writes: [{ id: note.id, before: stateOf(note), after }],
+      trash: [],
+      restore: [],
+      summary: { notes: 1 },
+      touched: [{ id: note.id, title: titleOf(note), changes: ['address added'] }],
+      sentence,
+    },
+  };
+}
+
+/** What moving addressed text is about to break. */
+export interface BlockFallout {
+  /** Block ids leaving the note they were addressed in. */
+  lost: string[];
+  /** Links elsewhere in the notebook pointing at those ids in that note. */
+  links: number;
+  /** Ids that would end up written twice in the note the text lands in. */
+  collisions: string[];
+}
+
+/**
+ * What a Plan that moves text would do to the block links pointing at it.
+ *
+ * Block ids belong to the note they are written in, so text carrying one into
+ * another note leaves every `[[This#^id]]` pointing at nothing — and if the
+ * destination already uses that id, at two things. Neither is rewritten:
+ * doing so would need a cross-note refactor with no sensible answer for a
+ * half-selected block. What happens instead is that the move says so first.
+ */
+export function blockFallout(plan: Plan, notes: readonly Note[]): BlockFallout | null {
+  const lost: string[] = [];
+  const collisions: string[] = [];
+  let links = 0;
+  for (const write of plan.writes) {
+    const before = blocksIn(write.before.body).map((b) => b.id).filter(Boolean);
+    const after = blocksIn(write.after.body).map((b) => b.id).filter(Boolean);
+    for (const id of before) {
+      if (after.includes(id) || lost.includes(id)) continue;
+      lost.push(id);
+      const note = notes.find((n) => n.id === write.id);
+      if (note) links += linksToBlock(notes, note, id);
+    }
+    for (const id of after) {
+      if (after.indexOf(id) !== after.lastIndexOf(id) && !collisions.includes(id)) collisions.push(id);
+    }
+  }
+  return lost.length === 0 && collisions.length === 0 ? null : { lost, links, collisions };
+}
+
+/** How many links in the notebook point at one block of one note. */
+function linksToBlock(notes: readonly Note[], note: Note, blockId: string): number {
+  const want = linkKey(titleOf(note));
+  let count = 0;
+  for (const other of notes) {
+    for (const m of other.body.matchAll(new RegExp(LINK_PATTERN, 'g'))) {
+      const address = parseLinkAddress(m[1]);
+      if (address.block !== blockId) continue;
+      // A link with no note name means the note it is written in.
+      if (address.target ? linkKey(address.target) === want || linkKey(address.target).endsWith(`/${want}`) : other.id === note.id) count++;
+    }
+  }
+  return count;
+}
+
+/** The sentence a move shows before it breaks anything. */
+export function falloutSentence(fallout: BlockFallout): string {
+  const said: string[] = [];
+  if (fallout.links > 0) said.push(`will break ${plural(fallout.links, 'block link')} to this note`);
+  else if (fallout.lost.length > 0) said.push(`takes ${plural(fallout.lost.length, 'block address')} out of this note`);
+  if (fallout.collisions.length > 0) said.push(`makes ${fallout.collisions.map((id) => `^${id}`).join(', ')} ambiguous where it lands`);
+  return `Moving this text ${said.join(', and ')}`;
 }
 
 // --- merge ---------------------------------------------------------------------

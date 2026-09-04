@@ -1,3 +1,4 @@
+import { DEFAULT_JOURNAL_PATH, journalPathError } from '../core/journal';
 import { cleanNotesFolder } from '../core/paths';
 import { acceleratorOf } from './keys';
 
@@ -19,6 +20,22 @@ export interface Settings {
   views: SavedView[];
   /** Where the markdown files live, or null for the folder beside everything else. */
   notesFolder: string | null;
+  /**
+   * Where a dated note lives: a relative path format without `.md`, run
+   * through the same date tokens a template uses, where a `/` makes a folder.
+   * `Journal/YYYY/YYYY-MM-DD` is the default.
+   *
+   * Nothing marks a note as a journal entry. A date's note is whichever one
+   * occupies the path this produces, so changing the format changes where
+   * *new* dates are opened and moves nothing that is already written.
+   */
+  journalPath: string;
+  /**
+   * The note whose body a new journal entry starts from, by its id — an id
+   * rather than a name, so renaming or moving the template does not quietly
+   * break it. Null for an empty entry.
+   */
+  journalTemplateId: string | null;
 }
 
 /**
@@ -68,7 +85,23 @@ export function withView(views: SavedView[], name: string, query: string): Saved
   return cleanViews(views.map((v, i) => (i === at ? clean : v)));
 }
 
-export const DEFAULT_SETTINGS: Settings = { closeToTray: false, hotkey: 'ctrl+alt+n', captureHotkey: 'ctrl+alt+j', reminders: true, views: [], notesFolder: null };
+export const DEFAULT_SETTINGS: Settings = {
+  closeToTray: false,
+  hotkey: 'ctrl+alt+n',
+  captureHotkey: 'ctrl+alt+j',
+  reminders: true,
+  views: [],
+  notesFolder: null,
+  journalPath: DEFAULT_JOURNAL_PATH,
+  journalTemplateId: null,
+};
+
+/** A journal path format from the file: anything unusable falls back to the default. */
+function cleanJournalPath(value: unknown): string {
+  const said = typeof value === 'string' ? value.trim() : '';
+  if (!said) return DEFAULT_JOURNAL_PATH;
+  return journalPathError(said) === null ? said : DEFAULT_JOURNAL_PATH;
+}
 
 /** A chord Electron can register system-wide, or null. */
 export function usableHotkey(chord: string | null | undefined): string | null {
@@ -99,6 +132,8 @@ export function parseSettings(text: string): Settings {
     reminders: doc.reminders !== false,
     views: cleanViews(doc.views),
     notesFolder: cleanNotesFolder(doc.notesFolder),
+    journalPath: cleanJournalPath(doc.journalPath),
+    journalTemplateId: typeof doc.journalTemplateId === 'string' && doc.journalTemplateId.trim() ? doc.journalTemplateId.trim() : null,
   };
 }
 
@@ -111,5 +146,7 @@ export function cleanSettings(next: Settings): Settings {
     reminders: next.reminders !== false,
     views: cleanViews(next.views),
     notesFolder: cleanNotesFolder(next.notesFolder),
+    journalPath: cleanJournalPath(next.journalPath),
+    journalTemplateId: typeof next.journalTemplateId === 'string' && next.journalTemplateId.trim() ? next.journalTemplateId.trim() : null,
   };
 }

@@ -5,6 +5,7 @@ import { register as registerApp } from './commands/app';
 import { register as registerFiles } from './commands/files';
 import { register as registerFolders } from './commands/folders';
 import { register as registerHistory } from './commands/history';
+import { register as registerJournalProps } from './commands/journal-props';
 import { register as registerNotes } from './commands/notes';
 import { register as registerRefactor } from './commands/refactor';
 import { register as registerSystem } from './commands/system';
@@ -116,6 +117,7 @@ export function buildProgram(options: ProgramOptions = {}): BuiltProgram {
 
   registerNotes(program, use);
   registerFolders(program, use);
+  registerJournalProps(program, use);
   registerTagsLinks(program, use);
   registerRefactor(program, use);
   registerTrash(program, use);

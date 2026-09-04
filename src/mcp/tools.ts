@@ -1,3 +1,9 @@
+import { blockOf, blocksIn, normalizeId } from '../core/blocks';
+import { DEFAULT_JOURNAL_PATH, isoDate, journalNoteAt, journalPlace, momentOf, parseJournalDate } from '../core/journal';
+import { expandTemplate } from '../core/templates';
+import { RESERVED } from '../shared/notes-folder';
+import { SIMPLE_KEY, type PropertyScalar, type PropertyValue } from '../shared/properties';
+import { typeOfValue, type NoteProperty } from '../shared/properties';
 import type { Backend } from '../core/backend';
 import { dueLabel, dueTasks, inWindow, parseDueWindow } from '../core/due';
 import { unlinkedMentions } from '../core/mentions';
@@ -85,11 +91,17 @@ const whereOf = (n: Note): { folder: string; path: string } => ({
 });
 
 /** A note as an assistant should read it: what it is called, what it says, and what it is joined to. */
+/** A property as an assistant reads it: the same shape the command line reports. */
+const propertyOut = (p: NoteProperty): Record<string, unknown> => ({ key: p.key, occurrence: p.occurrence, type: typeOfValue(p.value, p.complex), value: p.complex ? null : p.value });
+
 function describeNote(notes: Note[], n: Note): Answer {
   const tags = tagsOf(n.body);
   const links = linksIn(n.body);
   const back = backlinksOf(notes, n.id);
   const tasks = taskProgress(n.body);
+  const props = n.properties ?? [];
+  // Only the blocks that carry an address: what a link may already point at.
+  const blocks = blocksIn(n.body).filter((b) => b.id);
   const head = [
     `# ${titleOf(n)}`,
     `id: ${n.id}`,
@@ -101,6 +113,8 @@ function describeNote(notes: Note[], n: Note): Answer {
     links.length ? `links to: ${links.join(', ')}` : '',
     back.length ? `linked from: ${back.map(titleOf).join(', ')}` : '',
     tasks && tasks.total > 0 ? `tasks: ${tasks.done}/${tasks.total} done` : '',
+    props.length > 0 ? `properties: ${props.map((p) => `${p.key}=${p.complex ? '<complex>' : JSON.stringify(p.value)}`).join(', ')}` : '',
+    blocks.length > 0 ? `addressable blocks: ${blocks.map((b) => `^${b.id}`).join(' ')}` : '',
   ].filter(Boolean);
   return {
     text: `${head.join('\n')}\n\n---\n\n${n.body}`,
@@ -115,6 +129,8 @@ function describeNote(notes: Note[], n: Note): Answer {
       links_to: links,
       linked_from: back.map(stub),
       tasks: { done: tasks?.done ?? 0, total: tasks?.total ?? 0 },
+      properties: props.map(propertyOut),
+      blocks: blocks.map((b) => ({ id: b.id, kind: b.kind, line: b.start + 1 })),
       body: n.body,
     },
   };
@@ -171,6 +187,29 @@ async function wantedFolder(backend: Backend, typed: string | undefined): Promis
 /** What a tool that writes says back: which note it was, and whether the words changed. */
 const WROTE = shape({ id: { type: 'string' }, title: { type: 'string' } }, ['id', 'title']);
 
+/** One front-matter property, as every surface reports it. */
+const PROPERTY_OUT = {
+  type: 'object',
+  properties: {
+    key: { type: 'string' },
+    occurrence: { type: 'number', description: 'Which occurrence of this key it is, counting from 1 in file order.' },
+    type: { type: 'string', description: 'string, number, boolean, null, list, or complex for YAML the app does not edit.' },
+    value: { description: 'The value. Null for a complex one, whose YAML is kept but not read.' },
+  },
+  required: ['key', 'occurrence', 'type'],
+} as const;
+
+/** One addressable block. */
+const BLOCK_OUT = {
+  type: 'object',
+  properties: {
+    id: { type: 'string', description: 'Its address, without the ^.' },
+    kind: { type: 'string', description: 'paragraph, list-item, heading, blockquote, table or code.' },
+    line: { type: 'number', description: 'The line it starts on, counting from 1.' },
+  },
+  required: ['id', 'kind', 'line'],
+} as const;
+
 export const TOOLS: Tool[] = [
   {
     name: 'notes_search',
@@ -226,7 +265,7 @@ export const TOOLS: Tool[] = [
     name: 'notes_read',
     title: 'Read a note',
     description: 'One note in full: its markdown, with its tags, its [[links]], the notes that link to it, and its task count.',
-    inputSchema: shape({ note: SELECTOR }, ['note']),
+    inputSchema: shape({ note: SELECTOR, block_id: { type: 'string', description: 'Read just the block this address names, rather than the whole note. With or without its ^.' } }, ['note']),
     outputSchema: shape(
       {
         id: { type: 'string' },
@@ -240,16 +279,27 @@ export const TOOLS: Tool[] = [
         links_to: { type: 'array', items: { type: 'string' }, description: 'The [[names]] it links to, whether or not a note answers to them yet.' },
         linked_from: { type: 'array', items: NOTE_STUB },
         tasks: shape({ done: { type: 'number' }, total: { type: 'number' } }, ['done', 'total']),
-        body: { type: 'string', description: 'The markdown, as written.' },
+        properties: { type: 'array', items: PROPERTY_OUT, description: "The front-matter keys the app does not own, as written. A key may appear twice; each occurrence is its own entry." },
+        blocks: { type: 'array', items: BLOCK_OUT, description: 'The blocks carrying a ^address, which a [[Note#^id]] link can point at.' },
+        body: { type: 'string', description: 'The markdown, as written. With block_id, just that block.' },
       },
-      ['id', 'title', 'created', 'updated', 'folder', 'path', 'tags', 'links_to', 'linked_from', 'tasks', 'body'],
+      ['id', 'title', 'created', 'updated', 'folder', 'path', 'tags', 'links_to', 'linked_from', 'tasks', 'properties', 'blocks', 'body'],
     ),
     readOnly: true,
     destructive: false,
     idempotent: true,
     async run(backend, args) {
       const notes = await backend.notes();
-      return describeNote(notes, await noteFor(backend, str(args, 'note'), notes));
+      const note = await noteFor(backend, str(args, 'note'), notes);
+      const wanted = maybe(args, 'block_id')?.trim();
+      if (!wanted) return describeNote(notes, note);
+      // A narrower read of the same note, not a tool of its own.
+      const hit = blockOf(note.body, wanted);
+      if (hit.kind === 'none') throw new ToolError(`"${titleOf(note)}" has no block ^${normalizeId(wanted)}.`);
+      if (hit.kind === 'many') throw new ToolError(`^${normalizeId(wanted)} is written more than once in "${titleOf(note)}", so it does not say which block it means.`);
+      const whole = describeNote(notes, note);
+      const structured = { ...(whole.structured as Record<string, unknown>), body: hit.block.content, blocks: [{ id: hit.block.id, kind: hit.block.kind, line: hit.block.start + 1 }] };
+      return { text: `${titleOf(note)} · ^${hit.block.id} · ${hit.block.kind} · line ${hit.block.start + 1}\n\n${hit.block.content}`, structured };
     },
   },
   {
@@ -566,6 +616,105 @@ export const TOOLS: Tool[] = [
       };
     },
   },
+  {
+    name: 'notes_set_property',
+    title: 'Set a note property',
+    description:
+      "Sets or removes one front-matter property on a note — the YAML keys the app does not own, such as `status: draft`. This is the only way to write one: a property is named, checked and written on its own, so the rest of the note's front matter is never rewritten. The note's own fields (id, title, aliases, created, updated, pinned) are not properties and have their own tools.",
+    inputSchema: shape(
+      {
+        note: SELECTOR,
+        operation: { type: 'string', enum: ['set', 'remove'], description: 'set writes the value; remove takes the key off.' },
+        key: { type: 'string', description: 'The front-matter key. Letters, digits, - and _.' },
+        value: { description: 'With set: a string, a finite number, true, false, null, or an array of those. Nested objects and arrays are refused.' },
+        occurrence: { type: 'number', description: 'Which occurrence, counting from 1. Needed only when the key is written more than once.', minimum: 1 },
+        all: { type: 'boolean', description: 'With remove: take off every occurrence of the key rather than one.' },
+      },
+      ['note', 'operation', 'key'],
+    ),
+    outputSchema: shape({ id: { type: 'string' }, title: { type: 'string' }, properties: { type: 'array', items: PROPERTY_OUT } }, ['id', 'title', 'properties']),
+    readOnly: false,
+    destructive: false,
+    idempotent: true,
+    async run(backend, args) {
+      const notes = await backend.notes();
+      const note = await noteFor(backend, str(args, 'note'), notes);
+      const operation = str(args, 'operation');
+      const key = str(args, 'key').trim();
+      if (operation !== 'set' && operation !== 'remove') throw new ToolError("operation must be 'set' or 'remove'.");
+      if (RESERVED.has(key)) throw new ToolError(`'${key}' is one of the note's own fields, not a property; use notes_update for it.`);
+      if (operation === 'set' && !SIMPLE_KEY.test(key)) throw new ToolError(`'${key}' is not a name a property can have: letters, digits, - and _, starting with a letter or _.`);
+      const change: { key: string; value?: PropertyValue; occurrence?: number; all?: boolean } = { key };
+      if (operation === 'set') change.value = wantedValue(args.value);
+      const occurrence = args.occurrence;
+      if (typeof occurrence === 'number') change.occurrence = occurrence;
+      if (args.all === true) change.all = true;
+      let props: NoteProperty[];
+      try {
+        props = await backend.noteProperty(note.id, change);
+      } catch (err) {
+        throw new ToolError(err instanceof Error ? err.message : String(err));
+      }
+      const mine = props.filter((p) => p.key === key);
+      const said = operation === 'set' ? `Set ${key} on "${titleOf(note)}".` : `Removed ${key} from "${titleOf(note)}".`;
+      return { text: said, structured: { id: note.id, title: titleOf(note), properties: mine.map(propertyOut) } };
+    },
+  },
+  {
+    name: 'notes_journal',
+    title: "Today's note",
+    description:
+      "Opens the dated note for a day, making it from the journal template if it is not written yet. A journal entry is an ordinary note occupying the path the user's journal format produces for that date — nothing marks it as one. Use this to find where today's writing goes, then notes_update to add to it.",
+    inputSchema: shape({
+      date: { type: 'string', description: 'today, yesterday, tomorrow, a weekday, +3d, or an ISO date like 2026-09-01. Default today. A time is not a date and is refused.' },
+      create: { type: 'boolean', description: 'Make the entry when there is none. Default true.' },
+    }),
+    outputSchema: shape(
+      { id: { type: 'string' }, title: { type: 'string' }, folder: { type: 'string' }, path: { type: 'string' }, journal_date: { type: 'string' }, created_now: { type: 'boolean' }, body: { type: 'string' } },
+      ['id', 'title', 'folder', 'path', 'journal_date', 'created_now', 'body'],
+    ),
+    readOnly: false,
+    destructive: false,
+    idempotent: true,
+    async run(backend, args) {
+      const said = str(args, 'date', 'today');
+      const date = parseJournalDate(said);
+      if (!date) throw new ToolError(`"${said}" is not a day: try today, yesterday, friday, +3d or 2026-09-01.`);
+      const settings = await backend.settingsGet();
+      const place = journalPlace(date, settings.journalPath || DEFAULT_JOURNAL_PATH);
+      const notes = await backend.notes();
+      const already = journalNoteAt(notes, place);
+      const out = (n: Note, madeNow: boolean): Answer => ({
+        text: `Journal for ${isoDate(date)}: "${titleOf(n)}" (${n.id}) at ${joinFolder(n.folder ?? ROOT_FOLDER, n.file ?? `${place.title}.md`)}${madeNow ? ', just started' : ''}.`,
+        structured: { id: n.id, title: titleOf(n), ...whereOf(n), journal_date: isoDate(date), created_now: madeNow, body: n.body },
+      });
+      // Occupancy is the whole of a journal entry's identity, and one already
+      // there is never written to.
+      if (already) return out(already, false);
+      if (args.create === false) throw new ToolError(`There is no journal entry for ${isoDate(date)} yet.`);
+      const template = settings.journalTemplateId ? notes.find((n) => n.id === settings.journalTemplateId) : null;
+      const made = createNote(Date.now(), template ? expandTemplate(template, { title: place.title, now: momentOf(date) }) : '');
+      made.title = place.title;
+      const saved = await backend.put(made);
+      if (place.folder) {
+        await backend.folderCreate(place.folder);
+        await backend.noteMove(saved.id, place.folder);
+      }
+      const now = (await backend.notes()).find((n) => n.id === saved.id) ?? saved;
+      return out(now, true);
+    },
+  },
 ];
+
+/** A value an assistant offered, checked down to what a property may hold. */
+function wantedValue(raw: unknown): PropertyValue {
+  const scalar = (v: unknown): PropertyScalar => {
+    if (v === null || typeof v === 'boolean' || typeof v === 'string') return v;
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    throw new ToolError('A property holds a string, a finite number, true, false, null, or a flat array of those.');
+  };
+  if (Array.isArray(raw)) return raw.map(scalar);
+  return scalar(raw);
+}
 
 export { ToolError };

@@ -66,8 +66,22 @@ const sectionOrder = (group: string): string[] => {
 
 describe('the command registry', () => {
   it('reads every command out of main.ts', () => {
-    expect(ACTIONS.length).toBe(65);
+    expect(ACTIONS.length).toBe(71);
     expect(new Set(ACTIONS.map((a) => a.id)).size).toBe(ACTIONS.length);
+  });
+
+  it('never gives one chord to two commands', () => {
+    // Two commands on one chord means the second never runs, and the
+    // shortcuts sheet prints a key that does something else.
+    const taken = new Map<string, string>();
+    const clashes: string[] = [];
+    for (const a of ACTIONS) {
+      if (!a.chord) continue;
+      const held = taken.get(a.chord);
+      if (held) clashes.push(`${a.chord}: ${held} and ${a.id}`);
+      else taken.set(a.chord, a.id);
+    }
+    expect(clashes).toEqual([]);
   });
 
   it('gives every command in a sectioned menu a heading to sit under', () => {
@@ -88,21 +102,21 @@ describe('the command registry', () => {
 
   it('files the Note menu under the headings the design settled on', () => {
     expect(sectionOrder('Notes')).toEqual(['Create', 'Find and navigate', 'This note', 'Tabs', 'Saved searches', 'Folders', 'Library']);
-    expect(idsUnder('Notes', 'Create')).toEqual(['new', 'template-new', 'import', 'folder-new']);
+    expect(idsUnder('Notes', 'Create')).toEqual(['new', 'template-new', 'import', 'journal-today', 'journal-date', 'folder-new']);
     expect(idsUnder('Notes', 'Find and navigate')).toEqual(['find', 'recent', 'prev', 'next', 'back', 'forward']);
-    expect(idsUnder('Notes', 'This note')).toEqual(['title', 'aliases', 'pin', 'history', 'save', 'export', 'merge-into', 'delete', 'note-move', 'note-show']);
+    expect(idsUnder('Notes', 'This note')).toEqual(['title', 'aliases', 'properties', 'pin', 'history', 'save', 'export', 'merge-into', 'delete', 'note-move', 'note-show']);
     expect(idsUnder('Notes', 'Tabs')).toEqual(['tab-new', 'tab-close', 'tab-next', 'tab-prev']);
     expect(idsUnder('Notes', 'Saved searches')).toEqual(['view-save', 'view-open', 'view-forget']);
     // Folders sits immediately before Library: the notebook's own tree, then
     // the things that are about the notebook as a whole.
     expect(idsUnder('Notes', 'Folders')).toEqual(['folder-rename', 'folder-move', 'folder-delete']);
-    expect(idsUnder('Notes', 'Library')).toEqual(['due', 'tag-rename', 'trash', 'folder']);
+    expect(idsUnder('Notes', 'Library')).toEqual(['due', 'tag-rename', 'properties-all', 'trash', 'folder']);
   });
 
   it('files the Write menu the same way', () => {
     expect(sectionOrder('Writing')).toEqual(['Edit', 'Insert', 'Table', 'Move']);
     expect(idsUnder('Writing', 'Edit')).toEqual(['undo', 'redo', 'find-in-note', 'replace-in-note']);
-    expect(idsUnder('Writing', 'Insert')).toEqual(['attach', 'divider', 'code', 'task', 'template-insert', 'date']);
+    expect(idsUnder('Writing', 'Insert')).toEqual(['attach', 'divider', 'code', 'task', 'template-insert', 'block-copy', 'block-link', 'date']);
     expect(idsUnder('Writing', 'Table')).toEqual(['table', 'table-row', 'table-column', 'table-remove-row']);
     expect(idsUnder('Writing', 'Move')).toEqual(['move-lines', 'move-section']);
   });

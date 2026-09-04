@@ -1,3 +1,4 @@
+import { typeOfValue } from '../shared/properties';
 import { confirm as askConfirm, search as askSearch } from '@inquirer/prompts';
 import type { Command } from 'commander';
 import { CliError, type Backend } from '../core/backend';
@@ -216,6 +217,10 @@ export function describe(note: Note, all?: Note[]): Record<string, unknown> {
     tasks: tasks.total,
     tasksDone: tasks.done,
     snippet: snippetOf(note),
+    // The front-matter keys the app does not own. Part of a note's public
+    // shape, not an editing convenience: a notebook where `status: draft` is
+    // invisible to the command line is one where the two disagree.
+    properties: (note.properties ?? []).map((p) => ({ key: p.key, occurrence: p.occurrence, type: typeOfValue(p.value, p.complex), value: p.complex ? null : p.value })),
     body: note.body,
   };
   if (all) row.backlinks = all.filter((n) => n.id !== note.id && linksIn(n.body).some((t) => t.trim().toLowerCase() === titleOf(note).trim().toLowerCase())).length;

@@ -527,3 +527,122 @@ describe('0.22: folders on the command line', () => {
     expect(stdout).not.toContain('Loose');
   });
 });
+
+describe('notes 0.23: the journal, properties and block addresses', () => {
+  it('opens today, makes the folder for it, and never writes to one already there', async () => {
+    expect(await run('journal', '--plain')).toBe(0);
+    const at = lines()[0];
+    expect(at).toMatch(/^Journal\/\d{4}\/\d{4}-\d{2}-\d{2}\.md$/);
+    const file = path.join(pathsFor(root).notes, at);
+    await fs.writeFile(file, `${await fs.readFile(file, 'utf8')}Typed by hand.\n`);
+    const before = await fs.readFile(file, 'utf8');
+    expect(await run('journal', 'today', '--plain')).toBe(0);
+    expect(lines()[0]).toBe(at);
+    // Occupancy wins, and an entry that exists is opened, never rewritten.
+    expect(await fs.readFile(file, 'utf8')).toBe(before);
+  });
+
+  it('answers a day by name and refuses a time', async () => {
+    expect(await run('journal', 'yesterday', '--json')).toBe(0);
+    const made = JSON.parse(stdout) as { journalDate: string; createdNow: boolean; path: string };
+    expect(made.createdNow).toBe(true);
+    expect(made.path).toContain(made.journalDate);
+    expect(await run('journal', '16:00')).toBe(2);
+    expect(stderr).toContain('not a day');
+  });
+
+  it('will only find an entry that is written, with --no-create', async () => {
+    expect(await run('journal', '2026-01-05', '--no-create')).toBe(3);
+    expect(await run('journal', '2026-01-05')).toBe(0);
+    expect(await run('journal', '2026-01-05', '--no-create', '--plain')).toBe(0);
+  });
+
+  it('starts an entry from the journal template, dated for its own day', async () => {
+    expect(await run('new', 'Daily', '--content', '#template\n# {{date:DDDD D MMMM YYYY}}\n\n- [ ] ')).toBe(0);
+    const template = lines()[0];
+    expect(await run('settings', 'set', 'journalTemplateId', template)).toBe(0);
+    expect(await run('journal', '2026-01-03', '--plain')).toBe(0);
+    const at = lines()[0];
+    const text = await fs.readFile(path.join(pathsFor(root).notes, at), 'utf8');
+    expect(text).toContain('# Saturday 3 January 2026');
+    expect(text).not.toContain('#template');
+  });
+
+  it('reads, sets and removes a property, and keeps the rest of the file', async () => {
+    expect(await run('new', 'Plan', '--content', 'Words.')).toBe(0);
+    const id = lines()[0];
+    const file = path.join(pathsFor(root).notes, 'Plan.md');
+    await fs.writeFile(file, (await fs.readFile(file, 'utf8')).replace(/^---$/m, '---\n# a note about this\nstatus: draft'));
+    expect(await run('props', id, '--plain')).toBe(0);
+    expect(stdout.trim()).toBe('status\tstring\tdraft');
+    expect(await run('props', 'set', id, 'status', 'final')).toBe(0);
+    expect(await run('props', id, 'status', '--plain')).toBe(0);
+    expect(stdout.trim()).toBe('final');
+    expect(await fs.readFile(file, 'utf8')).toContain('# a note about this');
+    expect(await run('props', 'remove', id, 'status')).toBe(0);
+    expect(await run('props', id, 'status')).toBe(3);
+  });
+
+  it('sets a list one --value at a time, and refuses the note’s own fields', async () => {
+    expect(await run('new', 'Plan')).toBe(0);
+    const id = lines()[0];
+    expect(await run('props', 'set', id, 'people', '--value', 'Sam', '--value', 'Alex')).toBe(0);
+    expect(await run('props', id, 'people', '--json')).toBe(0);
+    expect(JSON.parse(stdout)).toEqual([{ key: 'people', occurrence: 1, type: 'list', value: ['Sam', 'Alex'] }]);
+    expect(await run('props', 'set', id, 'title', 'no')).toBe(2);
+    expect(await run('props', 'set', id, 'aliases', 'no')).toBe(2);
+  });
+
+  it('is ambiguous, exit 7, about a key written twice', async () => {
+    expect(await run('new', 'Plan')).toBe(0);
+    const id = lines()[0];
+    const file = path.join(pathsFor(root).notes, 'Plan.md');
+    await fs.writeFile(file, (await fs.readFile(file, 'utf8')).replace(/^---$/m, '---\nstatus: a\nstatus: b'));
+    expect(await run('props', 'set', id, 'status', 'c')).toBe(7);
+    expect(await run('props', 'set', id, 'status', 'c', '--occurrence', '2')).toBe(0);
+    expect(await run('props', 'remove', id, 'status', '--all')).toBe(0);
+  });
+
+  it('lists every property the notebook uses', async () => {
+    expect(await run('new', 'One')).toBe(0);
+    const one = lines()[0];
+    expect(await run('new', 'Two')).toBe(0);
+    const two = lines()[0];
+    expect(await run('props', 'set', one, 'status', 'draft')).toBe(0);
+    expect(await run('props', 'set', two, 'status', 'final')).toBe(0);
+    expect(await run('props', '--all', '--plain')).toBe(0);
+    expect(stdout.trim()).toBe('status\t2\tstring');
+  });
+
+  it('finds notes by prop:, the same grammar the search box reads', async () => {
+    expect(await run('new', 'One')).toBe(0);
+    const one = lines()[0];
+    expect(await run('new', 'Two')).toBe(0);
+    expect(await run('props', 'set', one, 'status', 'draft')).toBe(0);
+    expect(await run('list', 'prop:status=draft', '--plain')).toBe(0);
+    expect(lines()).toHaveLength(1);
+    // A leading minus is an option to commander, so a negated operator needs
+    // the `--` every other `-word` on this command line already needs.
+    expect(await run('list', '--plain', '--', '-prop:status')).toBe(0);
+    expect(lines()).toHaveLength(1);
+    // A comparison the app cannot answer is said out loud, not hunted for as
+    // a key spelled with a > in it.
+    expect(await run('list', 'prop:rating>3', '--plain')).toBe(2);
+    expect(stderr).toContain('prop:');
+  });
+
+  it('reads a block by its address, and reports the addresses a note carries', async () => {
+    expect(await run('new', 'Plan', '--content', 'One.\n\n- Decision ^k3n9dq\n  - detail')).toBe(0);
+    const id = lines()[0];
+    expect(await run('show', id, '--block', '^k3n9dq', '--plain')).toBe(0);
+    expect(stdout.trimEnd()).toBe('- Decision\n  - detail');
+    expect(await run('show', id, '--json')).toBe(0);
+    expect(JSON.parse(stdout).blocks).toEqual([{ id: 'k3n9dq', kind: 'list-item', line: 3 }]);
+    expect(await run('show', id, '--block', 'missing')).toBe(3);
+  });
+
+  it('is ambiguous, exit 7, about a block written twice', async () => {
+    expect(await run('new', 'Plan', '--content', 'One. ^dup001\n\nTwo. ^dup001')).toBe(0);
+    expect(await run('show', lines()[0], '--block', 'dup001')).toBe(7);
+  });
+});

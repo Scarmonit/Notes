@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import readline from 'node:readline';
+import type { PropertyChange } from '../shared/properties';
 import { CliError, type Backend } from '../core/backend';
 import { createFileBackend } from '../core/file-backend';
 import {
@@ -217,6 +218,7 @@ export class AppBackend implements Backend {
   folderMove = (folder: string, into: string) => this.call('folder.move', { folder, into }).then((r) => r.folder);
   folderDelete = (folder: string) => this.call('folder.delete', { folder }).then(() => undefined);
   noteMove = (id: string, folder: string) => this.call('note.move', { id, folder }).then((r) => r.path);
+  noteProperty = (id: string, change: PropertyChange) => this.call('note.property', { id, change }).then((r) => r.properties);
   put = (note: Note, options?: { force?: boolean; expectUpdatedAt?: number }) => this.call('note.put', { note, force: options?.force, expectUpdatedAt: options?.expectUpdatedAt });
   remove = (id: string, options?: { force?: boolean }) => this.call('note.remove', { id, force: options?.force }).then((r) => r.removed);
   inbox = (text: string) => this.call('inbox', { text }).then((r) => r.id);

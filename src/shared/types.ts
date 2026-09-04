@@ -1,4 +1,5 @@
 import type { Snapshot, SnapshotSummary } from './history';
+import type { NoteProperty, PropertyChange } from './properties';
 import type { Settings } from './settings';
 
 export interface Note {
@@ -33,6 +34,19 @@ export interface Note {
    * never written into the file: it is the file's own name.
    */
   file?: string;
+  /**
+   * The front-matter keys the app does not own, as the rest of the app reads
+   * them — `status: draft` written in Obsidian, and anything else somebody
+   * put at the top of the file.
+   *
+   * A read-only projection of the file's own front matter, filled in by the
+   * store beside `folder` and `file` and never taken back off a save: the
+   * lossless entries are what get written, and a property changes through the
+   * operation that changes it. It is a list of occurrences rather than a map,
+   * because YAML lets a key appear twice and this app shows both rather than
+   * silently choosing one.
+   */
+  properties?: NoteProperty[];
 }
 
 /**
@@ -160,6 +174,8 @@ export interface NotesApi {
   deleteFolder(folder: string): Promise<FolderResult>;
   /** Files a note in another folder. */
   moveNote(id: string, folder: string): Promise<FolderResult>;
+  /** Sets or removes one front-matter property; resolves to the note's properties as they now stand. */
+  setProperty(id: string, change: PropertyChange): Promise<NoteProperty[]>;
   /** Where the markdown files are now. */
   notesFolder(): Promise<string>;
   /** The web clipper's bookmarklet, or null while the receiver is not listening. */

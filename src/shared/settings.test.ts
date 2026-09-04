@@ -10,6 +10,8 @@ describe('parseSettings', () => {
       reminders: true,
       views: [],
       notesFolder: null,
+      journalPath: 'Journal/YYYY/YYYY-MM-DD',
+      journalTemplateId: null,
     });
   });
 
@@ -47,7 +49,7 @@ describe('parseSettings', () => {
 describe('cleanSettings', () => {
   it('keeps only the known fields and drops chords that cannot be registered', () => {
     const dirty = { closeToTray: true, hotkey: 'x', captureHotkey: 'ctrl+alt+space', stray: 1 } as never;
-    expect(cleanSettings(dirty)).toEqual({ closeToTray: true, hotkey: null, captureHotkey: 'ctrl+alt+space', reminders: true, views: [], notesFolder: null });
+    expect(cleanSettings(dirty)).toEqual({ closeToTray: true, hotkey: null, captureHotkey: 'ctrl+alt+space', reminders: true, views: [], notesFolder: null, journalPath: 'Journal/YYYY/YYYY-MM-DD', journalTemplateId: null });
   });
 });
 

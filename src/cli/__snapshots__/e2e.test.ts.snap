@@ -40,6 +40,8 @@ Commands:
   stats [note]                                    words, characters, tasks and links, for one note or all of them
   move <note> <folder>                            file a note in another folder, keeping its name, its links and its history
   folders                                         the folders notes are filed in: real directories inside the notes folder
+  journal [options] [date]                        open or make the dated note for a day; today's when no day is given
+  props [options] [note] [key]                    the front-matter keys a note carries, and the ones the notebook uses
   tags [options]                                  every tag in use, with how many notes carry it
   tag                                             add, remove or rename a #tag
   links [options] <note>                          the notes a note links to with [[...]]
@@ -67,7 +69,7 @@ Commands:
   replace [options] <note> <query> <replacement>  replace text in a note (the first match, or every one with --all)
   outline [options] <note>                        the headings of a note
   render [options] <note>                         a note as HTML (as the preview shows it) or as readable plain text
-  settings                                        the settings the app keeps in settings.json: closeToTray, hotkey, captureHotkey, reminders
+  settings                                        the settings the app keeps in settings.json: closeToTray, hotkey, captureHotkey, reminders, journalPath, journalTemplateId
   hotkeys                                         the two system-wide shortcuts: summon (the window) and capture (the quick-note box)
   ui                                              the window layout and view toggles (the window keeps these, so it must be running)
   commands                                        every command in the window, with its keys (from the app's own registry)

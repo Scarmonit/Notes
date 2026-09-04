@@ -2590,3 +2590,304 @@ html.export.paper .markdown img {
   cursor: default;
   opacity: 0.45;
 }
+
+/* --- properties -------------------------------------------------------- */
+
+/* A block address in the editor: faded like every other marker, and never
+   hidden — a marker the caret can skip over survives a delete as stray text. */
+.md-block .md-mark {
+  font-variant-numeric: tabular-nums;
+}
+
+.props-card {
+  width: min(680px, 92vw);
+  max-height: 78vh;
+  overflow-y: auto;
+}
+
+.props-note {
+  margin: -6px 0 18px;
+  color: var(--paper-faint);
+}
+
+.props-head {
+  margin: 18px 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--paper-faint);
+  font-weight: 500;
+}
+
+.props-fields .props-head {
+  margin-top: 0;
+}
+
+.props-field,
+.props-row {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: baseline;
+  padding: 6px 0;
+}
+
+.props-key {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--paper-dim);
+  overflow-wrap: anywhere;
+}
+
+.props-value-read,
+.props-how {
+  color: var(--paper-faint);
+  font-size: 12px;
+}
+
+.props-how {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.props-value {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  color: var(--paper);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 3px 6px;
+}
+
+.props-value:focus-visible {
+  outline: none;
+  border-color: var(--paper-dim);
+}
+
+.props-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.props-add-item,
+.props-remove,
+.props-start {
+  background: none;
+  border: none;
+  color: var(--paper-faint);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  padding: 2px 0;
+  text-align: left;
+}
+
+.props-add-item:hover,
+.props-remove:hover,
+.props-start:hover,
+.props-add-item:focus-visible,
+.props-remove:focus-visible,
+.props-start:focus-visible {
+  color: var(--paper);
+}
+
+.props-dup {
+  font-family: var(--utility);
+  font-size: 10px;
+  color: var(--paper-faint);
+}
+
+.props-complex {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.props-type {
+  font-size: 11px;
+  color: var(--paper-faint);
+}
+
+.props-yaml {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--paper-faint);
+  white-space: pre-wrap;
+}
+
+.props-empty {
+  color: var(--paper-faint);
+  margin: 4px 0;
+}
+
+.props-add {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.props-complete {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+}
+
+.props-complete-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--paper);
+  text-align: left;
+  padding: 4px 6px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.props-complete-row:hover,
+.props-complete-row:focus-visible {
+  background: var(--hover);
+  outline: none;
+}
+
+.props-count {
+  color: var(--paper-faint);
+  font-size: 11px;
+}
+
+/* --- the notebook's property vocabulary --------------------------------- */
+
+.vocab-card {
+  width: min(620px, 92vw);
+}
+
+.vocab-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.vocab-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.vocab-row:last-child {
+  border-bottom: none;
+}
+
+.vocab-key {
+  background: none;
+  border: none;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--paper);
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+
+.vocab-key:hover,
+.vocab-key:focus-visible {
+  text-decoration: underline;
+  outline: none;
+}
+
+.vocab-count {
+  color: var(--paper-faint);
+  font-size: 11px;
+}
+
+.vocab-more {
+  background: none;
+  border: none;
+  color: var(--paper-faint);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  padding: 0;
+}
+
+.vocab-more:hover,
+.vocab-more:focus-visible {
+  color: var(--paper);
+  outline: none;
+}
+
+.vocab-values {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0 2px 14px;
+}
+
+.vocab-filter {
+  font: inherit;
+  font-size: 12px;
+  color: var(--paper);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 3px 6px;
+  margin-bottom: 4px;
+}
+
+.vocab-filter:focus-visible {
+  outline: none;
+  border-color: var(--paper-dim);
+}
+
+.vocab-value {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--paper);
+  text-align: left;
+  padding: 3px 6px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.vocab-value:hover,
+.vocab-value:focus-visible {
+  background: var(--hover);
+  outline: none;
+}
+
+.layout-input {
+  font: inherit;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--paper);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 3px 6px;
+  min-width: 0;
+}
+
+.layout-input:focus-visible {
+  outline: none;
+  border-color: var(--paper-dim);
+}

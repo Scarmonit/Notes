@@ -3,6 +3,7 @@ import type { Snapshot, SnapshotSummary } from '../shared/history';
 import type { Settings } from '../shared/settings';
 import type { Plan } from './refactor';
 import type { ExternalChanges, Note, SettingsResult, TrashedNote } from '../shared/types';
+import type { NoteProperty, PropertyChange } from '../shared/properties';
 
 /**
  * How the command line talks to a running app: one JSON object per line over
@@ -163,6 +164,7 @@ export interface Methods {
   'folder.delete': { params: { folder: string }; result: { deleted: boolean } };
   /** Files a note in another folder; resolves to its path inside the notes folder. */
   'note.move': { params: { id: string; folder: string }; result: { path: string } };
+  'note.property': { params: { id: string; change: PropertyChange }; result: { properties: NoteProperty[] } };
   /** Creates or replaces a note. Refused with `busy` while the note is being typed in, unless forced. */
   /** `expectUpdatedAt`: the note's `updatedAt` as read; refused as busy when the note has changed since, unless forced. */
   'note.put': { params: { note: Note; force?: boolean; expectUpdatedAt?: number }; result: Note };
@@ -234,6 +236,7 @@ export const MAIN_METHODS: ReadonlySet<MethodName> = new Set<MethodName>([
   'folder.move',
   'folder.delete',
   'note.move',
+  'note.property',
   'trash.list',
   'trash.get',
   'trash.purge',

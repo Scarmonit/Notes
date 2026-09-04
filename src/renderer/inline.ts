@@ -36,6 +36,10 @@ const INLINE = new RegExp(
     '(?<em>(?<![\\w*])\\*(?=[^\\s*])[^*\\n]+?(?<=[^\\s*])\\*(?![\\w*])|(?<![\\w_])_(?=[^\\s_])[^_\\n]+?(?<=[^\\s_])_(?![\\w_]))',
     '(?<link>\\[[^\\]\\n]+\\]\\([^)\\n]*\\))',
     '(?<tag>(?<![^\\s])#\\p{L}[\\p{L}\\p{N}_-]*(?:\\/[\\p{L}\\p{N}_-]+)*)',
+    // A block address at the end of a line. Faded like every other marker and
+    // never hidden: a marker Chromium's delete can skip over survives as
+    // stray characters, which is the trap live formatting hit in 0.11.0.
+    '(?<block>(?<=\\s)\\^[A-Za-z0-9][A-Za-z0-9-]*[ \\t]*$)',
   ].join('|'),
   'gu',
 );
@@ -66,6 +70,8 @@ export function inlineHtml(text: string, depth = 0): string {
     } else if (g.link !== undefined) {
       const close = raw.indexOf('](');
       out += `<span class="md-link">${mark('[')}${inlineHtml(raw.slice(1, close), depth + 1)}${mark(raw.slice(close))}</span>`;
+    } else if (g.block !== undefined) {
+      out += `<span class="md-block">${mark(raw)}</span>`;
     } else {
       out += `<span class="md-tag">${esc(raw)}</span>`;
     }

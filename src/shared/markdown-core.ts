@@ -1,7 +1,8 @@
 import katex from 'katex';
 import { marked, type TokenizerAndRendererExtension, type Tokens } from 'marked';
 import { highlightCode } from '../renderer/highlight';
-import { LINK_PATTERN, linkParts } from '../renderer/notes';
+import { withoutMarkers } from '../core/blocks';
+import { LINK_PATTERN, formatLinkAddress, linkLabel, parseLinkAddress } from '../renderer/notes';
 
 /**
  * How markdown becomes HTML, in one place: the wikilink and math
@@ -36,13 +37,14 @@ const wikilink: TokenizerAndRendererExtension = {
   tokenizer(src: string) {
     const m = WIKILINK.exec(src);
     if (!m) return undefined;
-    const { target, alias } = linkParts(m[1]);
-    if (!target) return undefined;
-    return { type: 'wikilink', raw: m[0], text: target, alias };
+    const parsed = parseLinkAddress(m[1]);
+    if (!parsed.target && !parsed.block && !parsed.heading) return undefined;
+    const target = formatLinkAddress({ ...parsed, alias: undefined });
+    return { type: 'wikilink', raw: m[0], text: target, alias: parsed.alias };
   },
   renderer(token) {
     const target = escapeHtml(token.text);
-    return `<span class="inline-link" data-link="${target}">${escapeHtml((token.alias as string | undefined) ?? token.text)}</span>`;
+    return `<span class="inline-link" data-link="${target}">${escapeHtml((token.alias as string | undefined) ?? linkLabel(token.text))}</span>`;
   },
 };
 
@@ -81,9 +83,11 @@ const embed: TokenizerAndRendererExtension = {
   tokenizer(src: string) {
     const m = EMBED.exec(src);
     if (!m) return undefined;
-    const hash = m[1].indexOf('#');
-    const target = (hash < 0 ? m[1] : m[1].slice(0, hash)).trim();
-    const section = hash < 0 ? null : m[1].slice(hash + 1).trim() || null;
+    const parsed = parseLinkAddress(m[1]);
+    const target = parsed.target;
+    // A block is addressed as `#^id` and a heading by its words; the source
+    // is asked for whichever the link named.
+    const section = parsed.block ? `^${parsed.block}` : (parsed.heading ?? null);
     if (!target) return undefined;
     const found = embedSource?.(target, section) ?? null;
     const key = `${target.toLowerCase()}#${(section ?? '').toLowerCase()}`;
@@ -99,7 +103,10 @@ const embed: TokenizerAndRendererExtension = {
     }
   },
   renderer(token) {
-    const label = escapeHtml(token.text as string) + (token.section ? ` › ${escapeHtml(token.section as string)}` : '');
+    // A block address is set apart with a dot and a heading with a chevron,
+    // the same way a link chip in the editor tells the two apart.
+    const section = token.section as string | undefined;
+    const label = escapeHtml(token.text as string) + (section ? `${section.startsWith('^') ? ' · ' : ' › '}${escapeHtml(section)}` : '');
     const why = token.why as string | undefined;
     if (why) {
       const said =
@@ -187,7 +194,10 @@ export function parseMarkdown(source: string, embeds?: EmbedSource): string {
   embedSource = embeds ?? null;
   embedding.length = 0;
   try {
-    return markdown.parse(source, { async: false }) as string;
+    // Block addresses are how the source says where a link may point; they
+    // are not something to read. The editor keeps them visible because they
+    // are the file's own characters — every rendered surface takes them off.
+    return markdown.parse(withoutMarkers(source), { async: false }) as string;
   } finally {
     embedSource = null;
     embedding.length = 0;

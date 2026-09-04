@@ -1,4 +1,4 @@
-import { describePlan, planMerge, planMoveSection, planRefile, planRename, planTagRename, sectionAround, type Plan, type PlanResult, type Target } from '../core/refactor';
+import { blockFallout, describePlan, falloutSentence, planMerge, planMoveSection, planRefile, planRename, planTagRename, sectionAround, type Plan, type PlanResult, type Target } from '../core/refactor';
 import type { Note } from '../shared/types';
 import { allTags, snippetOf, sortByEdited, titleOf } from './notes';
 import { headingsIn } from './outline';
@@ -68,6 +68,8 @@ export interface RefactorUi {
   commitRename(id: string, oldTitle: string | undefined, newTitle: string): Promise<'links' | 'title' | 'none' | 'failed'>;
   /** Shows a Plan and waits for Enter (true) or Esc (false). */
   confirm(plan: Plan, options?: ConfirmOptions): Promise<boolean>;
+  /** Warns about anything a move is about to break, and waits; true to go on. */
+  askFallout(plan: Plan): Promise<boolean>;
   /** One line of input under a label; null when dismissed. */
   prompt(label: string, initial: string): Promise<string | null>;
   /** Whether one of the sheets is open, for the window's Escape handling. */
@@ -168,6 +170,34 @@ export function createRefactorUi(host: RefactorHostUi): RefactorUi {
     });
   }
 
+  /**
+   * The one question a move asks before it goes ahead: what it is about to
+   * break. Cancel is the answer if nothing is said, because the whole point of
+   * asking is that carrying on is the surprising choice.
+   */
+  async function askFallout(plan: Plan): Promise<boolean> {
+    if (plan.kind !== 'refile' && plan.kind !== 'move-section') return true;
+    const fallout = blockFallout(plan, host.notes());
+    if (!fallout) return true;
+    settleConfirm(false);
+    confirmText.textContent = `${falloutSentence(fallout)}. Move anyway?`;
+    confirmCount.textContent = `${plural(plan.touched.length, 'note')} ›`;
+    confirmList.replaceChildren(
+      ...plan.touched.map((t) => {
+        const row = el('li', 'confirm-row');
+        row.append(el('span', 'confirm-title', t.title), el('span', 'confirm-changes u', t.changes.join(', ')));
+        return row;
+      }),
+    );
+    confirmList.hidden = true;
+    confirmFoot.textContent = 'Esc leaves it alone · Enter moves it anyway · Space shows the notes';
+    confirmSheet.hidden = false;
+    confirmCard.focus();
+    return new Promise((resolve) => {
+      confirmResolve = resolve;
+    });
+  }
+
   // --- the prompt sheet -----------------------------------------------------------
 
   const promptSheet = el('div', 'sheet prompt-sheet');
@@ -232,6 +262,7 @@ export function createRefactorUi(host: RefactorHostUi): RefactorUi {
       host.status(result.message, 4000);
       return false;
     }
+    if (!(await askFallout(result.plan))) return false;
     const applied = await host.apply(result.plan);
     if (!applied.ok) {
       host.status(applied.message, 5000);
@@ -437,6 +468,7 @@ export function createRefactorUi(host: RefactorHostUi): RefactorUi {
   }
 
   return {
+    askFallout,
     moveLines,
     moveSection,
     renameTag,

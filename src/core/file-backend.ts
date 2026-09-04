@@ -91,6 +91,10 @@ export function createFileBackend(root: string, options: FileBackendOptions): Ba
       await all();
       return store.moveNote(id, folder);
     },
+    noteProperty: async (id, change) => {
+      await all();
+      return store.setProperty(id, change);
+    },
     put: async (note, options) => {
       const notes = await all();
       const i = notes.findIndex((n) => n.id === note.id);

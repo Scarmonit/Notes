@@ -1,6 +1,7 @@
 import { linkKey, linksIn, tagMatches, tagsOf, titleOf, wordCount } from '../renderer/notes';
 import { tasksIn } from '../renderer/tasks';
 import { folderMatches, parseFolder, ROOT_FOLDER } from '../shared/folders';
+import { parseTyped, propertyHas, type PropertyScalar } from '../shared/properties';
 import type { Note } from '../shared/types';
 import { addDays, inWindow, parseDueWindow, type DueWindow } from './due';
 
@@ -46,6 +47,14 @@ export interface Filter {
    * for the notes filed at the root itself.
    */
   folder?: string;
+  /**
+   * Front-matter properties a note must carry: `prop:status` wants the key at
+   * all, `prop:status=draft` wants that value. Each entry is one `prop:`
+   * written in the query, and every one of them must be satisfied.
+   */
+  props?: PropFilter[];
+  /** The same, said with a leading `-`: none of these may hold. */
+  excludeProps?: PropFilter[];
   /** Notes nothing links to and that link to nothing. */
   orphan?: boolean;
   hasTasks?: boolean;
@@ -140,6 +149,7 @@ export const OPERATORS: Array<{ op: string; means: string }> = [
   { op: 'created:>7d', means: 'made in the last week; < for before, a date or a span (updated: likewise)' },
   { op: 'links:Title', means: 'linking to that note (from:Title for the notes it links to)' },
   { op: 'folder:Work', means: 'in this folder or one beneath it; folder:/ for the ones at the root' },
+  { op: 'prop:status=draft', means: 'with that front-matter key, or that key holding that value' },
   { op: 'orphan:', means: 'with no links either way' },
   { op: 'sort:title', means: 'ordered by title, created, updated or words; add - to reverse' },
   { op: 'limit:5', means: 'at most that many' },
@@ -222,12 +232,12 @@ export function tokenize(text: string): Token[] {
   return out;
 }
 
-const OPERATOR_NAMES = new Set(['tag', 'todo', 'done', 'task', 'tasks', 'due', 'pinned', 'pin', 'untitled', 'created', 'updated', 'edited', 'links', 'from', 'linked', 'orphan', 'folder', 'sort', 'limit']);
+const OPERATOR_NAMES = new Set(['tag', 'todo', 'done', 'task', 'tasks', 'due', 'pinned', 'pin', 'untitled', 'created', 'updated', 'edited', 'links', 'from', 'linked', 'orphan', 'folder', 'prop', 'sort', 'limit']);
 
 const yes = (v: string): boolean => !/^(no|false|off|0)$/i.test(v.trim());
 
 /** The operators a leading `-` can say no to. */
-const NEGATABLE = new Set(['tag', 'todo', 'done', 'task', 'tasks', 'pinned', 'pin', 'untitled']);
+const NEGATABLE = new Set(['tag', 'todo', 'done', 'task', 'tasks', 'pinned', 'pin', 'untitled', 'prop']);
 
 /** A `>7d` / `<2026-01-01` / `7d` bound as after/before moments. */
 function bounds(value: string, now: number): { after?: number; before?: number } | null {
@@ -270,7 +280,7 @@ export function parseQuery(text: string, now = Date.now()): Filter & { errors: s
     const name = negate ? tok.text.slice(1) : tok.text;
     const v = tok.value.trim();
     if (negate && !NEGATABLE.has(name)) {
-      filter.errors.push(`-${name}: cannot be turned around; only tag, todo, done, task, pinned and untitled can`);
+      filter.errors.push(`-${name}: cannot be turned around; only tag, todo, done, task, pinned, untitled and prop can`);
       continue;
     }
     switch (name) {
@@ -297,6 +307,13 @@ export function parseQuery(text: string, now = Date.now()): Filter & { errors: s
       case 'orphan':
         filter.orphan = yes(v);
         break;
+      case 'prop': {
+        const parsed = parseProp(v);
+        if (!parsed) filter.errors.push(`prop: wants a key, or key=value; not "${v}"`);
+        else if (negate) (filter.excludeProps ??= []).push(parsed);
+        else (filter.props ??= []).push(parsed);
+        break;
+      }
       case 'folder': {
         const parsed = parseFolder(v === '/' ? '' : v);
         if ('error' in parsed) filter.errors.push(`folder: ${parsed.error}`);
@@ -355,6 +372,37 @@ export function parseQuery(text: string, now = Date.now()): Filter & { errors: s
 
 // --- applying a filter ------------------------------------------------------------
 
+/** One `prop:` question: a key, and the value it must hold when one was given. */
+export interface PropFilter {
+  key: string;
+  /** Absent means "has this key at all, whatever it says". */
+  value?: PropertyScalar;
+}
+
+/**
+ * A `prop:` operand read as a key and an optional value.
+ *
+ * A comparison the app cannot answer — `rating>3` — is refused rather than
+ * taken for a key spelled with a `>` in it, so the search says what it cannot
+ * do instead of quietly finding nothing.
+ */
+export function parseProp(operand: string): PropFilter | null {
+  const said = operand.trim();
+  if (!said) return null;
+  const at = said.indexOf('=');
+  const key = (at < 0 ? said : said.slice(0, at)).trim();
+  if (!key || /[<>!~]/.test(key)) return null;
+  return at < 0 ? { key } : { key, value: parseTyped(said.slice(at + 1)) };
+}
+
+/** Whether a note answers one `prop:` question. */
+function hasProp(note: Note, want: PropFilter): boolean {
+  const found = (note.properties ?? []).filter((p) => p.key === want.key);
+  if (found.length === 0) return false;
+  // Any occurrence will do: a key written twice is two answers to the question.
+  return want.value === undefined || found.some((p) => propertyHas(p, want.value as PropertyScalar));
+}
+
 /** Whether a note carries a tag, or one nested inside it. */
 const hasTag = (note: Note, tag: string): boolean => tagsOf(note.body).some((t) => tagMatches(t, tag));
 
@@ -403,6 +451,8 @@ export function applyFilter(notes: Note[], filter: Filter): Note[] {
     if (filter.patterns && !filter.patterns.every((re) => re.test(`${titleOf(n)}\n${n.body}`))) return false;
     if (filter.tags.some((tag) => !hasTag(n, tag))) return false;
     if (filter.folder !== undefined && !inFolder(n, filter.folder)) return false;
+    if (filter.props?.some((want) => !hasProp(n, want))) return false;
+    if (filter.excludeProps?.some((want) => hasProp(n, want))) return false;
     if (filter.excludeTags?.some((tag) => hasTag(n, tag))) return false;
     if (filter.pinned !== undefined && (n.pinned === true) !== filter.pinned) return false;
     if (filter.untitled !== undefined && Boolean(n.title?.trim()) === filter.untitled) return false;
@@ -464,6 +514,8 @@ export function parseWords(words: readonly string[], now = Date.now()): Filter &
     merged.errors.push(...one.errors);
     if (one.patterns) (merged.patterns ??= []).push(...one.patterns);
     if (one.excludeTags) (merged.excludeTags ??= []).push(...one.excludeTags);
+    if (one.props) (merged.props ??= []).push(...one.props);
+    if (one.excludeProps) (merged.excludeProps ??= []).push(...one.excludeProps);
     for (const key of ['pinned', 'untitled', 'createdAfter', 'createdBefore', 'updatedAfter', 'updatedBefore', 'linksToTitle', 'linkedFromTitle', 'orphan', 'folder', 'hasTasks', 'hasTodo', 'hasDone', 'due', 'sort', 'reverse', 'limit'] as const) {
       if (one[key] !== undefined) (merged as unknown as Record<string, unknown>)[key] = one[key];
     }

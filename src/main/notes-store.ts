@@ -22,6 +22,7 @@ export const {
   moveFolder,
   deleteFolder,
   moveNote,
+  setProperty,
   listTrash,
   getTrashed,
   restoreFromTrash,

@@ -15,7 +15,7 @@ import {
   backlinksOf,
   linksIn,
   linkMarkdown,
-  linkParts,
+  parseLinkAddress,
   noteForLink,
   qualifiedLink,
   resolveLink,
@@ -280,8 +280,8 @@ describe('links between notes', () => {
   });
   it('points an aliased link at its target, the way a rename already read it', () => {
     expect(linksIn('see [[Plan|the plan]] and [[plan]]')).toEqual(['Plan']);
-    expect(linkParts('Plan|the plan')).toEqual({ target: 'Plan', alias: 'the plan' });
-    expect(linkParts('Plan|')).toEqual({ target: 'Plan' });
+    expect(parseLinkAddress('Plan|the plan')).toEqual({ target: 'Plan', alias: 'the plan' });
+    expect(parseLinkAddress('Plan|')).toEqual({ target: 'Plan' });
     expect(linkMarkdown('Plan', 'the plan')).toBe('[[Plan|the plan]]');
   });
   it('reads a link through the title of the note it names', () => {

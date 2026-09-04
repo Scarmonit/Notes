@@ -153,6 +153,10 @@ export async function startIpcServer(deps: ServerDeps): Promise<IpcServer> {
         const p2 = params as Params<'note.move'>;
         return { path: await deps.store.moveNote(p2.id, p2.folder) };
       }
+      case 'note.property': {
+        const p2 = params as Params<'note.property'>;
+        return { properties: await deps.store.setProperty(p2.id, p2.change) };
+      }
       case 'trash.list':
         return deps.store.listTrash();
       case 'trash.get':

@@ -1,3 +1,4 @@
+import type { PropertyChange } from '../shared/properties';
 import { app, BrowserWindow, clipboard, globalShortcut, ipcMain, Menu, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -27,6 +28,7 @@ import {
   listTrash,
   moveFolder,
   moveNote,
+  setProperty,
   renameFolder,
   trashBodies,
   drain,
@@ -382,6 +384,9 @@ if (squirrelLaunch) {
       (now) => `Filed in ${folderLabel(now)}`,
     ),
   );
+  // A property is written by the store, which is the one writer; the window
+  // hears the change back through the same watcher every other change comes on.
+  ipcMain.handle(IPC.noteProperty, (_event, id: string, change: PropertyChange) => setProperty(id, change));
   ipcMain.handle(IPC.notesFolder, () => currentNotesFolder());
   ipcMain.handle(IPC.clipperBookmarklet, () => (clipper ? bookmarklet(clipper.port, clipper.token) : null));
   ipcMain.handle(IPC.pickNotesFolder, async (event) => {

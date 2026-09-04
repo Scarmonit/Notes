@@ -1,6 +1,6 @@
 import { assetNameFromUrl, assetUrl, isSafeAssetName } from '../shared/assets';
 import { isFenceLine } from './fences';
-import { LINK_PATTERN, linkMarkdown, linkParts } from './notes';
+import { LINK_PATTERN, formatLinkAddress, linkLabel, linkMarkdown, parseLinkAddress } from './notes';
 
 /**
  * The editor is a contenteditable surface, not a textarea, so attached images
@@ -116,8 +116,11 @@ export function bodyTokens(body: string): BodyToken[] {
       continue;
     }
     if (match[5] !== undefined) {
-      const { target, alias } = linkParts(match[5]);
-      if (target) out.push(alias ? { kind: 'link', target, alias, ...span } : { kind: 'link', target, ...span });
+      const parsed = parseLinkAddress(match[5]);
+      // The chip carries the whole address, fragment and all: what it points
+      // at is the note *and* the part of it the link named.
+      const target = formatLinkAddress({ ...parsed, alias: undefined });
+      if (parsed.target || parsed.block || parsed.heading) out.push(parsed.alias ? { kind: 'link', target, alias: parsed.alias, ...span } : { kind: 'link', target, ...span });
       continue;
     }
     // An embed: the same brackets with a bang in front, which puts the note
@@ -204,7 +207,7 @@ export function makeLink(target: string, alias?: string): HTMLSpanElement {
   span.setAttribute('contenteditable', 'false');
   span.dataset.link = target;
   if (alias) span.dataset.alias = alias;
-  span.textContent = alias ?? target;
+  span.textContent = alias ?? linkLabel(target);
   span.title = `Go to “${target}”`;
   return span;
 }

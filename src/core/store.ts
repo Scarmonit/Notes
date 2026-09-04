@@ -17,7 +17,8 @@ import {
   ROOT_FOLDER,
   segmentProblem,
 } from '../shared/folders';
-import { fileNameFor, formatNoteFile, isNoteFileName, parseNoteFile, uniqueFileName, type ParsedNoteFile } from '../shared/notes-folder';
+import { fileNameFor, formatNoteFile, isNoteFileName, parseNoteFile, propertiesOf, RESERVED, uniqueFileName, withoutProperty, withProperty, type FrontMatterEntry, type ParsedNoteFile } from '../shared/notes-folder';
+import { AmbiguousProperty, SIMPLE_KEY, type NoteProperty, type PropertyChange } from '../shared/properties';
 import type { ExternalChanges, Note, NotesFile, TrashedNote } from '../shared/types';
 import { titleOf } from '../renderer/notes';
 import { pathsFor } from './paths';
@@ -76,7 +77,7 @@ interface Entry {
   /** The file's text as last read or written, so an unchanged note costs no write. */
   text: string;
   /** Front-matter lines the app does not understand, written back unchanged. */
-  extra: string[];
+  frontMatter: FrontMatterEntry[];
   /**
    * The change (`ExternalChanges.seq`) that first brought the file in from
    * outside, or 0 for one the store wrote or read at the start. A save whose
@@ -115,6 +116,15 @@ export interface Store {
   deleteFolder(folder: string): Promise<void>;
   /** Files a note in another folder. Resolves to its new path inside the notes folder. */
   moveNote(id: string, folder: string): Promise<string>;
+  /**
+   * Sets, changes or removes one front-matter property on a note.
+   *
+   * Its own operation rather than something carried on a save, for the same
+   * reason moving a note is: `Note.properties` is a reading of the file, and
+   * writing one back would mean the whole front matter travelling through
+   * every autosave. Here only the named occurrence's span is touched.
+   */
+  setProperty(id: string, change: PropertyChange): Promise<NoteProperty[]>;
   trashedIds(): ReadonlySet<string>;
   /**
    * The notes whose history must be kept though they are not in the list: the
@@ -402,7 +412,7 @@ export function createStore(root: string): Store {
       seen.add(note.id);
       let text = f.text;
       if (needsWrite) {
-        text = formatNoteFile(note, f.extra);
+        text = formatNoteFile(note, f.frontMatter);
         await writeAtomic(fileAt(dir, f.name), text).catch((err) => console.error(`[notes] could not stamp ${f.name}`, err));
       }
       // The folder is where the file is, and is put on the note here rather
@@ -413,7 +423,7 @@ export function createStore(root: string): Store {
       // A note whose path changed has changed, though every byte of it is the
       // same: it is somewhere else now, and the window is showing where.
       if (!before || before.text !== text || before.name !== f.name) changed.push(note);
-      index.set(note.id, { name: f.name, text, extra: f.extra, since: before?.since ?? changeSeq });
+      index.set(note.id, { name: f.name, text, frontMatter: f.frontMatter, since: before?.since ?? changeSeq });
       // Found again, wherever it turned up: the same note, with its history.
       if (missing.delete(note.id)) missingDirty = true;
       notes.push(note);
@@ -491,7 +501,7 @@ export function createStore(root: string): Store {
   /** Moves one note's file into the trash, stamped with the moment it left. */
   async function trashEntry(id: string, entry: Entry): Promise<void> {
     const parsed = parseNoteFile(entry.text, { id, name: baseNameOf(entry.name).replace(/\.md$/i, ''), mtime: Date.now() });
-    const text = formatNoteFile(parsed.note, parsed.extra, Date.now());
+    const text = formatNoteFile(parsed.note, parsed.frontMatter, Date.now());
     await fs.mkdir(trashDir, { recursive: true });
     // The trash keeps the shape of the notebook, so a note put back goes back
     // where it was rather than into the pile at the root.
@@ -548,8 +558,8 @@ export function createStore(root: string): Store {
       }
       for (const note of file.notes) {
         const entry = index.get(note.id);
-        const extra = entry?.extra ?? [];
-        const text = formatNoteFile(note, extra);
+        const frontMatter = entry?.frontMatter ?? [];
+        const text = formatNoteFile(note, frontMatter);
         if (entry && entry.text === text) continue;
         // Where the note already is, or — for one the store has never seen —
         // where the caller asked for it to be made. A save never moves a note
@@ -572,7 +582,7 @@ export function createStore(root: string): Store {
           }
         }
         await writeAtomic(fileAt(notesDir, name), text);
-        index.set(note.id, { name, text, extra, since: 0 });
+        index.set(note.id, { name, text, frontMatter, since: 0 });
         changes.upserts.push({ ...note, folder: folderOf(name), file: baseNameOf(name) });
       }
       await flushMissing();
@@ -635,11 +645,11 @@ export function createStore(root: string): Store {
       // has gone in the meantime.
       const folder = folderOf(f.name);
       const name = uniqueFileName(joinFolder(folder, fileNameFor(titleOf(f.note))), (n) => takenInNotes(n));
-      const text = formatNoteFile(f.note, f.extra);
+      const text = formatNoteFile(f.note, f.frontMatter);
       await writeAtomic(fileAt(notesDir, name), text);
       await fs.unlink(fileAt(trashDir, f.name)).catch(() => undefined);
       await pruneTrashFolders(folder);
-      index.set(f.note.id, { name, text, extra: f.extra, since: 0 });
+      index.set(f.note.id, { name, text, frontMatter: f.frontMatter, since: 0 });
       trashed.delete(f.note.id);
       const back: Note = { ...f.note, folder, file: baseNameOf(name) };
       emit({ upserts: [back], removed: [], seq: changeSeq });
@@ -791,6 +801,35 @@ export function createStore(root: string): Store {
     });
   }
 
+  function setProperty(id: string, change: PropertyChange): Promise<NoteProperty[]> {
+    return queue(async () => {
+      const entry = index.get(id);
+      if (!entry) throw new Error('That note is not in the notebook');
+      const key = change.key.trim();
+      if (RESERVED.has(key)) throw new Error(`'${key}' is one of the note's own fields; it has its own command`);
+      if (change.value !== undefined && !SIMPLE_KEY.test(key)) throw new Error(`'${key}' is not a name a property can have`);
+      const held = propertiesOf(entry.frontMatter).filter((p) => p.key === key);
+      if (held.length === 0 && change.value === undefined) throw new Error(`That note has no '${key}'`);
+      // Which one, when a key was written twice: the app shows both and asks
+      // rather than picking, so an unqualified change to a duplicate is refused.
+      if (held.length > 1 && change.occurrence === undefined && !change.all) throw new AmbiguousProperty(key, held.length);
+      const next =
+        change.all && change.value === undefined
+          ? withoutProperty(entry.frontMatter, key)
+          : withProperty(entry.frontMatter, key, change.value, change.occurrence ?? 1);
+      const parsed = parseNoteFile(entry.text, { id, name: baseNameOf(entry.name).replace(/.md$/i, ''), mtime: Date.now() });
+      const text = formatNoteFile(parsed.note, next, parsed.deletedAt);
+      await writeAtomic(fileAt(notesDir, entry.name), text);
+      index.set(id, { ...entry, text, frontMatter: next });
+      const props = propertiesOf(next);
+      const note: Note = { ...parsed.note, folder: folderOf(entry.name), file: baseNameOf(entry.name) };
+      if (props.length > 0) note.properties = props;
+      else delete note.properties;
+      emit({ upserts: [note], removed: [], seq: changeSeq });
+      return props;
+    });
+  }
+
   function moveNote(id: string, folder: string): Promise<string> {
     return queue(async () => {
       const entry = index.get(id);
@@ -881,6 +920,7 @@ export function createStore(root: string): Store {
     moveFolder,
     deleteFolder,
     moveNote,
+    setProperty,
     trashedIds: () => trashed,
     keptIds: () => new Set([...trashed, ...missing.keys()]),
     missingIds: () => new Set(missing.keys()),

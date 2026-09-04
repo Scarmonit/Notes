@@ -14,6 +14,7 @@ export const IPC = {
   folderMove: 'notes:folder-move',
   folderDelete: 'notes:folder-delete',
   noteMove: 'notes:note-move',
+  noteProperty: 'notes:note-property',
   /** The web clipper's bookmarklet, with this launch's port and token in it. */
   clipperBookmarklet: 'notes:clipper-bookmarklet',
   /** Choose where the markdown files live, and where they are now. */
