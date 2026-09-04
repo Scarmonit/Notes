@@ -3,7 +3,7 @@ import { dueLabel, dueTasks, inWindow, parseDueWindow } from '../core/due';
 import { unlinkedMentions } from '../core/mentions';
 import { applyFilter, parseQuery } from '../core/query';
 import { resolveNote } from '../core/resolve';
-import { insert } from '../core/refactor';
+import { insert, planRename } from '../core/refactor';
 import { allTags, backlinksOf, createNote, linksIn, noteForLink, snippetOf, sortByEdited, tagsOf, titleOf, updateBody, updateTitle } from '../renderer/notes';
 import { taskProgress } from '../renderer/tasks';
 import type { Note } from '../shared/types';
@@ -17,15 +17,32 @@ import type { Note } from '../shared/types';
  * are read and written directly. Nothing new about notes is decided here —
  * this file only says which of the app's own doings are worth offering, and
  * describes them well enough that they are used correctly.
+ *
+ * Every name is prefixed `notes_`, because an assistant holds several of
+ * these servers at once and `list_tasks` on its own says nothing about whose
+ * tasks. Every tool answers with prose an assistant can read and, where the
+ * answer is a list, the same answer again as data under `outputSchema`.
  */
+
+/** What a tool answers: words to read, and — where it has one — the same thing as data. */
+export interface Answer {
+  text: string;
+  structured?: Record<string, unknown>;
+}
 
 export interface Tool {
   name: string;
   title: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** Declared only when `run` always returns `structured`: the spec makes it a promise. */
+  outputSchema?: Record<string, unknown>;
   readOnly: boolean;
-  run(backend: Backend, args: Record<string, unknown>): Promise<string>;
+  /** Whether it can take something away that was not put back. */
+  destructive: boolean;
+  /** Whether asking twice does no more than asking once. */
+  idempotent: boolean;
+  run(backend: Backend, args: Record<string, unknown>): Promise<Answer>;
 }
 
 class ToolError extends Error {}
@@ -37,9 +54,14 @@ const str = (args: Record<string, unknown>, key: string, fallback?: string): str
   throw new ToolError(`"${key}" is required`);
 };
 const maybe = (args: Record<string, unknown>, key: string): string | undefined => (typeof args[key] === 'string' ? (args[key] as string) : undefined);
-const num = (args: Record<string, unknown>, key: string, fallback: number): number => {
+/** A whole number in range, or the fallback. Anything else is a refusal, not a silent guess. */
+const num = (args: Record<string, unknown>, key: string, fallback: number, low: number, high: number): number => {
   const v = args[key];
-  return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+  if (v === undefined || v === null) return fallback;
+  if (typeof v !== 'number' || !Number.isFinite(v)) throw new ToolError(`"${key}" wants a number, not ${JSON.stringify(v)}`);
+  const n = Math.trunc(v);
+  if (n < low || n > high) throw new ToolError(`"${key}" wants a number from ${low} to ${high}; ${n} is outside that`);
+  return n;
 };
 
 /** Which note a selector means, said the way the command line says it. */
@@ -47,17 +69,18 @@ async function noteFor(backend: Backend, selector: string, notes?: Note[]): Prom
   const all = notes ?? (await backend.notes());
   const r = resolveNote(all, selector);
   if (r.kind === 'one') return r.note;
-  if (r.kind === 'none') throw new ToolError(`No note matches "${selector}". Use search_notes to find one, or its exact title or id.`);
+  if (r.kind === 'none') throw new ToolError(`No note matches "${selector}". Use notes_search to find one, or give its exact title or id.`);
   throw new ToolError(`"${selector}" matches ${r.candidates.length} notes: ${r.candidates.map((n) => `${titleOf(n)} (${n.id})`).join('; ')}`);
 }
 
 const line = (n: Note): string => `${titleOf(n)} — ${n.id} — edited ${new Date(n.updatedAt).toISOString()}`;
+const stub = (n: Note): Record<string, unknown> => ({ id: n.id, title: titleOf(n), updated: new Date(n.updatedAt).toISOString() });
 
 /** A note as an assistant should read it: what it is called, what it says, and what it is joined to. */
-function describeNote(notes: Note[], n: Note): string {
+function describeNote(notes: Note[], n: Note): Answer {
   const tags = tagsOf(n.body);
   const links = linksIn(n.body);
-  const back = backlinksOf(notes, n.id).map(titleOf);
+  const back = backlinksOf(notes, n.id);
   const tasks = taskProgress(n.body);
   const head = [
     `# ${titleOf(n)}`,
@@ -67,10 +90,24 @@ function describeNote(notes: Note[], n: Note): string {
     `updated: ${new Date(n.updatedAt).toISOString()}`,
     tags.length ? `tags: ${tags.map((t) => `#${t}`).join(' ')}` : '',
     links.length ? `links to: ${links.join(', ')}` : '',
-    back.length ? `linked from: ${back.join(', ')}` : '',
+    back.length ? `linked from: ${back.map(titleOf).join(', ')}` : '',
     tasks && tasks.total > 0 ? `tasks: ${tasks.done}/${tasks.total} done` : '',
   ].filter(Boolean);
-  return `${head.join('\n')}\n\n---\n\n${n.body}`;
+  return {
+    text: `${head.join('\n')}\n\n---\n\n${n.body}`,
+    structured: {
+      id: n.id,
+      title: titleOf(n),
+      aliases: n.aliases ?? [],
+      created: new Date(n.createdAt).toISOString(),
+      updated: new Date(n.updatedAt).toISOString(),
+      tags,
+      links_to: links,
+      linked_from: back.map(stub),
+      tasks: { done: tasks?.done ?? 0, total: tasks?.total ?? 0 },
+      body: n.body,
+    },
+  };
 }
 
 const SELECTOR = {
@@ -78,180 +115,341 @@ const SELECTOR = {
   description: 'The note: its exact title, a title prefix only one note has, an alias it answers to, or its id.',
 };
 
+/** A note as it appears in a list: enough to choose one, not enough to read it. */
+const NOTE_STUB = {
+  type: 'object',
+  properties: {
+    id: { type: 'string' },
+    title: { type: 'string' },
+    updated: { type: 'string', description: 'ISO 8601.' },
+  },
+  required: ['id', 'title', 'updated'],
+} as const;
+
+/** An object schema that refuses arguments it did not ask for, so a misspelt one is not swallowed. */
+const shape = (properties: Record<string, unknown>, required?: string[]): Record<string, unknown> => ({
+  type: 'object',
+  properties,
+  ...(required ? { required } : {}),
+  additionalProperties: false,
+});
+
+/** What a tool that writes says back: which note it was, and whether the words changed. */
+const WROTE = shape({ id: { type: 'string' }, title: { type: 'string' } }, ['id', 'title']);
+
 export const TOOLS: Tool[] = [
   {
-    name: 'search_notes',
+    name: 'notes_search',
     title: 'Search notes',
     description:
-      "Find notes in the user's Notes app. The query is the same grammar the app's own search box takes: plain words (every one must appear), \"a phrase\", -excluded, #tag, and operators — todo: done: due:today due:week tag:wow pinned: untitled: created:>7d updated:<2026-01-01 links:Plan orphan: sort:title limit:20 and /regex/. An empty query lists everything, most recently edited first. Returns one line per note with its title and id; read_note gets the words.",
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: 'Words and operators. Empty for everything.' },
-        limit: { type: 'number', description: 'At most this many notes (default 25).' },
+      "Find notes in the user's Notes app. The query is the same grammar the app's own search box takes: plain words (every one must appear), \"a phrase\", -excluded, #tag, and operators — todo: done: due:today due:week tag:wow pinned: untitled: created:>7d updated:<2026-01-01 links:Plan orphan: sort:title limit:20 and /regex/. An empty query lists everything, most recently edited first. Returns one line per note with its title, id and the start of its words; notes_read gets the whole of one. Long results are cut at `limit`; ask again with `offset` for the rest.",
+    inputSchema: shape({
+      query: { type: 'string', description: 'Words and operators. Empty for everything.' },
+      limit: { type: 'number', description: 'At most this many notes (1–200, default 25).', minimum: 1, maximum: 200 },
+      offset: { type: 'number', description: 'Skip this many matches first, to read past a cut-off page (default 0).', minimum: 0 },
+    }),
+    outputSchema: shape(
+      {
+        query: { type: 'string' },
+        total: { type: 'number', description: 'How many notes matched in all.' },
+        count: { type: 'number', description: 'How many are in this answer.' },
+        offset: { type: 'number' },
+        has_more: { type: 'boolean' },
+        next_offset: { type: 'number', description: 'The offset to ask for next. Absent when there is no more.' },
+        notes: { type: 'array', items: { ...NOTE_STUB, properties: { ...NOTE_STUB.properties, snippet: { type: 'string' } } } },
       },
-    },
+      ['query', 'total', 'count', 'offset', 'has_more', 'notes'],
+    ),
     readOnly: true,
+    destructive: false,
+    idempotent: true,
     async run(backend, args) {
       const notes = await backend.notes();
       const query = str(args, 'query', '');
-      const filter = parseQuery(query);
-      const found = applyFilter(sortByEdited(notes), filter).slice(0, Math.max(1, num(args, 'limit', 25)));
-      if (found.length === 0) return `No notes match ${query ? `"${query}"` : 'that'} (${notes.length} notes in all).`;
-      return `${found.length} of ${notes.length} notes:\n${found.map((n) => `- ${line(n)}\n  ${snippetOf(n, 120)}`).join('\n')}`;
+      const limit = num(args, 'limit', 25, 1, 200);
+      const offset = num(args, 'offset', 0, 0, Number.MAX_SAFE_INTEGER);
+      const matched = applyFilter(sortByEdited(notes), parseQuery(query));
+      const found = matched.slice(offset, offset + limit);
+      const more = offset + found.length < matched.length;
+      const structured = {
+        query,
+        total: matched.length,
+        count: found.length,
+        offset,
+        has_more: more,
+        ...(more ? { next_offset: offset + found.length } : {}),
+        notes: found.map((n) => ({ ...stub(n), snippet: snippetOf(n, 120) })),
+      };
+      if (found.length === 0) {
+        const why = offset > 0 && matched.length > 0 ? `Only ${matched.length} notes match ${query ? `"${query}"` : 'that'}; offset ${offset} is past the end.` : `No notes match ${query ? `"${query}"` : 'that'} (${notes.length} notes in all).`;
+        return { text: why, structured };
+      }
+      const tail = more ? `\n\n${matched.length - offset - found.length} more; ask again with offset: ${offset + found.length}.` : '';
+      return { text: `${found.length} of ${matched.length} matching notes (${notes.length} in all):\n${found.map((n) => `- ${line(n)}\n  ${snippetOf(n, 120)}`).join('\n')}${tail}`, structured };
     },
   },
   {
-    name: 'read_note',
+    name: 'notes_read',
     title: 'Read a note',
-    description: "One note in full: its markdown, with its tags, its [[links]], the notes that link to it, and its task count.",
-    inputSchema: { type: 'object', properties: { note: SELECTOR }, required: ['note'] },
+    description: 'One note in full: its markdown, with its tags, its [[links]], the notes that link to it, and its task count.',
+    inputSchema: shape({ note: SELECTOR }, ['note']),
+    outputSchema: shape(
+      {
+        id: { type: 'string' },
+        title: { type: 'string' },
+        aliases: { type: 'array', items: { type: 'string' } },
+        created: { type: 'string' },
+        updated: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' } },
+        links_to: { type: 'array', items: { type: 'string' }, description: 'The [[names]] it links to, whether or not a note answers to them yet.' },
+        linked_from: { type: 'array', items: NOTE_STUB },
+        tasks: shape({ done: { type: 'number' }, total: { type: 'number' } }, ['done', 'total']),
+        body: { type: 'string', description: 'The markdown, as written.' },
+      },
+      ['id', 'title', 'created', 'updated', 'tags', 'links_to', 'linked_from', 'tasks', 'body'],
+    ),
     readOnly: true,
+    destructive: false,
+    idempotent: true,
     async run(backend, args) {
       const notes = await backend.notes();
       return describeNote(notes, await noteFor(backend, str(args, 'note'), notes));
     },
   },
   {
-    name: 'create_note',
+    name: 'notes_create',
     title: 'Create a note',
     description:
-      "Starts a note. The body is markdown: #tags anywhere file it, [[Other note]] links to another note by its title, `- [ ] thing` is a task and `- [ ] thing @2026-09-10` is one due that day.",
-    inputSchema: {
-      type: 'object',
-      properties: {
+      'Starts a note. The body is markdown: #tags anywhere file it, [[Other note]] links to another note by its title, `- [ ] thing` is a task and `- [ ] thing @2026-09-10` is one due that day.',
+    inputSchema: shape(
+      {
         title: { type: 'string', description: 'The title. Without one the first line of the body stands in.' },
         body: { type: 'string', description: 'The markdown.' },
       },
-      required: ['body'],
-    },
+      ['body'],
+    ),
+    outputSchema: WROTE,
     readOnly: false,
+    destructive: false,
+    idempotent: false,
     async run(backend, args) {
       const made = createNote(Date.now(), str(args, 'body'));
       const title = maybe(args, 'title')?.trim();
       if (title) made.title = title;
       const saved = await backend.put(made);
-      return `Started "${titleOf(saved)}" (${saved.id}).`;
+      return { text: `Started "${titleOf(saved)}" (${saved.id}).`, structured: { id: saved.id, title: titleOf(saved) } };
     },
   },
   {
-    name: 'update_note',
+    name: 'notes_update',
     title: 'Change a note',
     description:
-      "Changes a note. Give `body` to replace it whole, or `append` to add a block at the end (under `heading` when one is named, making it if the note has none). `title` renames it — note that other notes' [[links]] to the old title are NOT rewritten by this; say so if it matters. A note being typed in the app right now is refused unless `force` is true.",
-    inputSchema: {
-      type: 'object',
-      properties: {
+      'Changes a note. Give `body` to replace it whole, or `append` to add a block at the end (under `heading` when one is named, making it if the note has none). `title` renames it; pass `rewrite_links` to point every other note\'s [[links]] at the new name at the same time. A note being typed in the app right now is refused unless `force` is true.',
+    inputSchema: shape(
+      {
         note: SELECTOR,
-        body: { type: 'string', description: 'The whole new markdown.' },
+        body: { type: 'string', description: 'The whole new markdown. Replaces everything; read the note first.' },
         append: { type: 'string', description: 'Markdown to add at the end instead.' },
         heading: { type: 'string', description: 'With `append`: the heading to add it under.' },
         title: { type: 'string', description: 'A new title.' },
+        rewrite_links: { type: 'boolean', description: 'With `title`: rewrite [[links]] to the old title everywhere else too. Default false, which leaves them pointing at a name no note answers to.' },
         force: { type: 'boolean', description: 'Change it even while it is being typed in the window.' },
       },
-      required: ['note'],
-    },
+      ['note'],
+    ),
+    outputSchema: shape({ id: { type: 'string' }, title: { type: 'string' }, links_rewritten: { type: 'number' } }, ['id', 'title', 'links_rewritten']),
     readOnly: false,
+    destructive: false,
+    idempotent: true,
     async run(backend, args) {
       const notes = await backend.notes();
       const n = await noteFor(backend, str(args, 'note'), notes);
       const body = maybe(args, 'body');
       const append = maybe(args, 'append');
       const title = maybe(args, 'title');
+      const force = args.force === true;
+      const alsoLinks = args.rewrite_links === true && title !== undefined;
       if (body === undefined && append === undefined && title === undefined) throw new ToolError('Give body, append or title: nothing was asked for');
+
       let next = n;
-      if (body !== undefined) next = updateBody([next], next.id, body)[0];
-      if (append !== undefined) next = updateBody([next], next.id, insert(next.body, append, { heading: maybe(args, 'heading') }))[0];
-      if (title !== undefined) next = updateTitle([next], next.id, title)[0];
-      const saved = await backend.put(next, { force: args.force === true, expectUpdatedAt: n.updatedAt });
-      return `Changed "${titleOf(saved)}" (${saved.id}).`;
+      let touched = false;
+      if (body !== undefined) {
+        next = updateBody([next], next.id, body)[0];
+        touched = true;
+      }
+      if (append !== undefined) {
+        next = updateBody([next], next.id, insert(next.body, append, { heading: maybe(args, 'heading') }))[0];
+        touched = true;
+      }
+      // A plain rename rides the same write; one that drags the links along is
+      // a Plan, so every note it rewrites is checked and written together.
+      if (title !== undefined && !alsoLinks) {
+        next = updateTitle([next], next.id, title)[0];
+        touched = true;
+      }
+      let saved = touched ? await backend.put(next, { force, expectUpdatedAt: n.updatedAt }) : n;
+      let rewritten = 0;
+      if (alsoLinks) {
+        const fresh = await backend.notes();
+        const planned = planRename(fresh, { id: n.id, title: title as string, links: true });
+        if (!planned.ok) {
+          if (planned.code !== 'nothing_to_do') throw new ToolError(planned.message);
+        } else {
+          await backend.applyPlan(planned.plan, { force });
+          rewritten = planned.plan.summary.links ?? 0;
+          saved = (await backend.get(n.id)) ?? saved;
+        }
+      }
+      const also = rewritten > 0 ? ` ${rewritten} ${rewritten === 1 ? 'link' : 'links'} elsewhere now point at it.` : '';
+      return { text: `Changed "${titleOf(saved)}" (${saved.id}).${also}`, structured: { id: saved.id, title: titleOf(saved), links_rewritten: rewritten } };
     },
   },
   {
-    name: 'delete_note',
+    name: 'notes_delete',
     title: 'Delete a note',
     description: 'Moves a note to the app’s trash, where it waits a month and can be put back. Nothing is destroyed.',
-    inputSchema: {
-      type: 'object',
-      properties: { note: SELECTOR, force: { type: 'boolean', description: 'Delete it even while it is being typed in the window.' } },
-      required: ['note'],
-    },
+    inputSchema: shape({ note: SELECTOR, force: { type: 'boolean', description: 'Delete it even while it is being typed in the window.' } }, ['note']),
+    outputSchema: shape({ id: { type: 'string' }, title: { type: 'string' }, trashed: { type: 'boolean' } }, ['id', 'title', 'trashed']),
     readOnly: false,
+    destructive: true,
+    idempotent: true,
     async run(backend, args) {
       const n = await noteFor(backend, str(args, 'note'));
       const gone = await backend.remove(n.id, { force: args.force === true });
-      return gone ? `"${titleOf(n)}" is in Deleted notes; it can be put back for a month.` : `"${titleOf(n)}" was already gone.`;
+      return {
+        text: gone ? `"${titleOf(n)}" is in Deleted notes; it can be put back for a month.` : `"${titleOf(n)}" was already gone.`,
+        structured: { id: n.id, title: titleOf(n), trashed: gone },
+      };
     },
   },
   {
-    name: 'add_to_inbox',
+    name: 'notes_add_to_inbox',
     title: 'File a quick note',
     description: 'Adds a line at the end of the Inbox note, which is where the app files quick notes. Makes the Inbox if there is none.',
-    inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+    inputSchema: shape({ text: { type: 'string', description: 'The line to file.' } }, ['text']),
+    outputSchema: WROTE,
     readOnly: false,
+    destructive: false,
+    idempotent: false,
     async run(backend, args) {
-      await backend.inbox(str(args, 'text'));
-      return 'Filed in the Inbox.';
+      const id = await backend.inbox(str(args, 'text'));
+      return { text: 'Filed in the Inbox.', structured: { id, title: 'Inbox' } };
     },
   },
   {
-    name: 'list_links',
+    name: 'notes_list_links',
     title: 'What a note is joined to',
     description:
       'Everything joined to one note: the notes it links to, the notes that link to it, and the notes that say its name in plain words without linking it (unlinked mentions).',
-    inputSchema: { type: 'object', properties: { note: SELECTOR }, required: ['note'] },
+    inputSchema: shape({ note: SELECTOR }, ['note']),
+    outputSchema: shape(
+      {
+        id: { type: 'string' },
+        title: { type: 'string' },
+        links_to: {
+          type: 'array',
+          items: shape({ name: { type: 'string' }, id: { type: 'string', description: 'Absent when no note answers to that name yet.' }, title: { type: 'string' } }, ['name']),
+        },
+        linked_from: { type: 'array', items: NOTE_STUB },
+        mentions: {
+          type: 'array',
+          description: 'Notes that say the name without linking it.',
+          items: shape({ id: { type: 'string' }, title: { type: 'string' }, line: { type: 'number', description: 'Counted from 1.' }, text: { type: 'string' } }, ['id', 'title', 'line', 'text']),
+        },
+      },
+      ['id', 'title', 'links_to', 'linked_from', 'mentions'],
+    ),
     readOnly: true,
+    destructive: false,
+    idempotent: true,
     async run(backend, args) {
       const notes = await backend.notes();
       const n = await noteFor(backend, str(args, 'note'), notes);
-      const out: string[] = [`"${titleOf(n)}" (${n.id})`];
-      const to = linksIn(n.body).map((t) => {
-        const hit = noteForLink(notes, t);
-        return hit ? `${titleOf(hit)} (${hit.id})` : `${t} — no note yet`;
+      const to = linksIn(n.body).map((name) => {
+        const hit = noteForLink(notes, name);
+        return hit ? { name, id: hit.id, title: titleOf(hit) } : { name };
       });
       const back = backlinksOf(notes, n.id);
-      const mentions = unlinkedMentions(notes, n.id, 20);
-      out.push(to.length ? `\nLinks to:\n${to.map((t) => `- ${t}`).join('\n')}` : '\nLinks to: nothing');
+      const mentions = unlinkedMentions(notes, n.id, 20).map((m) => ({ id: m.note.id, title: titleOf(m.note), line: m.line + 1, text: m.text }));
+      const out: string[] = [`"${titleOf(n)}" (${n.id})`];
+      out.push(to.length ? `\nLinks to:\n${to.map((t) => `- ${t.id ? `${t.title} (${t.id})` : `${t.name} — no note yet`}`).join('\n')}` : '\nLinks to: nothing');
       out.push(back.length ? `\nLinked from:\n${back.map((b) => `- ${line(b)}`).join('\n')}` : '\nLinked from: nothing');
-      if (mentions.length > 0) {
-        out.push(`\nMentioned without a link:\n${mentions.map((m) => `- ${titleOf(m.note)} (${m.note.id}) line ${m.line + 1}: ${m.text}`).join('\n')}`);
-      }
-      return out.join('\n');
+      if (mentions.length > 0) out.push(`\nMentioned without a link:\n${mentions.map((m) => `- ${m.title} (${m.id}) line ${m.line}: ${m.text}`).join('\n')}`);
+      return { text: out.join('\n'), structured: { id: n.id, title: titleOf(n), links_to: to, linked_from: back.map(stub), mentions } };
     },
   },
   {
-    name: 'list_tags',
+    name: 'notes_list_tags',
     title: 'The tags in use',
     description: 'Every #tag written in the notes, with how many notes carry it, most used first. Nested tags are written wow/commands.',
-    inputSchema: { type: 'object', properties: {} },
+    inputSchema: shape({}),
+    outputSchema: shape({ tags: { type: 'array', items: shape({ tag: { type: 'string' }, count: { type: 'number' } }, ['tag', 'count']) } }, ['tags']),
     readOnly: true,
+    destructive: false,
+    idempotent: true,
     async run(backend) {
       const tags = allTags(await backend.notes());
-      if (tags.length === 0) return 'No tags yet.';
-      return tags.map((t) => `#${t.tag} — ${t.count} ${t.count === 1 ? 'note' : 'notes'}`).join('\n');
+      const structured = { tags: tags.map((t) => ({ tag: t.tag, count: t.count })) };
+      if (tags.length === 0) return { text: 'No tags yet.', structured };
+      return { text: tags.map((t) => `#${t.tag} — ${t.count} ${t.count === 1 ? 'note' : 'notes'}`).join('\n'), structured };
     },
   },
   {
-    name: 'list_tasks',
+    name: 'notes_list_tasks',
     title: 'Scheduled tasks',
     description:
       "The user's `- [ ]` checklist lines that carry an @date, across every note: what is overdue, due today, due this week or later. `when` takes today, tomorrow, week, 7d, overdue, any or a date.",
-    inputSchema: {
-      type: 'object',
-      properties: { when: { type: 'string', description: 'today, tomorrow, week, 7d, overdue, any, or a date. Default: week.' } },
-    },
+    inputSchema: shape({ when: { type: 'string', description: 'today, tomorrow, week, 7d, overdue, any, or a date. Default: week.' } }),
+    outputSchema: shape(
+      {
+        when: { type: 'string' },
+        count: { type: 'number' },
+        tasks: {
+          type: 'array',
+          items: shape(
+            {
+              text: { type: 'string' },
+              done: { type: 'boolean' },
+              due: { type: 'string', description: 'ISO 8601.' },
+              due_label: { type: 'string', description: 'How the app words it: "overdue", "today", and so on.' },
+              note_id: { type: 'string' },
+              note_title: { type: 'string' },
+              line: { type: 'number', description: 'Counted from 1.' },
+            },
+            ['text', 'done', 'due', 'due_label', 'note_id', 'note_title', 'line'],
+          ),
+        },
+      },
+      ['when', 'count', 'tasks'],
+    ),
     readOnly: true,
+    destructive: false,
+    idempotent: true,
     async run(backend, args) {
       const notes = await backend.notes();
       const when = str(args, 'when', 'week');
       const window = parseDueWindow(when);
       if (!window) throw new ToolError(`"${when}" is not a span: try today, tomorrow, week, 7d, overdue, any, or a date`);
-      const tasks = dueTasks(notes).filter((t) => inWindow(t, window));
-      if (tasks.length === 0) return `Nothing due ${when}.`;
       const now = Date.now();
-      return tasks
-        .map((t) => `- [${t.done ? 'x' : ' '}] ${t.text} — ${dueLabel(t.due, t.hasTime, now)} — in "${t.noteTitle}" (${t.noteId}) line ${t.line + 1}`)
-        .join('\n');
+      const tasks = dueTasks(notes).filter((t) => inWindow(t, window));
+      const structured = {
+        when,
+        count: tasks.length,
+        tasks: tasks.map((t) => ({
+          text: t.text,
+          done: t.done,
+          due: new Date(t.due).toISOString(),
+          due_label: dueLabel(t.due, t.hasTime, now),
+          note_id: t.noteId,
+          note_title: t.noteTitle,
+          line: t.line + 1,
+        })),
+      };
+      if (tasks.length === 0) return { text: `Nothing due ${when}.`, structured };
+      return {
+        text: tasks.map((t) => `- [${t.done ? 'x' : ' '}] ${t.text} — ${dueLabel(t.due, t.hasTime, now)} — in "${t.noteTitle}" (${t.noteId}) line ${t.line + 1}`).join('\n'),
+        structured,
+      };
     },
   },
 ];

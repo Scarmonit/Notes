@@ -32,16 +32,21 @@ let root: string;
 const noon = new Date(2026, 8, 3, 12, 0).getTime();
 const note = (id: string, body: string, updatedAt: number): Note => ({ id, body, title: 'Plan', createdAt: 1, updatedAt });
 
-/** Lets the file read behind the first update finish, then the timers run. */
-async function settle(ms: number): Promise<void> {
-  for (let i = 0; i < 20; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+/**
+ * Waits on the update itself rather than guessing how long its file read
+ * takes, then runs the timers. Spinning a fixed number of microtask turns
+ * here made the test fail whenever the machine was busy enough that reading
+ * reminded.json took one turn longer.
+ */
+async function settle(update: Promise<void>, ms: number): Promise<void> {
+  await update;
   await vi.advanceTimersByTimeAsync(ms);
 }
 
 beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'notes-rem-'));
   shown.length = 0;
-  // Only the clock and setTimeout are faked: reading reminded.json is real I/O, which setImmediate lets finish.
+  // Only the clock and setTimeout are faked: reading reminded.json is real I/O, which the update's own promise waits on.
   vi.useFakeTimers({ now: noon, toFake: ['setTimeout', 'clearTimeout', 'Date'] });
 });
 afterEach(async () => {
@@ -53,17 +58,15 @@ describe('reminders', () => {
   it('shows a task that came due while the app was closed at once, but one being typed only after the typing stops', async () => {
     const reminders = createReminders({ userData: root, enabled: () => true, openNote: () => undefined });
     // Loaded from disk: last edited an hour ago, due at nine this morning.
-    reminders.update([note('old', '- [ ] rent @2026-09-03', noon - 3600_000)]);
-    await settle(10);
+    await settle(reminders.update([note('old', '- [ ] rent @2026-09-03', noon - 3600_000)]), 10);
     expect(shown.map((s) => s.title)).toEqual(['rent']);
 
     // Being typed now: each save is a tick, none of them may fire.
     for (const words of ['- [ ] call @2026-09-03', '- [ ] call mom @2026-09-03', '- [ ] call mom now @2026-09-03']) {
-      reminders.update([note('old', '- [ ] rent @2026-09-03', noon - 3600_000), note('typing', words, Date.now())]);
-      await settle(300);
+      await settle(reminders.update([note('old', '- [ ] rent @2026-09-03', noon - 3600_000), note('typing', words, Date.now())]), 300);
     }
     expect(shown).toHaveLength(1);
-    await settle(QUIET_MS + 300);
+    await settle(Promise.resolve(), QUIET_MS + 300);
     expect(shown.map((s) => s.title)).toEqual(['rent', 'call mom now']);
     reminders.stop();
   });

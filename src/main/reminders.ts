@@ -28,10 +28,15 @@ export interface RemindersDeps {
 }
 
 export interface Reminders {
-  /** The notes as they stand now: recomputes what is due and when to wake. */
-  update(notes: Note[]): void;
+  /**
+   * The notes as they stand now: recomputes what is due and when to wake.
+   * Resolves once that has happened — the first call has a file to read
+   * first — so a caller that must know it is done can wait for it. Callers
+   * that need not simply drop the promise.
+   */
+  update(notes: Note[]): Promise<void>;
   /** A change from the folder watcher, applied to the last list seen. */
-  applyChanges(changes: ExternalChanges): void;
+  applyChanges(changes: ExternalChanges): Promise<void>;
   /** Shows a notification now, as `notes due --notify` and the tests ask. */
   show(title: string, body: string, noteId?: string): boolean;
   stop(): void;
@@ -122,12 +127,12 @@ export function createReminders(deps: RemindersDeps): Reminders {
     update(next) {
       notes = next;
       loaded ??= load();
-      void loaded.then(tick);
+      return loaded.then(tick);
     },
     applyChanges(changes) {
       let list = notes.filter((n) => !changes.removed.includes(n.id));
       for (const note of changes.upserts) list = list.some((n) => n.id === note.id) ? list.map((n) => (n.id === note.id ? note : n)) : [note, ...list];
-      this.update(list);
+      return this.update(list);
     },
     show,
     stop() {

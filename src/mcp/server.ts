@@ -1,6 +1,6 @@
 import type { Readable, Writable } from 'node:stream';
 import type { Backend } from '../core/backend';
-import { titleOf } from '../renderer/notes';
+import { snippetOf, titleOf } from '../renderer/notes';
 import { TOOLS, ToolError } from './tools';
 
 /**
@@ -23,6 +23,9 @@ export const SERVER_NAME = 'notes';
 const KNOWN_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const LATEST = KNOWN_VERSIONS[0];
 
+/** How many notes one page of `resources/list` holds. A notebook can be large; a reply should not be. */
+const PAGE = 100;
+
 interface Message {
   jsonrpc?: string;
   id?: number | string | null;
@@ -42,12 +45,27 @@ export interface ServerDeps {
 
 const asObject = (value: unknown): Record<string, unknown> => (value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
 
+/**
+ * Where a cursor points. Cursors are opaque to the client by the spec's word,
+ * so the offset is written as text rather than handed over as a number, and
+ * one that has been tampered with starts from the beginning rather than
+ * throwing: a bad cursor is not worth failing a listing over.
+ */
+const cursorAt = (params: Record<string, unknown>): number => {
+  const raw = params.cursor;
+  if (typeof raw !== 'string' || raw === '') return 0;
+  const at = Number.parseInt(Buffer.from(raw, 'base64url').toString('utf8'), 10);
+  return Number.isSafeInteger(at) && at >= 0 ? at : 0;
+};
+const cursorFor = (at: number): string => Buffer.from(String(at), 'utf8').toString('base64url');
+
 /** One request, answered. Returns null for a notification, which takes no reply. */
 export async function handle(deps: ServerDeps, message: Message): Promise<Message | null> {
   const { method, id } = message;
   const notification = id === undefined || id === null;
   const reply = (result: unknown): Message | null => (notification ? null : { jsonrpc: '2.0', id: id as number, result });
-  const fail = (code: number, text: string): Message | null => (notification ? null : { jsonrpc: '2.0', id: id as number, error: { code, message: text } });
+  const fail = (code: number, text: string, data?: unknown): Message | null =>
+    notification ? null : { jsonrpc: '2.0', id: id as number, error: { code, message: text, ...(data === undefined ? {} : { data }) } };
 
   switch (method) {
     case 'initialize': {
@@ -69,13 +87,16 @@ export async function handle(deps: ServerDeps, message: Message): Promise<Messag
     case 'ping':
       return reply({});
     case 'tools/list':
+      // Nine tools fit in one page, so no cursor is ever handed back; a client
+      // that sends one anyway is answered rather than refused.
       return reply({
         tools: TOOLS.map((t) => ({
           name: t.name,
           title: t.title,
           description: t.description,
           inputSchema: t.inputSchema,
-          annotations: { readOnlyHint: t.readOnly, destructiveHint: t.name === 'delete_note', idempotentHint: t.readOnly, openWorldHint: false },
+          ...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
+          annotations: { readOnlyHint: t.readOnly, destructiveHint: t.destructive, idempotentHint: t.idempotent, openWorldHint: false },
         })),
       });
     case 'tools/call': {
@@ -86,8 +107,16 @@ export async function handle(deps: ServerDeps, message: Message): Promise<Messag
       let backend: Backend | null = null;
       try {
         backend = await deps.open();
-        const text = await tool.run(backend, asObject(params.arguments));
-        return reply({ content: [{ type: 'text', text }], isError: false });
+        const answer = await tool.run(backend, asObject(params.arguments));
+        // The words are always sent; the data, when there is any, is sent
+        // beside them and also serialised into the words, which is what the
+        // spec asks for so a client that reads neither field goes without.
+        if (answer.structured === undefined) return reply({ content: [{ type: 'text', text: answer.text }], isError: false });
+        return reply({
+          content: [{ type: 'text', text: answer.text }, { type: 'text', text: JSON.stringify(answer.structured) }],
+          structuredContent: answer.structured,
+          isError: false,
+        });
       } catch (err) {
         // A tool's own refusal is an answer, not a protocol failure: the
         // assistant is meant to read it and try something else.
@@ -99,12 +128,24 @@ export async function handle(deps: ServerDeps, message: Message): Promise<Messag
       }
     }
     case 'resources/list': {
+      const at = cursorAt(asObject(message.params));
       let backend: Backend | null = null;
       try {
         backend = await deps.open();
         const notes = await backend.notes();
+        const page = notes.slice(at, at + PAGE);
+        const next = at + page.length;
         return reply({
-          resources: notes.map((n) => ({ uri: `notes://${n.id}`, name: titleOf(n), mimeType: 'text/markdown' })),
+          resources: page.map((n) => ({
+            uri: `notes://${encodeURIComponent(n.id)}`,
+            name: titleOf(n),
+            title: titleOf(n),
+            description: snippetOf(n, 120),
+            mimeType: 'text/markdown',
+            size: Buffer.byteLength(n.body, 'utf8'),
+            annotations: { audience: ['assistant'], lastModified: new Date(n.updatedAt).toISOString() },
+          })),
+          ...(next < notes.length ? { nextCursor: cursorFor(next) } : {}),
         });
       } catch (err) {
         return fail(-32603, err instanceof Error ? err.message : String(err));
@@ -114,23 +155,43 @@ export async function handle(deps: ServerDeps, message: Message): Promise<Messag
     }
     case 'resources/read': {
       const uri = String(asObject(message.params).uri ?? '');
-      const id = uri.startsWith('notes://') ? uri.slice('notes://'.length) : '';
+      let id = '';
+      if (uri.startsWith('notes://')) {
+        const raw = uri.slice('notes://'.length);
+        try {
+          id = decodeURIComponent(raw);
+        } catch {
+          id = raw;
+        }
+      }
       let backend: Backend | null = null;
       try {
         backend = await deps.open();
         const note = id ? await backend.get(id) : null;
-        if (!note) return fail(-32002, `No note at ${uri}`);
-        return reply({ contents: [{ uri, name: titleOf(note), mimeType: 'text/markdown', text: note.body }] });
+        if (!note) return fail(-32002, `No note at ${uri}`, { uri });
+        return reply({ contents: [{ uri, name: titleOf(note), title: titleOf(note), mimeType: 'text/markdown', text: note.body }] });
       } catch (err) {
         return fail(-32603, err instanceof Error ? err.message : String(err));
       } finally {
         await backend?.close().catch(() => undefined);
       }
     }
-    case 'prompts/list':
-      return reply({ prompts: [] });
     case 'resources/templates/list':
-      return reply({ resourceTemplates: [] });
+      return reply({
+        resourceTemplates: [
+          {
+            uriTemplate: 'notes://{id}',
+            name: 'note',
+            title: 'A note by its id',
+            description: 'One note as markdown, by the id notes_search and notes_read give back. Titles will not do here; ids will.',
+            mimeType: 'text/markdown',
+          },
+        ],
+      });
+    case 'prompts/list':
+      // Answered, though the `prompts` capability is not declared: a client
+      // that asks anyway gets an empty list rather than an error.
+      return reply({ prompts: [] });
     default:
       // A result or an error coming back is not ours to answer.
       if (method === undefined) return null;
@@ -148,28 +209,49 @@ export function serve(deps: ServerDeps, input: Readable, output: Writable): Prom
     let buffer = '';
     let queue: Promise<void> = Promise.resolve();
 
-    const send = (message: Message): void => {
+    const send = (message: unknown): void => {
       output.write(`${JSON.stringify(message)}\n`);
     };
 
-    const take = (text: string): void => {
-      let message: Message;
+    /** One message answered, with anything it throws turned into an error reply. */
+    const answer = async (message: Message): Promise<Message | null> => {
       try {
-        message = JSON.parse(text) as Message;
+        return await handle(deps, message);
+      } catch (err) {
+        deps.log(`[notes-mcp] ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+        if (message.id === undefined || message.id === null) return null;
+        return { jsonrpc: '2.0', id: message.id, error: { code: -32603, message: err instanceof Error ? err.message : String(err) } };
+      }
+    };
+
+    const take = (text: string): void => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
       } catch {
         send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'That was not JSON' } });
         return;
       }
       queue = queue.then(async () => {
-        try {
-          const answer = await handle(deps, message);
-          if (answer) send(answer);
-        } catch (err) {
-          deps.log(`[notes-mcp] ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
-          if (message.id !== undefined && message.id !== null) {
-            send({ jsonrpc: '2.0', id: message.id, error: { code: -32603, message: err instanceof Error ? err.message : String(err) } });
+        // A batch is an array. The 2025-03-26 revision requires them and
+        // 2025-06-18 dropped them; this server speaks both, so it takes one
+        // either way and answers with an array of only the replies that are
+        // owed — an all-notification batch is answered with nothing at all.
+        if (Array.isArray(parsed)) {
+          if (parsed.length === 0) {
+            send({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'An empty batch asks for nothing' } });
+            return;
           }
+          const answers: Message[] = [];
+          for (const one of parsed) {
+            const a = await answer(asObject(one) as Message);
+            if (a) answers.push(a);
+          }
+          if (answers.length > 0) send(answers);
+          return;
         }
+        const a = await answer(parsed as Message);
+        if (a) send(a);
       });
     };
 
