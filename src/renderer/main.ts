@@ -107,6 +107,8 @@ import { layoutGraph, nodeAt, type LaidOut } from './graph';
 import { blockOf } from '../core/blocks';
 import { createPeek } from './peek';
 import { createSlash } from './slash';
+import { place } from './anchored';
+import { GOES_THERE, noteMenuRows } from './notemenu';
 import { createWorkspacesUi } from './workspaces-ui';
 import { nameKey, parseWorkspaces, resolveWorkspace, withWorkspace, type Workspace } from './workspaces';
 import { dateOf, DEFAULT_JOURNAL_PATH, isoDate, journalNoteAt, journalPathError, journalPlace, momentOf, parseJournalDate, type JournalDate } from '../core/journal';
@@ -923,6 +925,43 @@ const visibleNotes = (): Note[] => {
 };
 const filtering = (): boolean => query.trim() !== '' || tagFilter !== null || folderScope !== ROOT_FOLDER;
 const selected = (): Note | null => notes.find((n) => n.id === ui.selectedId) ?? null;
+
+/**
+ * The note a right-click named, while a command it opened is running.
+ *
+ * Null the rest of the time, which is every other way a command is reached.
+ */
+let noteTarget: string | null = null;
+
+/**
+ * The note a command is *about*: the one a menu named, or failing that the one
+ * on screen.
+ *
+ * Only commands read this. Rendering goes on reading `selected()`, so a target
+ * can never draw the wrong note into a pane — it can only decide what a
+ * command acts on, which is the whole of what the right-click menu changes.
+ */
+const targeted = (): Note | null => (noteTarget === null ? selected() : (notes.find((n) => n.id === noteTarget) ?? null));
+
+/**
+ * Runs something with a note named, and puts the target back afterwards.
+ *
+ * Every command that reads `targeted()` does so once, synchronously, before it
+ * awaits anything or opens a chooser, and then closes over the note it found.
+ * That is what makes a target this short-lived enough: by the time the folder
+ * picker or the export is answered, the note it is answering about was decided
+ * long ago. Delete is the one command that spans time, and it captures the id
+ * itself rather than relying on this.
+ */
+function onNote<T>(id: string, run: () => T): T {
+  const before = noteTarget;
+  noteTarget = id;
+  try {
+    return run();
+  } finally {
+    noteTarget = before;
+  }
+}
 
 // --- persistence ------------------------------------------------------------
 
@@ -2221,14 +2260,16 @@ function createFromSearch(): void {
 }
 
 function togglePinSelected(): void {
-  const n = selected();
+  const n = targeted();
   if (!n) return;
   notes = togglePin(notes, n.id);
   scheduleSave();
   renderList();
   renderEditor();
   selectedItemIntoView();
-  showStatus(selected()?.pinned ? 'Pinned' : 'Unpinned', 1500);
+  // The note that was pinned, not the one on screen: a right-click pins a row
+  // without going to it, and the word has to be about the row.
+  showStatus(notes.find((x) => x.id === n.id)?.pinned ? 'Pinned' : 'Unpinned', 1500);
 }
 
 /** Move the selection up or down the visible list, keeping focus where it is. */
@@ -2266,6 +2307,12 @@ let armTimer: number | null = null;
 let armReturnFocus: HTMLElement | null = null;
 /** The menu row that is armed, when the delete came from a menu rather than a chord. */
 let armedRow: HTMLElement | null = null;
+/**
+ * The note the arming was about. Delete is the one command that spans time, so
+ * it remembers its own note rather than trusting the target to still be set
+ * three seconds later — or the selection not to have moved under it.
+ */
+let armedId: string | null = null;
 
 /**
  * Deleting takes two presses within three seconds. From a menu the row itself
@@ -2273,12 +2320,17 @@ let armedRow: HTMLElement | null = null;
  * find again is not a confirmation.
  */
 function armDelete(row?: HTMLElement): void {
-  if (!selected()) return;
-  if (armed) {
-    deleteSelected();
+  const n = targeted();
+  if (!n) return;
+  // The second press deletes what the first one asked about. Asking about a
+  // different note is a fresh question, not an answer to the old one.
+  if (armed && armedId === n.id) {
+    deleteNote(n.id);
     return;
   }
+  if (armed) disarmDelete();
   armed = true;
+  armedId = n.id;
   armReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   armedRow = row ?? null;
   if (armedRow) {
@@ -2296,6 +2348,7 @@ function armDelete(row?: HTMLElement): void {
 function disarmDelete(restoreFocus = false): void {
   if (!armed) return;
   armed = false;
+  armedId = null;
   if (armTimer !== null) clearTimeout(armTimer);
   armTimer = null;
   if (armedRow) {
@@ -2308,20 +2361,33 @@ function disarmDelete(restoreFocus = false): void {
   armReturnFocus = null;
 }
 
-function deleteSelected(): void {
-  const n = selected();
+/**
+ * Deletes one note by name, whether or not it is the one being read.
+ *
+ * Deleting the note on screen has to put something else there, and that is
+ * most of what this does. Deleting one you only right-clicked must do the
+ * opposite and leave the screen alone: you asked about a row, not about where
+ * you were.
+ */
+function deleteNote(id: string): void {
+  const n = notes.find((x) => x.id === id);
   if (!n) return;
-  const next = neighborOf(visibleNotes(), n.id);
+  const onScreen = ui.selectedId === id;
+  const next = onScreen ? neighborOf(visibleNotes(), id) : null;
   const title = titleOf(n);
   // Words typed since the last save go to the file first, so the trash holds them.
   void flush();
-  notes = removeNote(notes, n.id);
-  editLogs.delete(n.id);
+  notes = removeNote(notes, id);
+  editLogs.delete(id);
   scheduleSave();
   disarmDelete();
-  select(next);
-  if (next) focusList();
-  else el.search.focus();
+  if (onScreen) {
+    select(next);
+    if (next) focusList();
+    else el.search.focus();
+  } else {
+    renderList();
+  }
   showStatus(`Deleted “${title}” · in Deleted notes for a month`, 4000);
 }
 
@@ -3180,7 +3246,7 @@ async function renderedExport(n: Note, look: 'ink' | 'paper' = 'ink'): Promise<R
 }
 
 async function runExport(kind: ExportKind): Promise<void> {
-  const n = selected();
+  const n = targeted();
   if (!n) return;
   closeMenu(false);
   focusEditor();
@@ -4841,7 +4907,7 @@ async function newFolder(): Promise<void> {
 }
 
 function moveNoteToFolder(): void {
-  const n = selected();
+  const n = targeted();
   if (!n) return;
   const at = n.folder ?? ROOT_FOLDER;
   const file = async (folder: string, make = false): Promise<void> => {
@@ -4866,8 +4932,25 @@ function moveNoteToFolder(): void {
   });
 }
 
+/**
+ * Puts a note back at the top level.
+ *
+ * The one move with no question to ask, which is the whole reason it is its
+ * own command rather than a row in the folder picker: taking a note out of a
+ * folder is a thing you already know you want, and picking "All notes" out of
+ * a list of folders is a worse way to say it.
+ */
+async function unfileNote(): Promise<void> {
+  const n = targeted();
+  if (!n || (n.folder ?? ROOT_FOLDER) === ROOT_FOLDER) return;
+  if (!tookFolders(await window.notesApi.moveNote(n.id, ROOT_FOLDER))) return;
+  renderList();
+  renderEditor();
+  showStatus(`“${shownTitle(n)}” is now at the top level`, 2500);
+}
+
 async function showNoteFile(): Promise<void> {
-  const n = selected();
+  const n = targeted();
   if (!n) return;
   const shown = await window.notesApi.showNoteFile(n.id);
   if (!shown) showStatus('That note has not been written to disk yet', 3000);
@@ -5744,7 +5827,7 @@ async function loadWorkspace(id: string): Promise<void> {
   showStatus(resolved.missing > 0 ? `Opened “${workspace.name}”. ${resolved.missing} unavailable ${resolved.missing === 1 ? 'note was' : 'notes were'} omitted.` : `Opened “${workspace.name}”`, 4000);
 }
 
-const hasNote = (): boolean => selected() !== null;
+const hasNote = (): boolean => targeted() !== null;
 
 const ACTIONS: Action[] = [
   { id: 'new', label: 'New note', group: 'Notes', menuSection: 'Create', chord: 'ctrl+n', run: () => newNote() },
@@ -5886,7 +5969,7 @@ const ACTIONS: Action[] = [
     menuSection: 'This note',
     chord: 'ctrl+shift+p',
     enabled: hasNote,
-    on: () => selected()?.pinned === true,
+    on: () => targeted()?.pinned === true,
     run: togglePinSelected,
   },
   {
@@ -5955,6 +6038,18 @@ const ACTIONS: Action[] = [
     terms: 'file filing folder put away refile relocate',
     enabled: () => hasNote(),
     run: () => void moveNoteToFolder(),
+  },
+  {
+    id: 'note-unfile',
+    label: 'Take out of folder',
+    hint: 'Back to the top level, keeping its name, its links and its history',
+    group: 'Notes',
+    menuSection: 'This note',
+    terms: 'unfile root top level remove out of folder',
+    // Greyed, not gone, on a note already at the top level: the row keeps its
+    // place in the menu so you learn where it is.
+    enabled: () => (targeted()?.folder ?? ROOT_FOLDER) !== ROOT_FOLDER,
+    run: () => void unfileNote(),
   },
   {
     id: 'note-show',
@@ -6528,6 +6623,48 @@ const panelOf = (button: HTMLElement): HTMLElement | null => button.parentElemen
 const rowsIn = (panel: HTMLElement): HTMLButtonElement[] => Array.from(panel.querySelectorAll<HTMLButtonElement>('.menu-item:not([disabled])'));
 
 /**
+ * The keys a panel of rows answers wherever it happens to be drawn: the
+ * arrows, Home and End, and typing the first letter of what you are after, as
+ * menus have always done. True when it took the key.
+ *
+ * Shared so that the menu a right-click opens walks exactly as the pane's own
+ * menus do. What is left to each caller is what only it can mean — moving
+ * between the buttons of a menu bar there is no bar for, and what Escape
+ * closes.
+ */
+function panelKey(panel: HTMLElement, e: KeyboardEvent): boolean {
+  const rows = rowsIn(panel);
+  if (rows.length === 0) return false;
+  const at = rows.indexOf(document.activeElement as HTMLButtonElement);
+  switch (e.key) {
+    case 'ArrowDown':
+      e.preventDefault();
+      rows[(at + 1) % rows.length]?.focus();
+      return true;
+    case 'ArrowUp':
+      e.preventDefault();
+      rows[(at - 1 + rows.length) % rows.length]?.focus();
+      return true;
+    case 'Home':
+      e.preventDefault();
+      rows[0]?.focus();
+      return true;
+    case 'End':
+      e.preventDefault();
+      rows[rows.length - 1]?.focus();
+      return true;
+  }
+  if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return false;
+  const want = e.key.toLowerCase();
+  const order = [...rows.slice(at + 1), ...rows.slice(0, at + 1)];
+  const hit = order.find((r) => (r.querySelector('.menu-label')?.textContent ?? '').trim().toLowerCase().startsWith(want));
+  if (!hit) return false;
+  e.preventDefault();
+  hit.focus();
+  return true;
+}
+
+/**
  * Builds one pane's controls. Called once per pane, from `makePane`, because
  * the header belongs to a pane and there may be three of them.
  */
@@ -6804,25 +6941,8 @@ onPane('controls', 'keydown', (e) => {
 
   const panel = target?.closest<HTMLElement>('.menu');
   if (!panel) return;
-  const rows = rowsIn(panel);
-  const at = rows.indexOf(document.activeElement as HTMLButtonElement);
+  if (panelKey(panel, e)) return;
   switch (e.key) {
-    case 'ArrowDown':
-      e.preventDefault();
-      rows[(at + 1) % rows.length]?.focus();
-      break;
-    case 'ArrowUp':
-      e.preventDefault();
-      rows[(at - 1 + rows.length) % rows.length]?.focus();
-      break;
-    case 'Home':
-      e.preventDefault();
-      rows[0]?.focus();
-      break;
-    case 'End':
-      e.preventDefault();
-      rows[rows.length - 1]?.focus();
-      break;
     case 'ArrowLeft':
     case 'ArrowRight': {
       e.preventDefault();
@@ -6839,17 +6959,6 @@ onPane('controls', 'keydown', (e) => {
     case 'Tab':
       closeMenu(false);
       break;
-    default: {
-      // Type the first letter of what you are looking for, as menus have always done.
-      if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) break;
-      const want = e.key.toLowerCase();
-      const order = [...rows.slice(at + 1), ...rows.slice(0, at + 1)];
-      const hit = order.find((r) => (r.querySelector('.menu-label')?.textContent ?? '').trim().toLowerCase().startsWith(want));
-      if (hit) {
-        e.preventDefault();
-        hit.focus();
-      }
-    }
   }
 });
 
@@ -6857,6 +6966,194 @@ document.addEventListener('pointerdown', (e) => {
   // Every pane's menu, not just this one's: clicking into another pane is
   // exactly the click that should put an open menu away.
   if (openMenuButton && !openMenuButton.parentElement?.contains(e.target as Node)) closeMenu(false);
+});
+
+// --- the note's own menu, on a right-click in the list ----------------------
+
+/**
+ * A right-click on a note opens the commands that are about *that* note.
+ *
+ * It is the same panel the pane header draws, reading the same section of the
+ * same registry — what changes is only which note the rows are about. That is
+ * the whole feature: everywhere else in the app "this note" means the one on
+ * screen, and here it means the one under the pointer, so a note can be filed,
+ * exported or deleted without first having to go and read it.
+ *
+ * The native menu is left alone everywhere else in the window. Right-clicking
+ * a word in the editor still offers the spelling suggestions, which are the
+ * only way to teach the dictionary a name it does not know.
+ */
+let noteMenu: HTMLElement | null = null;
+/** The note the open menu is about. */
+let noteMenuId: string | null = null;
+/** Where it was asked for, so a drill-in can be re-placed at its new size. */
+let noteMenuAt = { x: 0, y: 0 };
+/** What had the focus before it opened, to give back when Escape closes it. */
+let noteMenuReturn: HTMLElement | null = null;
+/** The row it was opened on, marked for as long as it is open. */
+let noteMenuRow: HTMLElement | null = null;
+
+/** A rule between two groups of rows. */
+function menuRule(): HTMLElement {
+  const rule = document.createElement('div');
+  rule.className = 'menu-rule';
+  rule.setAttribute('role', 'separator');
+  return rule;
+}
+
+function closeNoteMenu(restoreFocus = false): void {
+  const panel = noteMenu;
+  if (!panel) return;
+  disarmDelete();
+  panel.remove();
+  noteMenu = null;
+  noteMenuId = null;
+  noteMenuRow?.classList.remove('menued');
+  noteMenuRow = null;
+  const back = noteMenuReturn;
+  noteMenuReturn = null;
+  // The row it was opened on has been redrawn by now in the cases that matter,
+  // so the list itself is where the focus goes when what held it is gone.
+  if (!restoreFocus) return;
+  if (back?.isConnected) back.focus();
+  else focusList();
+}
+
+/**
+ * The rows, read with the clicked note in view.
+ *
+ * `menuRow` asks each command whether it can run and whether it is on, and
+ * both of those answers are about a note — so they are read here, under the
+ * target, and what is greyed or ticked is true of the row you clicked.
+ */
+function fillNoteMenu(panel: HTMLElement, id: string): void {
+  panel.replaceChildren();
+  onNote(id, () => {
+    for (const row of noteMenuRows(ACTIONS)) panel.append(row.kind === 'rule' ? menuRule() : menuRow(row.action));
+  });
+}
+
+/** Puts the panel where it fits beside the pointer. */
+function placeNoteMenu(panel: HTMLElement): void {
+  const size = { width: panel.offsetWidth, height: panel.offsetHeight };
+  const view = { width: window.innerWidth, height: window.innerHeight };
+  // A pointer is a point, so the anchor has no width of its own: down and to
+  // the right where there is room, which is where a menu has always gone.
+  const spot = place({ left: noteMenuAt.x, top: noteMenuAt.y, right: noteMenuAt.x, bottom: noteMenuAt.y }, size, view, { gap: 2, margin: 6 });
+  panel.style.left = `${spot.left}px`;
+  panel.style.top = `${spot.top}px`;
+}
+
+function openNoteMenu(id: string, x: number, y: number): void {
+  // One menu at a time, wherever it came from.
+  closeMenu(false);
+  closeNoteMenu();
+  noteMenuReturn = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const panel = document.createElement('div');
+  panel.className = 'menu menu-at';
+  panel.setAttribute('role', 'menu');
+  panel.setAttribute('aria-label', 'This note');
+  panel.addEventListener('click', onNoteMenuClick);
+  panel.addEventListener('keydown', onNoteMenuKey);
+  noteMenu = panel;
+  noteMenuId = id;
+  noteMenuAt = { x, y };
+  // The pointer will move off the row, and the menu goes on being about it.
+  noteMenuRow = el.list.querySelector<HTMLElement>(`.item[data-id="${id}"]`);
+  noteMenuRow?.classList.add('menued');
+  fillNoteMenu(panel, id);
+  document.body.append(panel);
+  placeNoteMenu(panel);
+  rowsIn(panel)[0]?.focus();
+}
+
+/**
+ * Runs a command from the menu, on the note the menu is about.
+ *
+ * Three commands need more than that. Export shows its formats inside this
+ * menu rather than the pane's, because the pane's is about another note.
+ * Delete arms the row in place, as it does in every menu. And the two that
+ * drive the pane's own editor go to the note first, because editing a title
+ * in a field that is not showing it is not a thing that can be done.
+ */
+function runFromNoteMenu(actionId: string, row: HTMLElement): void {
+  const id = noteMenuId;
+  const panel = noteMenu;
+  if (!id || !panel) return;
+  const action = ACTIONS.find((a) => a.id === actionId);
+  if (!action) return;
+  if (onNote(id, () => action.enabled?.() === false)) return;
+  if (action.id === 'export') {
+    panel.replaceChildren();
+    exportPage(panel);
+    placeNoteMenu(panel);
+    rowsIn(panel)[1]?.focus();
+    return;
+  }
+  if (GOES_THERE.has(action.id)) {
+    closeNoteMenu();
+    if (ui.selectedId !== id) select(id);
+    action.run();
+    return;
+  }
+  if (action.id === 'delete') {
+    // The second click is an answer; the first is the question, and the menu
+    // stays open under it holding the question.
+    const answering = armed && armedId === id;
+    onNote(id, () => armDelete(row));
+    if (answering) closeNoteMenu();
+    return;
+  }
+  closeNoteMenu();
+  onNote(id, () => action.run());
+}
+
+function onNoteMenuClick(e: MouseEvent): void {
+  const panel = noteMenu;
+  const row = (e.target as HTMLElement | null)?.closest<HTMLButtonElement>('.menu-item');
+  if (!panel || !row) return;
+  if (row.dataset.back) {
+    const id = noteMenuId;
+    if (id) fillNoteMenu(panel, id);
+    placeNoteMenu(panel);
+    rowsIn(panel)[0]?.focus();
+    return;
+  }
+  if (row.dataset.kind) {
+    const id = noteMenuId;
+    const kind = row.dataset.kind as ExportKind;
+    closeNoteMenu();
+    if (id) onNote(id, () => void runExport(kind));
+    return;
+  }
+  if (row.dataset.action) runFromNoteMenu(row.dataset.action, row);
+}
+
+function onNoteMenuKey(e: KeyboardEvent): void {
+  const panel = noteMenu;
+  if (!panel) return;
+  if (panelKey(panel, e)) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+    closeNoteMenu(true);
+    return;
+  }
+  if (e.key === 'Tab') closeNoteMenu();
+}
+
+el.list.addEventListener('contextmenu', (e) => {
+  const row = (e.target as HTMLElement | null)?.closest<HTMLElement>('.item');
+  const id = row?.dataset.id;
+  // Only on a note. Anywhere else in the window the native menu answers, and
+  // it must: the editor's spelling suggestions live on it.
+  if (!id) return;
+  e.preventDefault();
+  openNoteMenu(id, e.clientX, e.clientY);
+});
+
+document.addEventListener('pointerdown', (e) => {
+  if (noteMenu && !noteMenu.contains(e.target as Node)) closeNoteMenu();
 });
 
 /**

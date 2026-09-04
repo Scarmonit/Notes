@@ -68,7 +68,7 @@ const sectionOrder = (group: string): string[] => {
 
 describe('the command registry', () => {
   it('reads every command out of main.ts', () => {
-    expect(ACTIONS.length).toBe(73);
+    expect(ACTIONS.length).toBe(74);
     expect(new Set(ACTIONS.map((a) => a.id)).size).toBe(ACTIONS.length);
   });
 
@@ -115,7 +115,7 @@ describe('the command registry', () => {
     expect(sectionOrder('Notes')).toEqual(['Create', 'Find and navigate', 'This note', 'Tabs', 'Saved searches', 'Folders', 'Library']);
     expect(idsUnder('Notes', 'Create')).toEqual(['new', 'template-new', 'import', 'journal-today', 'journal-date', 'folder-new']);
     expect(idsUnder('Notes', 'Find and navigate')).toEqual(['find', 'recent', 'prev', 'next', 'back', 'forward']);
-    expect(idsUnder('Notes', 'This note')).toEqual(['title', 'aliases', 'properties', 'pin', 'history', 'save', 'export', 'merge-into', 'delete', 'note-move', 'note-show']);
+    expect(idsUnder('Notes', 'This note')).toEqual(['title', 'aliases', 'properties', 'pin', 'history', 'save', 'export', 'merge-into', 'delete', 'note-move', 'note-unfile', 'note-show']);
     expect(idsUnder('Notes', 'Tabs')).toEqual(['tab-new', 'tab-close', 'tab-next', 'tab-prev']);
     expect(idsUnder('Notes', 'Saved searches')).toEqual(['view-save', 'view-open', 'view-forget']);
     // Folders sits immediately before Library: the notebook's own tree, then
