@@ -8,6 +8,7 @@ import { applyFilter, parseSort, parseWhen, parseWords, SORT_KEYS, type Filter }
 import { resolveNote, resolveTrashed, type Resolution } from '../core/resolve';
 import { linksIn, snippetOf, tagsOf, titleOf, wordCount } from '../renderer/notes';
 import { taskProgress } from '../renderer/tasks';
+import { viewNamed } from '../shared/settings';
 import type { Note, TrashedNote } from '../shared/types';
 import { readStdin } from './body';
 import { connectBackend, type AppPolicy } from './client';
@@ -232,6 +233,7 @@ export interface FilterOpts {
   sort?: string;
   reverse?: boolean;
   limit?: string;
+  view?: string;
 }
 
 const collect = (value: string, previous: string[] = []): string[] => [...previous, value];
@@ -266,7 +268,8 @@ export function addFilterOptions(cmd: Command): Command {
     .option('--due <when>', 'notes with a task due by then: today, tomorrow, week, 7d, overdue, any, or a date')
     .option('--sort <key>', `order: ${SORT_KEYS.join(', ')}; add - to reverse (title-)`)
     .option('-r, --reverse', 'reverse the order')
-    .option('-n, --limit <n>', 'at most n notes');
+    .option('-n, --limit <n>', 'at most n notes')
+    .option('--view <name>', 'a saved search, by name (see `notes views`)');
 }
 
 function when(text: string | undefined, flag: string): number | undefined {
@@ -282,7 +285,16 @@ function when(text: string | undefined, flag: string): number | undefined {
  * query that works in the window works here unchanged.
  */
 export async function filterFrom(ctx: Ctx, opts: FilterOpts, words: readonly string[] = [], notes?: Note[]): Promise<Filter> {
-  const { errors, ...parsed } = parseWords(words);
+  // A saved search is words like any other: its query goes in front of what
+  // was typed, so `notes list --view Due plans` narrows the view further.
+  let asked = words;
+  if (opts.view !== undefined) {
+    const views = (await (await ctx.backend()).settingsGet()).views;
+    const view = viewNamed(views, opts.view);
+    if (!view) throw new CliError(`No saved search called "${opts.view}"${views.length > 0 ? `; there is ${views.map((v) => v.name).join(', ')}` : ''}`, EXIT.usage);
+    asked = [...splitQuery(view.query), ...words];
+  }
+  const { errors, ...parsed } = parseWords(asked);
   if (errors.length > 0) throw new CliError(errors[0], EXIT.usage);
   const filter: Filter = parsed;
   for (const tag of opts.tag ?? []) filter.tags.push(tag.replace(/^#/, '').toLowerCase());
@@ -319,6 +331,11 @@ export async function filterFrom(ctx: Ctx, opts: FilterOpts, words: readonly str
 }
 
 /** The notes a command's filter keeps. */
+/** A saved query back into the argv-shaped words parseWords reads, quotes kept whole. */
+export function splitQuery(query: string): string[] {
+  return (query.match(/"[^"]*"|\S+/g) ?? []).map((w) => w);
+}
+
 export async function filteredNotes(ctx: Ctx, opts: FilterOpts, words: readonly string[] = []): Promise<{ all: Note[]; kept: Note[] }> {
   const all = await (await ctx.backend()).notes();
   const filter = await filterFrom(ctx, opts, words, all);

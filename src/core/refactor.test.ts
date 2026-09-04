@@ -9,6 +9,7 @@ import {
   insert,
   invertPlan,
   placeBlock,
+  planLinkMention,
   planMerge,
   planMoveSection,
   planRefile,
@@ -299,5 +300,35 @@ describe('the fixes of 0.15.1', () => {
     const body = '# A\nx\n\n# B\n```\na\n\n\nb\n```';
     expect(insert(body, 'new', { heading: 'A' })).toBe('# A\nx\n\nnew\n\n# B\n```\na\n\n\nb\n```');
     expect(insert('# A\n\nx\n\n\n\n# B\n\ny', 'z', { heading: 'A' })).toBe('# A\n\nx\n\nz\n\n# B\n\ny');
+  });
+});
+
+describe('planLinkMention', () => {
+  const plans = note('t', 'about it', 'Plans');
+  const other = note('o', 'The plans are done.', 'Other');
+
+  it('turns the words into a link and says what it did', () => {
+    const plan = must(planLinkMention([plans, other], 'o', 't', { start: 4, end: 9 }));
+    expect(plan.writes).toHaveLength(1);
+    expect(plan.writes[0].after.body).toBe('The [[plans]] are done.');
+    expect(plan.sentence).toBe("Link 'plans' in 'Other' to 'Plans'");
+    expect(plan.touched[0].changes).toEqual(['links rewritten']);
+  });
+
+  it('undoes as one step, like any other plan', () => {
+    const plan = must(planLinkMention([plans, other], 'o', 't', { start: 4, end: 9 }));
+    const after = applyPlanTo(plan, [plans, other]);
+    expect(applyPlanTo(invertPlan(plan), after).find((n) => n.id === 'o')?.body).toBe(other.body);
+  });
+
+  it('refuses a note linking to itself, and a span with nothing in it', () => {
+    expect(planLinkMention([plans, other], 't', 't', { start: 0, end: 5 }).ok).toBe(false);
+    expect(planLinkMention([plans, other], 'o', 't', { start: 3, end: 4 }).ok).toBe(false);
+  });
+
+  it('is refused once the note has moved on', () => {
+    const plan = must(planLinkMention([plans, other], 'o', 't', { start: 4, end: 9 }));
+    const moved = [plans, note('o', 'Something else entirely.', 'Other')];
+    expect(checkPlan(plan, moved).ok).toBe(false);
   });
 });

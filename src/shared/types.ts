@@ -11,6 +11,12 @@ export interface Note {
   pinned?: boolean;
   /** An explicit title. Without one, the first non-empty line of the body stands in. */
   title?: string;
+  /**
+   * Other names the note answers to. A `[[link]]` naming one of these finds
+   * this note, and so does a search. Written in the front matter as
+   * `aliases: [Doggo, Woofer]`, which is where Obsidian keeps them too.
+   */
+  aliases?: string[];
 }
 
 /**

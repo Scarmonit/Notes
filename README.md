@@ -8,6 +8,10 @@ A keyboard-first markdown notes app for Windows: a sidebar of notes and a page t
 - Instant search across every note as you type; pressing `Enter` on a search that matches nothing starts a note with that title
 - Pin the notes you keep coming back to, and write `#tags` anywhere to filter the list by them; nest them as `#wow/commands` and the parent gathers everything filed under it
 - Link notes together with `[[Another note]]` — click a link to go there, or to start it; every note lists what points at it
+- Other names for a note (`Ctrl+Shift+A`): a note can answer to `Doggo` as well as `Dog`. A `[[link]]` naming one finds it, so does a search, and writing `[[Doggo]]` settles into `[[Dog|Doggo]]` — the file says which note, the page says what you typed. They are kept as `aliases:` in the note's own front matter, where [Obsidian keeps them](https://obsidian.md/help/aliases) too, so a notebook opened in either app agrees
+- Embed one note in another: `![[Note]]` on a line of its own shows that note here, `![[Note#Heading]]` shows just that section, and what is shown is what the source says now rather than a copy of it (as [Obsidian's embeds](https://obsidian.md/help/embeds)). A note that embeds itself is refused rather than followed
+- Unlinked mentions, under the backlinks: the notes that say this one's name in plain words and have not linked it. **Link** on any of them joins the two up in place, spelling and capitals kept, undone with `Ctrl+Z` like any other change
+- Saved searches: name the search in the box (`Save this search…`) and it sits above the tags, one click away. A view is a name for a question the box can already ask — `due:week todo:` — so nothing new had to be learnt to write one. `Ctrl+Shift+Y` picks one by name, and `notes list --view Due` asks the same question from a terminal
 - Live formatting: headings, bold, italics, code, lists and links take their shape as you write them, while the text stays exactly the markdown you typed; the markers fade rather than vanish (`Ctrl+Shift+M` turns it off)
 - An outline of the note's headings beside it once it has two, to jump by (`Ctrl+Shift+L`)
 - Find and replace inside a note (`Ctrl+F`, `Ctrl+H`), with match case and regular expressions; matches are painted over the words without touching them
@@ -55,6 +59,8 @@ The full list lives in the app on `Ctrl+/`, and every command is also reachable 
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
 | `Ctrl+W` | Close this tab |
 | `Ctrl+1` … `Ctrl+9` | The nth tab of this pane (`Ctrl+9` is the last) |
+| `Ctrl+Shift+A` | Other names for this note |
+| `Ctrl+Shift+Y` | Saved searches |
 | `Ctrl+Shift+P` | Pin or unpin |
 | `Ctrl+E` | Toggle markdown preview |
 | `Ctrl+Shift+F` | Focus mode |
@@ -139,6 +145,11 @@ Exit codes: 0 ok, 1 failure, 2 usage, 3 not found or ambiguous, 4 the note is be
 | `notes tag rename <old> <new>` | rename a tag in every note that carries it, nested tags included |
 | `notes links <note>` | the notes a note links to with [[...]] |
 | `notes backlinks <note>` | the notes that link to a note |
+| `notes alias <note> [names...]` | the other names a note answers to: a [[link]] naming one finds the note, and so does a search |
+| `notes mentions <note>` | the notes that say this one's name in plain words without linking to it (what the window lists under Related) |
+| `notes views` | the saved searches: a name for a query the search box can ask |
+| `notes view save <name> <query...>` | name a search and keep it |
+| `notes view rm <name>` (forget) | take a saved search off the list |
 | `notes related <note>` | the notes near a note: sharing its tags, or two links away (what the window lists under the backlinks) |
 | `notes graph` | the notes as a graph of [[links]]: edges as from/to lines, --json for nodes and edges, --dot for Graphviz |
 | `notes refile <from> <to>` | move lines from one note into another, under a heading if you say which |

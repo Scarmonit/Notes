@@ -42,6 +42,10 @@ Commands:
   tag                                             add, remove or rename a #tag
   links [options] <note>                          the notes a note links to with [[...]]
   backlinks <note>                                the notes that link to a note
+  alias [options] <note> [names...]               the other names a note answers to: a [[link]] naming one finds the note, and so does a search
+  mentions [options] <note>                       the notes that say this one's name in plain words without linking to it (what the window lists under Related)
+  views                                           the saved searches: a name for a query the search box can ask
+  view                                            save, use or forget a named search
   related [options] <note>                        the notes near a note: sharing its tags, or two links away (what the window lists under the backlinks)
   graph [options]                                 the notes as a graph of [[links]]: edges as from/to lines, --json for nodes and edges, --dot for Graphviz
   refile [options] <from> <to>                    move lines from one note into another, under a heading if you say which

@@ -25,12 +25,44 @@ describe('formatNoteFile / parseNoteFile', () => {
   });
 
   it('carries front-matter lines it does not understand through a rewrite', () => {
-    const text = '---\nid: abc\ntags: [wow, commands]\ncreated: 1970-01-01T00:00:01.000Z\nupdated: 1970-01-01T00:00:02.000Z\naliases:\n  - other\n---\nbody\n';
+    const text = '---\nid: abc\ntags: [wow, commands]\ncreated: 1970-01-01T00:00:01.000Z\nupdated: 1970-01-01T00:00:02.000Z\nsource: somewhere\n---\nbody\n';
     const parsed = parseNoteFile(text, facts);
-    expect(parsed.extra).toEqual(['tags: [wow, commands]', 'aliases:', '  - other']);
+    expect(parsed.extra).toEqual(['tags: [wow, commands]', 'source: somewhere']);
     const again = parseNoteFile(formatNoteFile(parsed.note, parsed.extra), facts);
     expect(again.extra).toEqual(parsed.extra);
     expect(again.note).toEqual(parsed.note);
+  });
+
+  it('reads aliases written as a YAML block, as Obsidian writes them', () => {
+    const text = '---\nid: abc\naliases:\n  - Doggo\n  - "Woofer, the"\ncreated: 1970-01-01T00:00:01.000Z\nupdated: 1970-01-01T00:00:02.000Z\n---\nbody\n';
+    const parsed = parseNoteFile(text, facts);
+    expect(parsed.note.aliases).toEqual(['Doggo', 'Woofer, the']);
+    expect(parsed.extra).toEqual([]);
+  });
+
+  it('reads aliases written on one line, in brackets or without', () => {
+    const one = parseNoteFile('---\nid: a\naliases: [Doggo, Woofer]\n---\nbody\n', facts);
+    expect(one.note.aliases).toEqual(['Doggo', 'Woofer']);
+    const bare = parseNoteFile('---\nid: a\naliases: Doggo, Woofer\n---\nbody\n', facts);
+    expect(bare.note.aliases).toEqual(['Doggo', 'Woofer']);
+  });
+
+  it('writes aliases back on one line, quoting only what needs it', () => {
+    const note: Note = { id: 'a', body: 'b', createdAt: 1, updatedAt: 2, aliases: ['Doggo', 'Woofer, the'] };
+    const text = formatNoteFile(note);
+    expect(text).toContain('aliases: [Doggo, "Woofer, the"]');
+    expect(parseNoteFile(text, facts).note.aliases).toEqual(['Doggo', 'Woofer, the']);
+  });
+
+  it('drops blank and repeated aliases rather than storing them', () => {
+    const parsed = parseNoteFile('---\nid: a\naliases: [Doggo, , doggo, Woofer]\n---\nbody\n', facts);
+    expect(parsed.note.aliases).toEqual(['Doggo', 'Woofer']);
+  });
+
+  it('leaves a note with no aliases without the field at all', () => {
+    const note: Note = { id: 'a', body: 'b', createdAt: 1, updatedAt: 2 };
+    expect(formatNoteFile(note)).not.toContain('aliases');
+    expect(parseNoteFile(formatNoteFile(note), facts).note.aliases).toBeUndefined();
   });
 
   it('reads a plain markdown file as a note titled by its filename, dated by the file', () => {

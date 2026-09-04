@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Note } from '../shared/types';
 import {
+  answersTo,
   createNote,
+  namesOf,
   neighborOf,
+  updateAliases,
   removeNote,
   searchNotes,
   snippetOf,
@@ -292,5 +295,49 @@ describe('links between notes', () => {
   });
   it('reads a link as its words in titles and snippets', () => {
     expect(titleOf({ body: 'go to [[Other note]] now' })).toBe('go to Other note now');
+  });
+});
+
+describe('other names a note answers to', () => {
+  const dog: Note = { id: 'a', body: 'woof', title: 'Dog', aliases: ['Doggo', 'Woofer'], createdAt: 1, updatedAt: 1 };
+  const cat: Note = { id: 'b', body: 'meow', title: 'Cat', createdAt: 1, updatedAt: 2 };
+
+  it('lists the title first, then the aliases', () => {
+    expect(namesOf(dog)).toEqual(['Dog', 'Doggo', 'Woofer']);
+    expect(namesOf(cat)).toEqual(['Cat']);
+  });
+
+  it('answers to any of them, ignoring capitals and stray spaces', () => {
+    expect(answersTo(dog, ' doggo ')).toBe(true);
+    expect(answersTo(dog, 'Dog')).toBe(true);
+    expect(answersTo(dog, 'Puppy')).toBe(false);
+  });
+
+  it('reads a link through an alias when no title matches', () => {
+    expect(noteForLink([dog, cat], 'Woofer')?.id).toBe('a');
+  });
+
+  it('never lets an alias shadow another note’s actual title', () => {
+    const other: Note = { id: 'c', body: 'x', title: 'Doggo', createdAt: 1, updatedAt: 3 };
+    expect(noteForLink([dog, other], 'Doggo')?.id).toBe('c');
+  });
+
+  it('counts a link made through an alias as a backlink', () => {
+    const walks: Note = { id: 'w', body: 'took [[Doggo]] out', createdAt: 1, updatedAt: 4 };
+    expect(backlinksOf([dog, walks], 'a').map((n) => n.id)).toEqual(['w']);
+  });
+
+  it('finds a note by an alias in the search box', () => {
+    expect(searchNotes([dog, cat], 'woofer').map((n) => n.id)).toEqual(['a']);
+  });
+
+  it('sets and clears the names, dropping blanks and repeats', () => {
+    const set = updateAliases([dog], 'a', [' Pup ', 'pup', '']);
+    expect(set[0].aliases).toEqual(['Pup']);
+    expect(updateAliases([dog], 'a', [])[0].aliases).toBeUndefined();
+  });
+
+  it('leaves the note alone, timestamp included, when the names do not change', () => {
+    expect(updateAliases([dog], 'a', ['Doggo', 'Woofer'])[0]).toBe(dog);
   });
 });

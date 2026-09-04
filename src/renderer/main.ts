@@ -1,6 +1,7 @@
 import { assetNameFromUrl } from '../shared/assets';
+import { cleanAliases } from '../shared/notes-folder';
 import { chordOf, isCommandChord, keyLabel } from '../shared/keys';
-import { DEFAULT_SETTINGS, type Settings } from '../shared/settings';
+import { DEFAULT_SETTINGS, viewNamed, withView, type Settings } from '../shared/settings';
 import type { CliStatus, ExportKind, ExportRequest, ImportedFile, Note, NotesFile } from '../shared/types';
 import { keyMap, matchActions, type Action, type Match } from './actions';
 import { toggleFence } from './fences';
@@ -26,12 +27,15 @@ import {
   tagTree,
   titleOf,
   togglePin,
+  updateAliases,
   updateBody,
   updateTitle,
   wordCount,
   type TagNode,
 } from './notes';
 import { markdownToText } from './plaintext';
+import { embedsFrom } from '../core/embeds';
+import { unlinkedMentions, type Mention } from '../core/mentions';
 import { addTab, keepTabs, nthTab, showTab, shutTab, stepTab as stepTabStrip, type TabStrip } from './tabs';
 import {
   MIN_IMAGE_WIDTH,
@@ -55,6 +59,7 @@ import {
   rangeBetween,
   readEditor,
   renderEditor as renderEditorDom,
+  makeEmbed,
   makeLink,
   makeRule,
   serializeEditor,
@@ -69,7 +74,7 @@ import { absoluteTime, relativeTime } from './time';
 import { applyPlan, groupOf, redoGroup, undoGroup, type RefactorHost } from './apply-refactor';
 import { caretUsable, emptyJourney, forget, goBack, goForward, hashOf, leave, parseRecent, pruneRecent, visited, type Journey, type Place, type Visit } from './journey';
 import { createRefactorUi, type PickOptions } from './refactor-ui';
-import type { Plan } from '../core/refactor';
+import { planLinkMention, type Plan } from '../core/refactor';
 import type { SnapshotSummary } from '../shared/history';
 import type { ExternalChanges, RenderedExport, TrashedNote } from '../shared/types';
 // 0.13: templates, scheduled tasks, search operators, math and diagrams, related notes and the graph.
@@ -120,6 +125,7 @@ function paneEls(root: HTMLElement) {
     preview: q('preview'),
     backlinks: q('backlinks'),
     related: q('related'),
+    mentions: q('mentions'),
     imgHandle: q('imgHandle'),
     imgSize: q('imgSize'),
     dropLine: q('dropLine'),
@@ -156,6 +162,7 @@ const el = {
   search: $<HTMLInputElement>('search'),
   newBtn: $<HTMLButtonElement>('new'),
   tags: $('tags'),
+  views: $('views'),
   list: $('list'),
   count: $('count'),
   helpBtn: $<HTMLButtonElement>('help'),
@@ -270,6 +277,9 @@ const el = {
   },
   get related(): HTMLElement {
     return here().els.related;
+  },
+  get mentions(): HTMLElement {
+    return here().els.mentions;
   },
   get imgHandle(): HTMLElement {
     return here().els.imgHandle;
@@ -948,6 +958,87 @@ function drawTags(nodes: TagNode[], depth: number): void {
   }
 }
 
+/**
+ * The searches worth keeping, above the tags. A view is a name for a
+ * question the search box can already answer — `due:week todo:` — so
+ * clicking one simply types it, and everything downstream of the box
+ * (the list, the count, the operator legend) needs to know nothing new.
+ */
+function renderViews(): void {
+  const views = settings.views;
+  el.views.hidden = views.length === 0;
+  el.views.replaceChildren();
+  if (views.length === 0) return;
+  for (const view of views) {
+    const on = query.trim() === view.query;
+    const chip = document.createElement('button');
+    chip.className = `view${on ? ' on' : ''}`;
+    chip.type = 'button';
+    chip.setAttribute('aria-pressed', String(on));
+    chip.title = on ? 'Showing everything, again' : view.query;
+    const name = document.createElement('span');
+    name.className = 'view-name';
+    name.textContent = view.name;
+    chip.append(name);
+    chip.addEventListener('click', () => runView(on ? null : view.name));
+    el.views.append(chip);
+  }
+}
+
+/** Puts a saved view's query in the search box, or clears the box when the name is null. */
+function runView(name: string | null): void {
+  const view = name === null ? null : viewNamed(settings.views, name);
+  if (name !== null && !view) {
+    showStatus(`No saved search called “${name}”`, 3000);
+    return;
+  }
+  query = view?.query ?? '';
+  el.search.value = query;
+  tagFilter = null;
+  renderSearchOps();
+  const vis = visibleNotes();
+  if (vis.length > 0 && !vis.some((n) => n.id === ui.selectedId)) {
+    incidental = true;
+    select(vis[0].id);
+    incidental = false;
+  } else renderList();
+  if (view) showStatus(`${view.name}: ${view.query}`, 2500);
+}
+
+/** Saves the search in the box under a name, so one click asks it again. */
+async function saveView(): Promise<void> {
+  const q = query.trim();
+  if (!q) {
+    showStatus('Type a search first, then save it', 3000);
+    return;
+  }
+  const existing = settings.views.find((v) => v.query === q);
+  const name = await refactorUi.prompt('Name this search', existing?.name ?? q.slice(0, 24));
+  if (name === null || !name.trim()) return;
+  await saveSettings({ ...settings, views: withView(settings.views, name, q) });
+  renderList();
+  showStatus(`Saved as “${name.trim()}”`, 2500);
+}
+
+/** Takes a saved search off the rail. */
+function forgetView(): void {
+  if (settings.views.length === 0) {
+    showStatus('No saved searches yet', 2500);
+    return;
+  }
+  const items: PickItem[] = settings.views.map((v) => ({
+    label: v.name,
+    hint: v.query,
+    run: () => {
+      void saveSettings({ ...settings, views: settings.views.filter((o) => o.name !== v.name) }).then(() => {
+        renderList();
+        showStatus(`Forgot “${v.name}”`, 2500);
+      });
+    },
+  }));
+  openPicker('Which saved search to forget?', items);
+}
+
 function setTagFilter(tag: string | null): void {
   tagFilter = tag;
   const vis = visibleNotes();
@@ -987,6 +1078,7 @@ function emptyListMessage(): HTMLElement {
 }
 
 function renderList(): void {
+  renderViews();
   renderTags();
   const vis = visibleNotes();
   // Rebuilding the rows removes the one that has focus, and focus would fall
@@ -1108,7 +1200,7 @@ function renderPane(): void {
     // re-renders the whole article.
     const scroll = el.preview.scrollTop;
     el.preview.innerHTML = n.body.trim()
-      ? renderMarkdown(n.body)
+      ? renderMarkdown(n.body, embedsFrom(notes))
       : '<p class="preview-empty">Nothing to preview yet.</p>';
     liveTaskBoxes();
     liveCodeBlocks();
@@ -1119,6 +1211,7 @@ function renderPane(): void {
   }
   renderBacklinks();
   renderRelated();
+  renderMentions();
   renderOutline();
   syncChipUi();
   // The caret is in one pane only; the others have nothing to follow.
@@ -1207,12 +1300,72 @@ function renderRelated(): void {
 }
 
 /**
+ * Notes that say this one's name — its title, or a name it answers to — in
+ * plain words, without linking to it. A third strip under the other two,
+ * because it answers the same question again: what belongs with this, that
+ * nobody has joined up yet. Each chip goes to the note; the mark beside it
+ * makes the link, as one undoable change.
+ */
+function renderMentions(): void {
+  const n = selected();
+  const found = n ? unlinkedMentions(notes, n.id, 8) : [];
+  el.mentions.hidden = found.length === 0 || el.editorWrap.hidden;
+  el.mentions.replaceChildren();
+  if (!n || found.length === 0) return;
+  const label = document.createElement('span');
+  label.className = 'backlinks-label u';
+  label.textContent = 'Mentioned in';
+  el.mentions.append(label);
+  for (const m of found) {
+    const chip = document.createElement('span');
+    chip.className = 'backlink mention';
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'mention-name';
+    open.textContent = titleOf(m.note);
+    open.title = m.text;
+    open.addEventListener('click', () => {
+      select(m.note.id);
+      openAtLine(m.note.id, m.line);
+    });
+    const join = document.createElement('button');
+    join.type = 'button';
+    join.className = 'mention-link u';
+    join.textContent = 'Link';
+    join.title = `Turn “${m.name}” in “${titleOf(m.note)}” into a link to this note`;
+    join.addEventListener('click', () => void linkMentionHere(m));
+    chip.append(open, join);
+    el.mentions.append(chip);
+  }
+}
+
+/** Joins one mentioning note up to this one, as a Plan: previewed by its sentence, undone in one step. */
+async function linkMentionHere(m: Mention): Promise<void> {
+  const n = selected();
+  if (!n) return;
+  const planned = planLinkMention(notes, m.note.id, n.id, m);
+  if (!planned.ok) {
+    showStatus(planned.message, 3000);
+    return;
+  }
+  const done = await applyPlanHere(planned.plan);
+  if (!done.ok) {
+    showStatus(done.message, 3000);
+    return;
+  }
+  afterPlan(planned.plan);
+  showStatus(`Linked from “${titleOf(m.note)}” · Ctrl+Z undoes it`, 3500);
+}
+
+/**
  * Follows a [[link]]: to the note whose title it names, or to a new note with
  * that title. Writing the link is how a note gets started, the way it works
  * in every app that has them.
  */
 function openLink(target: string): void {
-  const name = target.trim();
+  // An embed names a section as `Note#Heading`; the note is what a click opens.
+  const hash = target.indexOf('#');
+  const name = (hash > 0 && !noteForLink(notes, target.trim()) ? target.slice(0, hash) : target).trim();
   if (!name) return;
   const hit = noteForLink(notes, name);
   if (hit) {
@@ -1239,12 +1392,19 @@ function convertLinkOnClose(): void {
   const before = (pos.node.textContent ?? '').slice(0, pos.offset);
   const m = LINK_JUST_TYPED.exec(before);
   if (!m || !m[1].trim()) return;
+  // A bang in front makes it an embed: the note itself, here, in the preview.
+  const bang = before.endsWith(`!${m[0]}`);
   const range = document.createRange();
-  range.setStart(pos.node, pos.offset - m[0].length);
+  range.setStart(pos.node, pos.offset - m[0].length - (bang ? 1 : 0));
   range.setEnd(pos.node, pos.offset);
   range.deleteContents();
   const typed = linkParts(m[1]);
-  const chip = makeLink(typed.target, typed.alias);
+  // A name that is only some note's alias is written the way it will be read:
+  // `[[Dog|Doggo]]`, so the file says which note it means and the page still
+  // says what the writer typed — as Obsidian writes an alias reference.
+  const named = !bang && !typed.alias ? noteForLink(notes, typed.target) : null;
+  const settled = named && linkKey(titleOf(named)) !== linkKey(typed.target) ? { target: titleOf(named), alias: typed.target } : typed;
+  const chip = bang ? makeEmbed(typed.target) : makeLink(settled.target, settled.alias);
   range.insertNode(chip);
   caretAfter(chip);
 }
@@ -2526,7 +2686,7 @@ const fileNameOf = (p: string): string => p.split(/[\\/]/).pop() ?? p;
  */
 async function renderedExport(n: Note, look: 'ink' | 'paper' = 'ink'): Promise<RenderedExport> {
   const body = exportBody(n);
-  let html = renderMarkdown(body);
+  let html = renderMarkdown(body, embedsFrom(notes));
   if (hasDiagrams(html)) {
     const holder = document.createElement('div');
     holder.innerHTML = html;
@@ -3070,7 +3230,7 @@ async function saveSettings(next: Settings): Promise<void> {
   renderSettings();
   try {
     const stored = await window.notesApi.setSettings(next);
-    settings = { closeToTray: stored.closeToTray, hotkey: stored.hotkey, captureHotkey: stored.captureHotkey, reminders: stored.reminders };
+    settings = { closeToTray: stored.closeToTray, hotkey: stored.hotkey, captureHotkey: stored.captureHotkey, reminders: stored.reminders, views: stored.views };
     const notes: Partial<Record<HotkeyRow['key'], string>> = {};
     for (const row of hotkeyRows) if (stored[row.failed]) notes[row.key] = 'Another program already uses that combination.';
     renderSettings(notes);
@@ -4485,6 +4645,34 @@ function travel(dir: -1 | 1): void {
   el.editor.scrollTop = to.scroll;
 }
 
+/** One of the saved searches, chosen by name. */
+function pickView(): void {
+  const items: PickItem[] = settings.views.map((v) => ({ label: v.name, hint: v.query, run: () => runView(v.name) }));
+  openPicker('Which saved search?', items);
+}
+
+/**
+ * The other names this note answers to, typed as a comma-separated line —
+ * which is how they are stored, so there is nothing to learn twice. They go
+ * into the note's own front matter, where Obsidian keeps them too.
+ */
+async function editAliases(): Promise<void> {
+  const n = selected();
+  if (!n) return;
+  keepCaret();
+  const typed = await refactorUi.prompt(`Other names for “${titleOf(n)}”, separated by commas`, (n.aliases ?? []).join(', '));
+  returnToEditor();
+  if (typed === null) return;
+  const next = cleanAliases(typed.split(','));
+  const before = n.aliases ?? [];
+  if (before.join(' ') === next.join(' ')) return;
+  notes = updateAliases(notes, n.id, next);
+  scheduleSave();
+  renderList();
+  renderEditor();
+  showStatus(next.length === 0 ? 'Other names cleared' : `Also known as ${next.join(', ')}`, 3000);
+}
+
 /** A note to open beside this one, most recently edited first. */
 function pickForTab(): void {
   const open = new Set(panes[paneAt]?.tabs ?? []);
@@ -4657,6 +4845,41 @@ const ACTIONS: Action[] = [
   },
   { id: 'prev', label: 'Previous note', group: 'Notes', chord: 'ctrl+arrowup', run: () => step(-1) },
   { id: 'next', label: 'Next note', group: 'Notes', chord: 'ctrl+arrowdown', run: () => step(1) },
+  {
+    id: 'aliases',
+    label: 'Other names for this note…',
+    hint: 'A [[link]] naming one of them finds this note, and so does a search',
+    group: 'Notes',
+    chord: 'ctrl+shift+a',
+    terms: 'alias aka also known as nickname',
+    enabled: () => hasNote(),
+    run: () => void editAliases(),
+  },
+  {
+    id: 'view-save',
+    label: 'Save this search…',
+    hint: 'Names the search in the box and keeps it above the tags',
+    group: 'Notes',
+    terms: 'view saved search filter keep',
+    run: () => void saveView(),
+  },
+  {
+    id: 'view-open',
+    label: 'Saved searches…',
+    group: 'Notes',
+    chord: 'ctrl+shift+y',
+    terms: 'view saved search filter',
+    enabled: () => settings.views.length > 0,
+    run: pickView,
+  },
+  {
+    id: 'view-forget',
+    label: 'Forget a saved search…',
+    group: 'Notes',
+    terms: 'view saved search remove delete',
+    enabled: () => settings.views.length > 0,
+    run: forgetView,
+  },
   {
     id: 'tab-new',
     label: 'Open a note in a new tab…',
@@ -5575,7 +5798,7 @@ const cliHandlers: Record<string, CliHandler> = {
     return { path };
   },
   'render.html': async ({ body }: { body: string }) => {
-    let html = renderMarkdown(body);
+    let html = renderMarkdown(body, embedsFrom(notes));
     if (hasDiagrams(html)) {
       const holder = document.createElement('div');
       holder.innerHTML = html;

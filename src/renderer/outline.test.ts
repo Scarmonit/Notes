@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { headingAt, headingsIn } from './outline';
+import { headingAt, headingsIn, sectionOf } from './outline';
 
 describe('headingsIn', () => {
   it('lists ATX headings with their level and line', () => {
@@ -40,5 +40,30 @@ describe('headingAt', () => {
 describe('headings that end in #', () => {
   it('keeps a # that is part of the last word and drops only a spaced closing run', () => {
     expect(headingsIn('# C#\n## Learning F#\n### Three ###\n#### Four #').map((h) => h.text)).toEqual(['C#', 'Learning F#', 'Three', 'Four']);
+  });
+});
+
+describe('sectionOf', () => {
+  const body = '# Top\n\nintro\n\n## Plans\n\nfirst\n\n### Later\n\nmuch later\n\n## Money\n\nnone';
+
+  it('takes a heading and everything under it, subsections included', () => {
+    expect(sectionOf(body, 'Plans')).toBe('## Plans\n\nfirst\n\n### Later\n\nmuch later');
+  });
+
+  it('stops at the next heading of the same level or above', () => {
+    expect(sectionOf(body, 'Later')).toBe('### Later\n\nmuch later');
+    expect(sectionOf(body, 'Money')).toBe('## Money\n\nnone');
+  });
+
+  it('reads the last section to the end of the note', () => {
+    expect(sectionOf('# One\n\na\n\n# Two\n\nb', 'Two')).toBe('# Two\n\nb');
+  });
+
+  it('is nothing when no heading says that', () => {
+    expect(sectionOf(body, 'Nowhere')).toBeNull();
+  });
+
+  it('ignores capitals and stray spaces, as a link does', () => {
+    expect(sectionOf(body, '  plans ')).toBe('## Plans\n\nfirst\n\n### Later\n\nmuch later');
   });
 });

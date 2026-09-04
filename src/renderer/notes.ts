@@ -1,3 +1,4 @@
+import { cleanAliases } from '../shared/notes-folder';
 import type { Note } from '../shared/types';
 
 /** Pure operations on the in-memory note list. The UI in main.ts calls these. */
@@ -195,18 +196,56 @@ export function linksIn(body: string): string[] {
 /** The markdown for a link to a note title, shown as its alias when it has one. */
 export const linkMarkdown = (target: string, alias?: string): string => `[[${target.trim()}${alias?.trim() ? `|${alias.trim()}` : ''}]]`;
 
-/** The note a link points at: the one whose title it names, or nothing. */
-export function noteForLink(notes: Note[], target: string): Note | null {
-  const want = linkKey(target);
-  return notes.find((n) => linkKey(titleOf(n)) === want) ?? null;
+/**
+ * Every name a note answers to: its title first, then its aliases. A link, a
+ * search or the command line naming any of them means this note.
+ */
+export function namesOf(note: Pick<Note, 'body' | 'title' | 'aliases'>): string[] {
+  return [titleOf(note), ...(note.aliases ?? [])].filter((n) => n.trim());
 }
 
-/** The notes that link to this one, in the list's own order. */
+/** True when one of the note's names is what a link is asking for. */
+export function answersTo(note: Pick<Note, 'body' | 'title' | 'aliases'>, target: string): boolean {
+  const want = linkKey(target);
+  return namesOf(note).some((n) => linkKey(n) === want);
+}
+
+/**
+ * The note a link points at: the one whose title it names, or failing that
+ * the one that lists the name as an alias. Title beats alias, always, so a
+ * note cannot be shadowed by another note's nickname for something.
+ */
+export function noteForLink(notes: Note[], target: string): Note | null {
+  const want = linkKey(target);
+  return notes.find((n) => linkKey(titleOf(n)) === want) ?? notes.find((n) => (n.aliases ?? []).some((a) => linkKey(a) === want)) ?? null;
+}
+
+/**
+ * The notes that link to this one — by its title or by any name it answers
+ * to — in the list's own order. A link counts only when it would actually
+ * land here, so what the strip lists and what a click follows agree; the
+ * answer for each distinct target is worked out once.
+ */
 export function backlinksOf(notes: Note[], id: string): Note[] {
-  const note = notes.find((n) => n.id === id);
-  if (!note) return [];
-  const title = linkKey(titleOf(note));
-  return notes.filter((n) => n.id !== id && linksIn(n.body).some((t) => linkKey(t) === title));
+  if (!notes.some((n) => n.id === id)) return [];
+  const landed = new Map<string, string | null>();
+  const pointsHere = (target: string): boolean => {
+    const key = linkKey(target);
+    if (!landed.has(key)) landed.set(key, noteForLink(notes, target)?.id ?? null);
+    return landed.get(key) === id;
+  };
+  return notes.filter((n) => n.id !== id && linksIn(n.body).some(pointsHere));
+}
+
+/** Sets or clears the other names a note answers to. */
+export function updateAliases(notes: Note[], id: string, aliases: string[], now = Date.now()): Note[] {
+  const clean = cleanAliases(aliases);
+  return notes.map((n) => {
+    if (n.id !== id) return n;
+    if ((n.aliases ?? []).join('\u0000') === clean.join('\u0000')) return n;
+    const { aliases: _old, ...rest } = n;
+    return clean.length > 0 ? { ...rest, aliases: clean, updatedAt: now } : { ...rest, updatedAt: now };
+  });
 }
 
 /**
@@ -222,7 +261,7 @@ export function searchNotes(notes: Note[], query: string, tag: string | null = n
     // A parent tag stands for everything filed under it, so #wow finds
     // #wow/commands as well.
     if (tag && !tags.some((t) => tagMatches(t, tag))) return false;
-    const hay = `${n.title ?? ''}\n${n.body}`.toLowerCase();
+    const hay = `${n.title ?? ''}\n${(n.aliases ?? []).join('\n')}\n${n.body}`.toLowerCase();
     return terms.every((t) => (t.length > 1 && t.startsWith('#') ? tags.some((x) => x.startsWith(t.slice(1))) : hay.includes(t)));
   });
 }

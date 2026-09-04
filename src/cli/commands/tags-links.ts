@@ -2,7 +2,11 @@ import type { Command } from 'commander';
 import { CliError } from '../../core/backend';
 import { EXIT } from '../../core/ipc-protocol';
 import { graphOf, neighbourhood, relatedNotes, toDot } from '../../core/related';
-import { allTags, backlinksOf, linksIn, noteForLink, tagTree, tagsOf, titleOf, updateBody, type TagNode } from '../../renderer/notes';
+import { unlinkedMentions } from '../../core/mentions';
+import { planLinkMention } from '../../core/refactor';
+import { allTags, backlinksOf, linksIn, noteForLink, tagTree, tagsOf, titleOf, updateAliases, updateBody, type TagNode } from '../../renderer/notes';
+import { cleanAliases } from '../../shared/notes-folder';
+import { viewNamed, withView } from '../../shared/settings';
 import type { Note } from '../../shared/types';
 import { describe, type Ctx } from '../context';
 import { save } from './notes';
@@ -133,6 +137,124 @@ export function register(program: Command, use: () => Ctx): void {
         { key: 'id', label: 'id', format: (v) => String(v).slice(0, 8), style: 'dim' },
         { key: 'title', label: 'title', style: 'bold' },
       ]);
+    });
+
+  program
+    .command('alias')
+    .description("the other names a note answers to: a [[link]] naming one finds the note, and so does a search")
+    .argument('<note>', 'id, title, title prefix, filename, or - for stdin')
+    .argument('[names...]', 'the names to set, replacing any it had; none prints the ones it has')
+    .option('--add', 'keep the names it has and add these')
+    .option('--clear', 'take every other name away')
+    .action(async (selector: string, names: string[], opts: { add?: boolean; clear?: boolean }) => {
+      const c = ctx();
+      const backend = await c.backend();
+      const notes = await backend.notes();
+      const note = await c.note(selector, notes);
+      if (!opts.clear && names.length === 0) {
+        const rows = (note.aliases ?? []).map((name) => ({ name }));
+        c.out.rows(rows, [{ key: 'name', label: 'also known as', style: 'bold' }]);
+        if (rows.length === 0) c.out.message(`'${titleOf(note)}' answers to nothing but its title`);
+        return;
+      }
+      // A name split on commas as well as spaces, so the window's own line works here.
+      const asked = opts.clear ? [] : cleanAliases([...(opts.add ? (note.aliases ?? []) : []), ...names.flatMap((n) => n.split(','))]);
+      const next = updateAliases(notes, note.id, asked).find((n) => n.id === note.id);
+      if (!next) throw new CliError('That note is gone', EXIT.notFound);
+      await save(c, next);
+      c.out.value({ id: next.id, title: titleOf(next), aliases: next.aliases ?? [] }, () =>
+        asked.length === 0 ? `'${titleOf(next)}' answers to nothing but its title` : `'${titleOf(next)}' also answers to ${asked.join(', ')}`,
+      );
+    });
+
+  program
+    .command('mentions')
+    .description('the notes that say this one\'s name in plain words without linking to it (what the window lists under Related)')
+    .argument('<note>', 'id, title, title prefix, filename, or - for stdin')
+    .option('--link <note>', 'turn that note\'s first mention into a [[link]] to this one')
+    .option('--link-all', 'link the first mention in every note that has one')
+    .option('--dry-run', 'say what would change, and change nothing')
+    .action(async (selector: string, opts: { link?: string; linkAll?: boolean; dryRun?: boolean }) => {
+      const c = ctx();
+      const backend = await c.backend();
+      const notes = await backend.notes();
+      const note = await c.note(selector, notes);
+      const found = unlinkedMentions(notes, note.id, 200);
+      if (!opts.link && !opts.linkAll) {
+        const rows = found.map((m) => ({ id: m.note.id, title: titleOf(m.note), name: m.name, line: m.line + 1, text: m.text }));
+        c.out.rows(rows, [
+          { key: 'id', label: 'id', format: (v) => String(v).slice(0, 8), style: 'dim' },
+          { key: 'title', label: 'title', style: 'bold' },
+          { key: 'line', label: 'line', align: 'right', style: 'dim' },
+          { key: 'text', label: 'saying', shrink: true, style: 'dim' },
+        ]);
+        if (rows.length === 0) c.out.message(`Nothing mentions '${titleOf(note)}' without linking to it`);
+        return;
+      }
+      const only = opts.linkAll ? null : await c.note(opts.link ?? '', notes);
+      const wanted = only ? found.filter((m) => m.note.id === only.id) : found;
+      if (wanted.length === 0) throw new CliError(`No unlinked mention of '${titleOf(note)}' there`, EXIT.notFound);
+      for (const m of wanted) {
+        // Each in its own Plan, planned against the notes as they now stand:
+        // one rewrite moves the offsets of everything after it in that note.
+        const fresh = await backend.notes();
+        const again = unlinkedMentions(fresh, note.id, 200).find((x) => x.note.id === m.note.id);
+        if (!again) continue;
+        const planned = planLinkMention(fresh, again.note.id, note.id, again);
+        if (!planned.ok) throw new CliError(planned.message, EXIT.usage);
+        if (opts.dryRun) {
+          c.out.value(planned.plan, () => planned.plan.sentence);
+          continue;
+        }
+        await backend.applyPlan(planned.plan);
+        c.out.value({ id: again.note.id, title: titleOf(again.note), linked: again.name }, () => planned.plan.sentence);
+      }
+    });
+
+  program
+    .command('views')
+    .description('the saved searches: a name for a query the search box can ask')
+    .action(async () => {
+      const c = ctx();
+      const views = (await (await c.backend()).settingsGet()).views;
+      c.out.rows(views.map((v) => ({ ...v })), [
+        { key: 'name', label: 'name', style: 'bold' },
+        { key: 'query', label: 'search', shrink: true, style: 'dim' },
+      ]);
+      if (views.length === 0) c.out.message('No saved searches yet: `notes view save Due "due:week todo:"`');
+    });
+
+  const view = program.command('view').description('save, use or forget a named search');
+
+  view
+    .command('save')
+    .description('name a search and keep it')
+    .argument('<name>', 'what to call it')
+    .argument('<query...>', "the search: the same grammar as the box — todo: due:today tag:wow /regex/")
+    .action(async (name: string, query: string[]) => {
+      const c = ctx();
+      const backend = await c.backend();
+      const settings = await backend.settingsGet();
+      const next = withView(settings.views, name, query.join(' '));
+      if (next.length === settings.views.length && !viewNamed(settings.views, name)) throw new CliError('Give the search a name and something to search for', EXIT.usage);
+      await backend.settingsSet({ ...settings, views: next });
+      const saved = viewNamed(next, name);
+      c.out.value(saved, () => `Saved '${saved?.name}' as ${saved?.query}`);
+    });
+
+  view
+    .command('rm')
+    .alias('forget')
+    .description('take a saved search off the list')
+    .argument('<name>', 'its name, or a prefix only it starts')
+    .action(async (name: string) => {
+      const c = ctx();
+      const backend = await c.backend();
+      const settings = await backend.settingsGet();
+      const found = viewNamed(settings.views, name);
+      if (!found) throw new CliError(`No saved search called "${name}"`, EXIT.notFound);
+      await backend.settingsSet({ ...settings, views: settings.views.filter((v) => v.name !== found.name) });
+      c.out.value(found, () => `Forgot '${found.name}'`);
     });
 
   program

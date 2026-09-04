@@ -441,3 +441,36 @@ describe('code fences in the editor', () => {
     expect(serializeEditor(div)).toBe(body);
   });
 });
+
+describe('embeds in the editor', () => {
+  it('reads `![[Note]]` as an embed, not as a link with a bang in front', () => {
+    expect(bodyTokens('![[Plans]]')).toEqual([{ kind: 'embed', target: 'Plans', start: 0, end: 10 }]);
+  });
+
+  it('keeps the section an embed names', () => {
+    expect(bodyTokens('![[Plans#Order]]')).toEqual([{ kind: 'embed', target: 'Plans#Order', start: 0, end: 16 }]);
+  });
+
+  it('still reads a link with no bang as a link', () => {
+    expect(bodyTokens('[[Plans]]')).toEqual([{ kind: 'link', target: 'Plans', start: 0, end: 9 }]);
+  });
+
+  it('leaves the index of an image where it was: an embed is a later kind', () => {
+    const body = `![a](note-asset://${NAME}) then ![[Plans]]`;
+    expect(imageTokens(body)).toHaveLength(1);
+    expect(imageTokens(body)[0].start).toBe(0);
+  });
+
+  it('draws an embed as its own chip and writes it back as it was', () => {
+    const div = editor();
+    renderEditor(div, 'before\n![[Plans#Order]]\nafter');
+    const chip = div.querySelector('.inline-embed');
+    expect(chip).not.toBeNull();
+    expect(chip?.getAttribute('data-link')).toBe('Plans#Order');
+    expect(serializeEditor(div)).toBe('before\n![[Plans#Order]]\nafter');
+  });
+
+  it('leaves an embed inside a code fence as the characters typed', () => {
+    expect(bodyTokens('```\n![[Plans]]\n```')).toEqual([]);
+  });
+});

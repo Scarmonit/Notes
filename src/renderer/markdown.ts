@@ -1,5 +1,5 @@
 import DOMPurify from 'dompurify';
-import { parseMarkdown } from '../shared/markdown-core';
+import { parseMarkdown, type EmbedSource } from '../shared/markdown-core';
 
 /**
  * The preview's HTML: the shared markdown core, then DOMPurify. Math comes
@@ -30,8 +30,8 @@ DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
 const ALLOWED_URI = /^(?:(?:https?|mailto|note-asset):|[^a-z]|[a-z+.-]+(?:[^a-z+.:-]|$))/i;
 
 /** Markdown source to sanitized HTML, safe to assign to innerHTML. */
-export function renderMarkdown(source: string): string {
-  const html = parseMarkdown(source);
+export function renderMarkdown(source: string, embeds?: EmbedSource): string {
+  const html = parseMarkdown(source, embeds);
   return DOMPurify.sanitize(html, {
     USE_PROFILES: { html: true, mathMl: true, svg: true, svgFilters: true },
     ADD_ATTR: ['target', 'data-diagram', 'data-link'],

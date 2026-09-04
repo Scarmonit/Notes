@@ -36,6 +36,26 @@ export function headingsIn(body: string): Heading[] {
   return out;
 }
 
+/**
+ * The lines a heading owns: the heading itself and everything under it, down
+ * to the next heading at the same level or above. A `### Notes` under
+ * `## Plans` belongs to Plans, which is what "that section" means to a reader
+ * — and to an embed asking for it by name. Null when no heading says that.
+ */
+export function sectionOf(body: string, heading: string): string | null {
+  const headings = headingsIn(body);
+  const want = heading.trim().toLowerCase();
+  const at = headings.findIndex((h) => h.text.toLowerCase() === want);
+  if (at < 0) return null;
+  const start = headings[at];
+  const next = headings.slice(at + 1).find((h) => h.level <= start.level);
+  const lines = body.split('\n');
+  return lines
+    .slice(start.line, next ? next.line : lines.length)
+    .join('\n')
+    .replace(/\n+$/, '');
+}
+
 /** The index of the heading the caret's line falls under: the last one at or above it, or -1. */
 export function headingAt(headings: Heading[], line: number): number {
   let at = -1;

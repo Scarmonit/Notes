@@ -24,7 +24,7 @@ const NAME = '[a-f0-9]{8,32}\\.(?:png|jpe?g|gif|webp|bmp)';
 // one pass over the body. A new kind goes on the end: imageTokens() filters
 // this list, so the index of an image must not move when a kind is added.
 const TOKEN = new RegExp(
-  `!\\[([^\\]]*)\\]\\(note-asset:\\/\\/(${NAME})\\)|<img\\b([^<>]*)>|^[ \\t]{0,3}(-{3,}|\\*{3,}|_{3,})[ \\t]*$|${LINK_PATTERN}`,
+  `!\\[([^\\]]*)\\]\\(note-asset:\\/\\/(${NAME})\\)|<img\\b([^<>]*)>|^[ \\t]{0,3}(-{3,}|\\*{3,}|_{3,})[ \\t]*$|${LINK_PATTERN}|!${LINK_PATTERN}`,
   'gim',
 );
 
@@ -97,7 +97,8 @@ export interface Span {
 export type BodyToken =
   | ({ kind: 'image' } & ImageRef & Span)
   | ({ kind: 'rule'; marker: string } & Span)
-  | ({ kind: 'link'; target: string; alias?: string } & Span);
+  | ({ kind: 'link'; target: string; alias?: string } & Span)
+  | ({ kind: 'embed'; target: string } & Span);
 
 /** Every image, section rule and note link in a body, in order, with the span of text each occupies. */
 export function bodyTokens(body: string): BodyToken[] {
@@ -117,6 +118,13 @@ export function bodyTokens(body: string): BodyToken[] {
     if (match[5] !== undefined) {
       const { target, alias } = linkParts(match[5]);
       if (target) out.push(alias ? { kind: 'link', target, alias, ...span } : { kind: 'link', target, ...span });
+      continue;
+    }
+    // An embed: the same brackets with a bang in front, which puts the note
+    // it names inside this one when the preview draws it.
+    if (match[6] !== undefined) {
+      const target = match[6].trim();
+      if (target) out.push({ kind: 'embed', target, ...span });
       continue;
     }
     const ref = refOf(match);
@@ -173,6 +181,20 @@ export function isRule(node: unknown): node is HTMLHRElement {
  * written back is the title the writer meant even if the chip is restyled.
  */
 const LINK_CLASS = 'inline-link';
+const EMBED_CLASS = 'inline-embed';
+
+/**
+ * An embed chip: `![[Note]]`, the note itself in the preview and a chip here.
+ * It wears the link chip's clothes with a mark of its own, so a click still
+ * goes to the note it names.
+ */
+export function makeEmbed(target: string): HTMLSpanElement {
+  const span = makeLink(target);
+  span.classList.add(EMBED_CLASS);
+  span.dataset.embed = '';
+  span.title = `Show “${target}” here — click to go there`;
+  return span;
+}
 
 export function makeLink(target: string, alias?: string): HTMLSpanElement {
   const span = document.createElement('span');
@@ -265,7 +287,15 @@ export function renderEditor(root: HTMLElement, body: string): void {
   let last = 0;
   for (const tok of bodyTokens(body)) {
     if (tok.start > last) doc.appendChild(document.createTextNode(body.slice(last, tok.start)));
-    doc.appendChild(tok.kind === 'rule' ? makeRule(tok.marker) : tok.kind === 'link' ? makeLink(tok.target, tok.alias) : makeChip(tok));
+    doc.appendChild(
+      tok.kind === 'rule'
+        ? makeRule(tok.marker)
+        : tok.kind === 'link'
+          ? makeLink(tok.target, tok.alias)
+          : tok.kind === 'embed'
+            ? makeEmbed(tok.target)
+            : makeChip(tok),
+    );
     last = tok.end;
   }
   if (last < body.length) doc.appendChild(document.createTextNode(body.slice(last)));
@@ -367,7 +397,7 @@ function analyze(root: HTMLElement, keepTrailing = false): Analysis {
       // A link chip is a span, and a span is also what the browser makes on
       // its own, so it is recognised by its class before its tag is looked at.
       if (elm.classList.contains(LINK_CLASS)) {
-        const md = linkMarkdown(linkTargetOf(elm), elm.dataset.alias);
+        const md = elm.dataset.embed === undefined ? linkMarkdown(linkTargetOf(elm), elm.dataset.alias) : `![[${linkTargetOf(elm)}]]`;
         block(elm, md.length, wrapped);
         out += md;
         return;

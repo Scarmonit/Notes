@@ -137,9 +137,15 @@ describe('settings', () => {
   it('round-trips through settings.json and falls back to defaults', async () => {
     const s = createSettings(root);
     expect((await s.loadSettings()).hotkey).toBe('ctrl+alt+n');
-    await s.saveSettings({ closeToTray: true, hotkey: null, captureHotkey: 'ctrl+alt+j', reminders: true });
+    await s.saveSettings({ closeToTray: true, hotkey: null, captureHotkey: 'ctrl+alt+j', reminders: true, views: [{ name: 'Due', query: 'due:week todo:' }] });
     const again = createSettings(root);
-    expect(await again.loadSettings()).toEqual({ closeToTray: true, hotkey: null, captureHotkey: 'ctrl+alt+j', reminders: true });
+    expect(await again.loadSettings()).toEqual({
+      closeToTray: true,
+      hotkey: null,
+      captureHotkey: 'ctrl+alt+j',
+      reminders: true,
+      views: [{ name: 'Due', query: 'due:week todo:' }],
+    });
   });
 });
 

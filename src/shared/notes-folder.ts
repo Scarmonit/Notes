@@ -38,19 +38,81 @@ export interface ParsedNoteFile {
 
 const KNOWN = new Set(['id', 'title', 'created', 'updated', 'pinned', 'deleted']);
 
-/** The front-matter block at the top of a file, and the text after it. */
-function splitFrontMatter(text: string): { fields: Map<string, string>; extra: string[]; body: string } | null {
+/** Keys whose value may be a YAML list, written on the line or indented under it. */
+const LISTS = new Set(['aliases']);
+
+/**
+ * The front-matter block at the top of a file, and the text after it.
+ *
+ * Lines that are not `key: value`, and keys the app does not know, are kept
+ * as they were: front matter written by another program — Obsidian's, most
+ * likely — must survive a rewrite untouched. The one exception is a list key
+ * the app does know, whose indented `- item` lines belong to it rather than
+ * to that pile.
+ */
+function splitFrontMatter(text: string): { fields: Map<string, string>; lists: Map<string, string[]>; extra: string[]; body: string } | null {
   if (!text.startsWith('---\n') && !text.startsWith('---\r\n')) return null;
   const m = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
   if (!m) return null;
   const fields = new Map<string, string>();
+  const lists = new Map<string, string[]>();
   const extra: string[] = [];
-  for (const line of m[1].split(/\r?\n/)) {
+  const rows = m[1].split(/\r?\n/);
+  for (let i = 0; i < rows.length; i++) {
+    const line = rows[i];
     const kv = /^([A-Za-z_][\w-]*)\s*:\s*(.*)$/.exec(line);
-    if (kv && KNOWN.has(kv[1])) fields.set(kv[1], kv[2].trim());
+    if (kv && LISTS.has(kv[1])) {
+      const items = kv[2].trim() ? inlineList(kv[2].trim()) : [];
+      // An empty value opens a block list: the indented `- item` lines below it.
+      while (items.length === 0 || !kv[2].trim()) {
+        const next = /^[ \t]*-[ \t]+(.*)$/.exec(rows[i + 1] ?? '');
+        if (!next) break;
+        i++;
+        const item = unquote(next[1].trim());
+        if (item) items.push(item);
+      }
+      lists.set(kv[1], items);
+    } else if (kv && KNOWN.has(kv[1])) fields.set(kv[1], kv[2].trim());
     else if (line.trim()) extra.push(line);
   }
-  return { fields, extra, body: text.slice(m[0].length) };
+  return { fields, lists, extra, body: text.slice(m[0].length) };
+}
+
+/** `[a, b]` or a bare `a, b`, as YAML writes a list on one line. */
+function inlineList(value: string): string[] {
+  const inner = value.startsWith('[') && value.endsWith(']') ? value.slice(1, -1) : value;
+  return splitOutsideQuotes(inner)
+    .map((part) => unquote(part.trim()))
+    .filter(Boolean);
+}
+
+/** Splits on commas, leaving the ones inside a quoted item alone. */
+function splitOutsideQuotes(text: string): string[] {
+  const out: string[] = [];
+  let at = 0;
+  let quote = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === quote && text[i - 1] !== '\\') quote = '';
+    } else if (c === '"' || c === "'") quote = c;
+    else if (c === ',') {
+      out.push(text.slice(at, i));
+      at = i + 1;
+    }
+  }
+  out.push(text.slice(at));
+  return out;
+}
+
+/** The names a note answers to besides its title, cleaned of blanks and repeats. */
+export function cleanAliases(names: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const raw of names) {
+    const name = raw.trim();
+    if (name && !out.some((n) => n.toLowerCase() === name.toLowerCase())) out.push(name);
+  }
+  return out;
 }
 
 /** A front-matter string value: quoted the way it was written, or bare. */
@@ -98,6 +160,8 @@ export function parseNoteFile(text: string, facts: FileFacts): ParsedNoteFile {
   if (explicit) note.title = explicit;
   else if (!split && facts.name.trim()) note.title = facts.name.trim();
   if (fields.get('pinned') === 'true') note.pinned = true;
+  const aliases = cleanAliases(split?.lists.get('aliases') ?? []);
+  if (aliases.length > 0) note.aliases = aliases;
   const out: ParsedNoteFile = { note, extra: split?.extra ?? [], needsWrite: !split || !fields.get('id')?.trim() };
   const deleted = timeOf(fields.get('deleted'));
   if (deleted !== null) out.deletedAt = deleted;
@@ -110,6 +174,10 @@ const iso = (t: number): string => new Date(t).toISOString();
 export function formatNoteFile(note: Note, extra: string[] = [], deletedAt?: number): string {
   const lines = ['---', `id: ${note.id}`];
   if (note.title?.trim()) lines.push(`title: ${JSON.stringify(note.title.trim())}`);
+  const aliases = cleanAliases(note.aliases ?? []);
+  // On one line, in brackets, which is how Obsidian writes them and what
+  // every YAML reader understands.
+  if (aliases.length > 0) lines.push(`aliases: [${aliases.map((a) => (/[,[\]"':#]/.test(a) ? JSON.stringify(a) : a)).join(', ')}]`);
   lines.push(`created: ${iso(note.createdAt)}`, `updated: ${iso(note.updatedAt)}`);
   if (note.pinned) lines.push('pinned: true');
   if (deletedAt !== undefined) lines.push(`deleted: ${iso(deletedAt)}`);

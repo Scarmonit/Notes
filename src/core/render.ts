@@ -1,4 +1,6 @@
 import { parseMarkdown } from '../shared/markdown-core';
+import { embedsFrom } from './embeds';
+import type { Note } from '../shared/types';
 
 /**
  * Rendering for the command line with the app closed: the same markdown
@@ -8,6 +10,6 @@ import { parseMarkdown } from '../shared/markdown-core';
  * as their source here — mermaid needs a browser to draw — and are drawn
  * when the export goes through the running app instead.
  */
-export function renderHtmlOffline(body: string): string {
-  return parseMarkdown(body);
+export function renderHtmlOffline(body: string, notes: Note[] = []): string {
+  return parseMarkdown(body, embedsFrom(notes));
 }

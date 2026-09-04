@@ -33,6 +33,8 @@
         </div>
         <!-- The search operators, on a line under the box while one is being typed. -->
         <p id="search-ops" class="search-ops u" hidden></p>
+        <!-- Saved searches: a name for a question the box can already ask. -->
+        <div id="views" class="views" role="group" aria-label="Saved searches" hidden></div>
         <div id="tags" class="tags" role="group" aria-label="Tags" hidden></div>
         <div id="list" class="list" role="listbox" aria-label="Notes" tabindex="-1"></div>
         <div class="sidebar-foot">
@@ -144,6 +146,8 @@
                 <footer data-el="backlinks" class="backlinks" aria-label="Linked from" hidden></footer>
                 <!-- Notes near this one: sharing its tags, or two links away. -->
                 <footer data-el="related" class="backlinks related" aria-label="Related notes" hidden></footer>
+                <!-- Notes that say this one's name without linking to it. -->
+                <footer data-el="mentions" class="backlinks mentions" aria-label="Unlinked mentions" hidden></footer>
                 <div data-el="imgHandle" class="img-handle" title="Drag to resize" hidden></div>
                 <div data-el="imgSize" class="img-size u" hidden></div>
                 <div data-el="dropLine" class="drop-line" hidden></div>
@@ -193,7 +197,9 @@
             <dt><kbd>Shift</kbd> <kbd>Enter</kbd></dt><dd>Create a note titled with the search, even when there are matches</dd>
             <dt><kbd>#tag</kbd></dt><dd>Anywhere in a note; click a tag in the sidebar or search <kbd>#tag</kbd> to filter</dd>
             <dt><kbd>#tag/part</kbd></dt><dd>Nests one tag inside another; the parent finds everything filed under it</dd>
-            <dt><kbd>[[Note title]]</kbd></dt><dd>Links to another note — click it to go there, or to start it. Notes pointing here, and related notes, are listed under the words</dd>
+            <dt><kbd>[[Note title]]</kbd></dt><dd>Links to another note — click it to go there, or to start it. Notes pointing here, related notes, and notes that say this note’s name without linking it, are listed under the words</dd>
+            <dt><kbd>![[Note title]]</kbd></dt><dd>On a line of its own, shows that whole note here; <kbd>![[Note#Heading]]</kbd> shows one section of it. What is shown is what that note says now</dd>
+            <dt><kbd>aliases:</kbd></dt><dd>Other names a note answers to (Ctrl+Shift+A). A link or a search naming one finds the note; they are kept in its front matter</dd>
             <dt><kbd>todo:</kbd> <kbd>due:today</kbd></dt><dd>In the search box: operators narrow the list — tag: todo: done: due: pinned: created:&gt;7d updated: links: orphan: sort:title limit: and /regex/</dd>
             <dt><kbd>- [ ] task @2026-09-10</kbd></dt><dd>A date on a checklist line schedules it; add a time (<kbd>@2026-09-10 14:30</kbd>) and Notes reminds you then, or at nine that morning</dd>
             <dt><kbd>#template</kbd> <kbd>{{date}}</kbd></dt><dd>A note tagged #template is a template; {{title}}, {{date}}, {{time}} and {{date:DDD D MMM}} are filled in when it is used</dd>

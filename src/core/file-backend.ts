@@ -180,7 +180,7 @@ export function createFileBackend(root: string, options: FileBackendOptions): Ba
     open: () => Promise.reject(new NeedsAppError('Opening the window')),
     captureShow: () => Promise.reject(new NeedsAppError('The quick-note box')),
     exportRendered: (_id, _path, kind) => Promise.reject(new NeedsAppError(kind === 'png' ? 'Rendering a PNG' : kind === 'pdf' ? 'Rendering a PDF' : 'Drawing the diagrams of an HTML page')),
-    renderHtml: async (body) => renderHtmlOffline(body),
+    renderHtml: async (body) => renderHtmlOffline(body, await all()),
     notify: () => Promise.reject(new NeedsAppError('A notification')),
 
     watch: async (onChange, signal) => {

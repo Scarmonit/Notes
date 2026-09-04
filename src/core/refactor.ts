@@ -1,5 +1,6 @@
 import { LINK_PATTERN, linkKey, linkMarkdown, linkParts, titleOf } from '../renderer/notes';
 import { headingAt, headingsIn } from '../renderer/outline';
+import { linkMention } from './mentions';
 import type { Note } from '../shared/types';
 
 /**
@@ -15,7 +16,7 @@ import type { Note } from '../shared/types';
  * so the two can never disagree about what an operation means.
  */
 
-export type PlanKind = 'refile' | 'move-section' | 'rename' | 'tag-rename' | 'merge';
+export type PlanKind = 'refile' | 'move-section' | 'rename' | 'tag-rename' | 'merge' | 'link-mention';
 
 export type ChangeKind = 'text added' | 'lines removed' | 'links rewritten' | 'tags rewritten' | 'renamed' | 'trashed';
 
@@ -307,6 +308,34 @@ export function planRename(notes: Note[], req: RenameRequest): PlanResult {
   }
   const sentence = `Rename '${old}' to '${title}'${links > 0 ? ` and update ${plural(links, 'link')} in ${plural(linkedNotes, 'note')}` : ''}`;
   return { ok: true, plan: { kind: 'rename', writes, trash: [], restore: [], summary: { notes: writes.length, links }, touched, sentence } };
+}
+
+/**
+ * Joins one note up to another it already talks about: the words that name
+ * the target become a `[[link]]`, in place, spelling and capitals kept. A
+ * Plan like any other, so it is previewed, undone in one step and refused
+ * if the note has moved on since the mention was found.
+ */
+export function planLinkMention(notes: Note[], fromId: string, targetId: string, at: { start: number; end: number }): PlanResult {
+  const from = notes.find((n) => n.id === fromId);
+  const target = notes.find((n) => n.id === targetId);
+  if (!from || !target) return fail('not_found', 'That note is gone');
+  if (from.id === target.id) return fail('same_note', 'A note cannot link to itself');
+  const body = linkMention(from.body, at, target);
+  if (body === null || body === from.body) return fail('nothing_to_do', 'Those words are not there any more');
+  const written = from.body.slice(at.start, at.end);
+  return {
+    ok: true,
+    plan: {
+      kind: 'link-mention',
+      writes: [{ id: from.id, before: stateOf(from), after: { ...stateOf(from), body } }],
+      trash: [],
+      restore: [],
+      summary: { notes: 1, links: 1 },
+      touched: [{ id: from.id, title: titleOf(from), changes: ['links rewritten'] }],
+      sentence: `Link '${written}' in '${titleOf(from)}' to '${titleOf(target)}'`,
+    },
+  };
 }
 
 /** A tag as it may be written: letters first, then letters, digits, _ and -, nested with /. */
