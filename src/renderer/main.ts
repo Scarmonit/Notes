@@ -32,6 +32,7 @@ import {
   type TagNode,
 } from './notes';
 import { markdownToText } from './plaintext';
+import { addTab, keepTabs, nthTab, showTab, shutTab, stepTab as stepTabStrip, type TabStrip } from './tabs';
 import {
   MIN_IMAGE_WIDTH,
   bodyTokens,
@@ -88,9 +89,70 @@ const $ = <T extends HTMLElement>(id: string): T => {
   return node as T;
 };
 
+/**
+ * The parts of one pane. A pane is cloned from a template, so these are found
+ * by `data-el` inside the pane's own root rather than by an id: an id would
+ * name three editors once the window is split.
+ */
+function paneEls(root: HTMLElement) {
+  const q = <T extends HTMLElement>(name: string): T => {
+    const node = root.querySelector<T>(`[data-el="${name}"]`);
+    if (!node) throw new Error(`missing pane element ${name}`);
+    return node;
+  };
+  return {
+    toggleSidebar: q<HTMLButtonElement>('toggleSidebar'),
+    status: q('status'),
+    previewToggle: q<HTMLButtonElement>('previewToggle'),
+    attachBtn: q<HTMLButtonElement>('attachBtn'),
+    exportWrap: q('exportWrap'),
+    exportBtn: q<HTMLButtonElement>('exportBtn'),
+    exportMenu: q('exportMenu'),
+    pinBtn: q<HTMLButtonElement>('pinBtn'),
+    deleteBtn: q<HTMLButtonElement>('deleteBtn'),
+    tabs: q('tabs'),
+    editorWrap: q('editorWrap'),
+    text: q('text'),
+    title: q<HTMLInputElement>('title'),
+    edited: q('edited'),
+    words: q('words'),
+    editor: q<HTMLDivElement>('editor'),
+    preview: q('preview'),
+    backlinks: q('backlinks'),
+    related: q('related'),
+    imgHandle: q('imgHandle'),
+    imgSize: q('imgSize'),
+    dropLine: q('dropLine'),
+    outline: q('outline'),
+    empty: q('empty'),
+    findBar: q('findBar'),
+    findInput: q<HTMLInputElement>('findInput'),
+    findCount: q('findCount'),
+    findCase: q<HTMLButtonElement>('findCase'),
+    findRegex: q<HTMLButtonElement>('findRegex'),
+    findPrev: q<HTMLButtonElement>('findPrev'),
+    findNext: q<HTMLButtonElement>('findNext'),
+    findToggleReplace: q<HTMLButtonElement>('findToggleReplace'),
+    findClose: q<HTMLButtonElement>('findClose'),
+    findReplaceRow: q('findReplaceRow'),
+    replaceInput: q<HTMLInputElement>('replaceInput'),
+    replaceOne: q<HTMLButtonElement>('replaceOne'),
+    replaceAll: q<HTMLButtonElement>('replaceAll'),
+  };
+}
+
+type PaneEls = ReturnType<typeof paneEls>;
+
+/**
+ * The window's parts. Everything outside a pane is one element and is found
+ * once; everything inside a pane is read from whichever pane has the focus,
+ * so the four thousand lines below can go on saying `el.editor` and mean the
+ * editor the writer is in.
+ */
 const el = {
   app: $('app'),
-  pane: $('pane'),
+  panes: $('panes'),
+  paneTpl: $<HTMLTemplateElement>('pane-tpl'),
   search: $<HTMLInputElement>('search'),
   newBtn: $<HTMLButtonElement>('new'),
   tags: $('tags'),
@@ -114,49 +176,14 @@ const el = {
   paletteInput: $<HTMLInputElement>('palette-input'),
   paletteList: $('palette-list'),
   keyGroups: $('key-groups'),
-  title: $<HTMLInputElement>('title'),
-  toggleSidebar: $<HTMLButtonElement>('toggle-sidebar'),
-  edited: $('edited'),
-  words: $('words'),
-  text: $('text'),
-  status: $('status'),
-  previewToggle: $<HTMLButtonElement>('preview-toggle'),
-  attachBtn: $<HTMLButtonElement>('attach'),
-  exportWrap: $('export-wrap'),
-  exportBtn: $<HTMLButtonElement>('export'),
-  exportMenu: $('export-menu'),
-  pinBtn: $<HTMLButtonElement>('pin'),
-  deleteBtn: $<HTMLButtonElement>('delete'),
-  editorWrap: $('editor-wrap'),
-  editor: $<HTMLDivElement>('editor'),
-  preview: $('preview'),
-  backlinks: $('backlinks'),
   historySheet: $('history-sheet'),
   historyList: $('history-list'),
   historyPreview: $('history-preview'),
   historyRestore: $<HTMLButtonElement>('history-restore'),
   historyNote: $('history-note'),
-  imgHandle: $('img-handle'),
-  imgSize: $('img-size'),
-  dropLine: $('drop-line'),
-  empty: $('empty'),
   helpSheet: $('help-sheet'),
-  outline: $('outline'),
   outlineShow: $<HTMLInputElement>('outline-show'),
   liveFormat: $<HTMLInputElement>('live-format'),
-  findBar: $('find-bar'),
-  findInput: $<HTMLInputElement>('find-input'),
-  findCount: $('find-count'),
-  findCase: $<HTMLButtonElement>('find-case'),
-  findRegex: $<HTMLButtonElement>('find-regex'),
-  findPrev: $<HTMLButtonElement>('find-prev'),
-  findNext: $<HTMLButtonElement>('find-next'),
-  findToggleReplace: $<HTMLButtonElement>('find-toggle-replace'),
-  findClose: $<HTMLButtonElement>('find-close'),
-  findReplaceRow: $('find-replace-row'),
-  replaceInput: $<HTMLInputElement>('replace-input'),
-  replaceOne: $<HTMLButtonElement>('replace-one'),
-  replaceAll: $<HTMLButtonElement>('replace-all'),
   trashSheet: $('trash-sheet'),
   trashList: $('trash-list'),
   trashPreview: $('trash-preview'),
@@ -172,7 +199,6 @@ const el = {
   cliInstall: $<HTMLButtonElement>('cli-install'),
   cliNote: $<HTMLParagraphElement>('cli-note'),
   searchOps: $<HTMLParagraphElement>('search-ops'),
-  related: $('related'),
   remindersOn: $<HTMLInputElement>('reminders-on'),
   pickSheet: $('pick-sheet'),
   pickInput: $<HTMLInputElement>('pick-input'),
@@ -183,6 +209,122 @@ const el = {
   graphCanvas: $<HTMLCanvasElement>('graph-canvas'),
   graphScope: $<HTMLButtonElement>('graph-scope'),
   graphNote: $('graph-note'),
+
+  // The pane with the focus, part by part.
+  get pane(): HTMLElement {
+    return here().root;
+  },
+  get toggleSidebar(): HTMLButtonElement {
+    return here().els.toggleSidebar;
+  },
+  get status(): HTMLElement {
+    return here().els.status;
+  },
+  get previewToggle(): HTMLButtonElement {
+    return here().els.previewToggle;
+  },
+  get attachBtn(): HTMLButtonElement {
+    return here().els.attachBtn;
+  },
+  get exportWrap(): HTMLElement {
+    return here().els.exportWrap;
+  },
+  get exportBtn(): HTMLButtonElement {
+    return here().els.exportBtn;
+  },
+  get exportMenu(): HTMLElement {
+    return here().els.exportMenu;
+  },
+  get pinBtn(): HTMLButtonElement {
+    return here().els.pinBtn;
+  },
+  get deleteBtn(): HTMLButtonElement {
+    return here().els.deleteBtn;
+  },
+  get tabs(): HTMLElement {
+    return here().els.tabs;
+  },
+  get editorWrap(): HTMLElement {
+    return here().els.editorWrap;
+  },
+  get text(): HTMLElement {
+    return here().els.text;
+  },
+  get title(): HTMLInputElement {
+    return here().els.title;
+  },
+  get edited(): HTMLElement {
+    return here().els.edited;
+  },
+  get words(): HTMLElement {
+    return here().els.words;
+  },
+  get editor(): HTMLDivElement {
+    return here().els.editor;
+  },
+  get preview(): HTMLElement {
+    return here().els.preview;
+  },
+  get backlinks(): HTMLElement {
+    return here().els.backlinks;
+  },
+  get related(): HTMLElement {
+    return here().els.related;
+  },
+  get imgHandle(): HTMLElement {
+    return here().els.imgHandle;
+  },
+  get imgSize(): HTMLElement {
+    return here().els.imgSize;
+  },
+  get dropLine(): HTMLElement {
+    return here().els.dropLine;
+  },
+  get outline(): HTMLElement {
+    return here().els.outline;
+  },
+  get empty(): HTMLElement {
+    return here().els.empty;
+  },
+  get findBar(): HTMLElement {
+    return here().els.findBar;
+  },
+  get findInput(): HTMLInputElement {
+    return here().els.findInput;
+  },
+  get findCount(): HTMLElement {
+    return here().els.findCount;
+  },
+  get findCase(): HTMLButtonElement {
+    return here().els.findCase;
+  },
+  get findRegex(): HTMLButtonElement {
+    return here().els.findRegex;
+  },
+  get findPrev(): HTMLButtonElement {
+    return here().els.findPrev;
+  },
+  get findNext(): HTMLButtonElement {
+    return here().els.findNext;
+  },
+  get findToggleReplace(): HTMLButtonElement {
+    return here().els.findToggleReplace;
+  },
+  get findClose(): HTMLButtonElement {
+    return here().els.findClose;
+  },
+  get findReplaceRow(): HTMLElement {
+    return here().els.findReplaceRow;
+  },
+  get replaceInput(): HTMLInputElement {
+    return here().els.replaceInput;
+  },
+  get replaceOne(): HTMLButtonElement {
+    return here().els.replaceOne;
+  },
+  get replaceAll(): HTMLButtonElement {
+    return here().els.replaceAll;
+  },
 };
 
 // --- UI state (per-machine conveniences, kept in localStorage) --------------
@@ -206,6 +348,23 @@ interface UiState {
   liveFormat: boolean;
   /** The notes last opened, newest first, for the Recent notes picker. */
   recent: Visit[];
+  /** The panes the window had, left to right, and which one held the focus. */
+  panes: PaneShape[];
+  paneAt: number;
+}
+
+/** What there is to remember about a pane: the notes open in it, and which of them is showing. */
+interface PaneShape extends TabStrip {
+  preview: boolean;
+}
+
+/** A remembered pane, from a store that may hold anything. */
+function parsePane(raw: unknown): PaneShape | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const p = raw as Partial<PaneShape>;
+  const tabs = Array.isArray(p.tabs) ? p.tabs.filter((id): id is string => typeof id === 'string') : [];
+  const activeId = typeof p.activeId === 'string' ? p.activeId : null;
+  return { tabs, activeId, preview: p.preview === true };
 }
 
 const MARGIN_DEFAULT = 176;
@@ -234,6 +393,8 @@ function loadUi(): UiState {
     outline: true,
     liveFormat: true,
     recent: [],
+    panes: [],
+    paneAt: 0,
   };
   try {
     const raw = localStorage.getItem(UI_KEY);
@@ -241,6 +402,8 @@ function loadUi(): UiState {
     state.marginW = clamp(state.marginW, MARGIN_MIN, MARGIN_MAX, MARGIN_DEFAULT);
     state.textW = clamp(state.textW, TEXT_MIN, TEXT_MAX, TEXT_DEFAULT);
     state.recent = parseRecent(state.recent);
+    state.panes = (Array.isArray(state.panes) ? state.panes : []).map(parsePane).filter((p): p is PaneShape => p !== null);
+    state.paneAt = Number.isInteger(state.paneAt) ? Math.max(0, state.paneAt) : 0;
     return state;
   } catch {
     return fallback;
@@ -249,6 +412,7 @@ function loadUi(): UiState {
 
 function saveUi(): void {
   try {
+    syncPanes();
     localStorage.setItem(UI_KEY, JSON.stringify(ui));
   } catch {
     // Nothing to do: the app works fine without remembered UI state.
@@ -256,6 +420,374 @@ function saveUi(): void {
 }
 
 const ui = loadUi();
+
+// --- panes and tabs ---------------------------------------------------------
+
+/**
+ * A pane is one note on screen. It holds a strip of open notes — its tabs —
+ * and shows one of them; the window can hold up to three panes side by side,
+ * each scrolled and written in on its own.
+ *
+ * Everything below this line was written when there was one editor, and says
+ * `el.editor` several hundred times. Rather than thread a pane through all of
+ * it, `el` reads the parts of whichever pane has the focus, and the handful of
+ * variables that describe an editor's own state — what it has drawn, where its
+ * caret was, what it is finding — move with it. `withPane` lends that context
+ * to another pane for the length of one call, which is how all three are drawn.
+ */
+interface Pane extends PaneShape {
+  root: HTMLElement;
+  els: PaneEls;
+  editorNoteId: string | null;
+  drawn: string[];
+  revealed: Element[];
+  revealedLines: string;
+  outlineKey: string;
+  outlineHeadings: Heading[];
+  findHits: FindMatch[];
+  findAt: number;
+  caretBefore: { id: string; at: number } | null;
+  pendingTitle: string | null;
+  titleAtFocus: { id: string; title: string | undefined } | null;
+}
+
+const MAX_PANES = 3;
+
+let panes: Pane[] = [];
+/** The pane with the focus. */
+let paneAt = 0;
+/** The pane `el` currently reads: the focused one, except inside `withPane`. */
+let paneCtx = 0;
+
+const here = (): Pane => panes[paneCtx];
+const onlyPane = (): boolean => panes.length < 2;
+/** Whether the pane being drawn is the one the writer is in. */
+const inFocusedPane = (): boolean => paneCtx === paneAt;
+
+/** The note a pane shows. The focused pane's is `ui.selectedId`, which is where the rest of the app looks. */
+const activeIn = (p: Pane): string | null => (p === here() ? ui.selectedId : p.activeId);
+
+/** Moves the editor state the focused pane owns onto its record. */
+function stash(p: Pane): void {
+  p.activeId = ui.selectedId;
+  p.preview = ui.preview;
+  p.editorNoteId = editorNoteId;
+  p.drawn = drawn;
+  p.revealed = revealed;
+  p.revealedLines = revealedLines;
+  p.outlineKey = outlineKey;
+  p.outlineHeadings = outlineHeadings;
+  p.findHits = findHits;
+  p.findAt = findAt;
+  p.caretBefore = caretBefore;
+  p.pendingTitle = pendingTitle;
+  p.titleAtFocus = titleAtFocus;
+}
+
+/** And back: from here on, the window's one editor is this pane's. */
+function unstash(p: Pane): void {
+  ui.selectedId = p.activeId;
+  ui.preview = p.preview;
+  editorNoteId = p.editorNoteId;
+  drawn = p.drawn;
+  revealed = p.revealed;
+  revealedLines = p.revealedLines;
+  outlineKey = p.outlineKey;
+  outlineHeadings = p.outlineHeadings;
+  findHits = p.findHits;
+  findAt = p.findAt;
+  caretBefore = p.caretBefore;
+  pendingTitle = p.pendingTitle;
+  titleAtFocus = p.titleAtFocus;
+}
+
+/** Runs something as though `p` were the pane in front. Nothing about the focus moves. */
+function withPane<T>(p: Pane, fn: () => T): T {
+  if (p === here()) return fn();
+  const back = here();
+  stash(back);
+  paneCtx = panes.indexOf(p);
+  unstash(p);
+  try {
+    return fn();
+  } finally {
+    stash(p);
+    paneCtx = panes.indexOf(back);
+    unstash(back);
+  }
+}
+
+/** Which pane a node is in, if any. */
+function paneOf(node: Node | null): Pane | null {
+  for (let n = node; n; n = n.parentNode) {
+    const found = panes.find((p) => p.root === n);
+    if (found) return found;
+  }
+  return null;
+}
+
+function markFocused(): void {
+  el.app.classList.toggle('split', panes.length > 1);
+  panes.forEach((p, i) => p.root.classList.toggle('pane-focused', panes.length > 1 && i === paneAt));
+}
+
+/**
+ * The focus moves to another pane: what `el` reads, what the sidebar shows as
+ * open, and what a command acts on all move with it.
+ */
+function focusPane(at: number): void {
+  const next = panes[Math.max(0, Math.min(panes.length - 1, at))];
+  if (!next) return;
+  if (next === panes[paneAt]) {
+    markFocused();
+    return;
+  }
+  // Find is about one note in one pane; it does not follow you across.
+  if (!el.findBar.hidden) closeFind(false);
+  const old = panes[paneAt];
+  stash(old);
+  paneAt = panes.indexOf(next);
+  paneCtx = paneAt;
+  unstash(next);
+  saveUi();
+  markFocused();
+  renderList();
+  syncWriting();
+}
+
+/** Wiring registered once and replayed onto every pane made afterwards. */
+interface PaneWire {
+  name: keyof PaneEls;
+  type: string;
+  fn: (this: HTMLElement, e: Event) => void;
+  opts?: AddEventListenerOptions;
+}
+const paneWiring: PaneWire[] = [];
+
+/**
+ * A listener on one part of every pane, now and in future. The handler runs
+ * with `el` already reading the pane the event came from, because touching a
+ * pane focuses it.
+ */
+function onPane<K extends keyof PaneEls, T extends keyof HTMLElementEventMap>(
+  name: K,
+  type: T,
+  fn: (e: HTMLElementEventMap[T]) => void,
+  opts?: AddEventListenerOptions,
+): void {
+  const wire: PaneWire = { name, type, fn: fn as (e: Event) => void, opts };
+  paneWiring.push(wire);
+  for (const p of panes) p.els[name].addEventListener(wire.type, wire.fn, wire.opts);
+}
+
+function makePane(shape: PaneShape): Pane {
+  const root = el.paneTpl.content.firstElementChild?.cloneNode(true) as HTMLElement | undefined;
+  if (!root) throw new Error('missing pane template');
+  const p: Pane = {
+    ...shape,
+    root,
+    els: paneEls(root),
+    editorNoteId: null,
+    drawn: [],
+    revealed: [],
+    revealedLines: '',
+    outlineKey: '',
+    outlineHeadings: [],
+    findHits: [],
+    findAt: -1,
+    caretBefore: null,
+    pendingTitle: null,
+    titleAtFocus: null,
+  };
+  // Anything done in a pane makes it the pane in front, whether the pointer
+  // arrives first or the focus does.
+  root.addEventListener('pointerdown', () => focusPane(panes.indexOf(p)), true);
+  root.addEventListener('focusin', () => focusPane(panes.indexOf(p)));
+  for (const wire of paneWiring) p.els[wire.name].addEventListener(wire.type, wire.fn, wire.opts);
+  return p;
+}
+
+/** Opens another pane beside this one, showing the same note. */
+function splitPane(): void {
+  if (panes.length >= MAX_PANES) {
+    showStatus(`${MAX_PANES} panes is as many as fit`, 2000);
+    return;
+  }
+  const from = panes[paneAt];
+  stash(from);
+  const p = makePane({ tabs: from.activeId ? [from.activeId] : [], activeId: from.activeId, preview: from.preview });
+  el.panes.insertBefore(p.root, from.root.nextSibling);
+  panes.splice(panes.indexOf(from) + 1, 0, p);
+  focusPane(panes.indexOf(p));
+  renderEditor();
+  focusEditor();
+  showStatus('Pane split · Ctrl+Alt+← and → move between panes', 3000);
+}
+
+/** Closes a pane. The last one stays: a window with no pane has nowhere to write. */
+function closePane(p: Pane): void {
+  if (panes.length < 2) return;
+  const at = panes.indexOf(p);
+  if (at < 0) return;
+  if (at === paneAt) focusPane(at === 0 ? 1 : at - 1);
+  const keeping = panes[paneAt];
+  panes.splice(at, 1);
+  p.root.remove();
+  paneAt = Math.max(0, panes.indexOf(keeping));
+  paneCtx = paneAt;
+  saveUi();
+  markFocused();
+  renderEditor();
+}
+
+/** Moves the focus one pane along, wrapping round. */
+function stepPane(delta: 1 | -1): void {
+  if (onlyPane()) return;
+  focusPane((paneAt + delta + panes.length) % panes.length);
+  focusEditor();
+}
+
+// --- tabs -------------------------------------------------------------------
+
+/** Opens a note in a tab of its own beside the one open now. */
+function openInTab(id: string): void {
+  const p = panes[paneAt];
+  stash(p);
+  p.tabs = addTab(p, id).tabs;
+  if (query || tagFilter) clearFilters();
+  select(id);
+  focusEditor();
+}
+
+/** Takes a note out of a pane. Closing the last tab of a split pane closes the pane. */
+function closeTab(p: Pane, id: string): void {
+  if (!p.tabs.includes(id)) return;
+  const shut = shutTab({ tabs: p.tabs, activeId: activeIn(p) }, id);
+  p.tabs = shut.tabs;
+  if (shut.tabs.length === 0 && panes.length > 1) {
+    closePane(p);
+    return;
+  }
+  if (p === panes[paneAt]) select(shut.activeId);
+  else {
+    p.activeId = shut.activeId;
+    renderEditor();
+  }
+  saveUi();
+}
+
+/** Moves along the open notes of the focused pane, wrapping round. */
+function stepTab(delta: 1 | -1): void {
+  const p = panes[paneAt];
+  stash(p);
+  const next = stepTabStrip(p, delta).activeId;
+  if (next === null || next === p.activeId) return;
+  select(next);
+  focusEditor();
+}
+
+/** The nth open note of the focused pane, for Ctrl+1 to Ctrl+9. */
+function goToTab(n: number): void {
+  const p = panes[paneAt];
+  stash(p);
+  const id = nthTab(p, n);
+  if (!id) return;
+  select(id);
+  focusEditor();
+}
+
+/** Notes that have gone leave the tabs they were open in. */
+function pruneTabs(): void {
+  const alive = (id: string): boolean => notes.some((n) => n.id === id);
+  for (const p of panes) {
+    const kept = keepTabs({ tabs: p.tabs, activeId: activeIn(p) }, alive);
+    p.tabs = kept.tabs;
+    if (p === panes[paneCtx]) ui.selectedId = kept.activeId;
+    else p.activeId = kept.activeId;
+  }
+}
+
+/**
+ * The strip of open notes. Only there once a pane holds two: one note needs
+ * no tab to tell it from the others, and the app is still a page of writing.
+ */
+function renderTabs(p: Pane): void {
+  const strip = p.els.tabs;
+  const show = p.tabs.length > 1;
+  strip.hidden = !show;
+  strip.replaceChildren();
+  if (!show) return;
+  const active = activeIn(p);
+  for (const id of p.tabs) {
+    const n = notes.find((x) => x.id === id);
+    if (!n) continue;
+    const name = shownTitle(n);
+    const tab = document.createElement('div');
+    tab.className = `tab${id === active ? ' active' : ''}`;
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-selected', String(id === active));
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'tab-name';
+    open.textContent = name;
+    open.title = name;
+    open.addEventListener('click', () => {
+      focusPane(panes.indexOf(p));
+      select(id);
+      focusEditor();
+    });
+    // The middle button closes a tab, as it does everywhere else.
+    tab.addEventListener('auxclick', (e) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        closeTab(p, id);
+      }
+    });
+    const shut = document.createElement('button');
+    shut.type = 'button';
+    shut.className = 'tab-close';
+    shut.title = `Close ${name}`;
+    shut.setAttribute('aria-label', `Close ${name}`);
+    shut.innerHTML = '<svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true"><path d="M1 1l7 7M8 1L1 8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /></svg>';
+    shut.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeTab(p, id);
+    });
+    tab.append(open, shut);
+    strip.append(tab);
+  }
+}
+
+/** The panes as they should be remembered, ready for `saveUi`. */
+function syncPanes(): void {
+  if (panes.length === 0) return;
+  stash(panes[paneCtx]);
+  ui.panes = panes.map((p) => ({ tabs: [...p.tabs], activeId: p.activeId, preview: p.preview }));
+  ui.paneAt = paneAt;
+}
+
+/** Builds the panes the window last had, or the one pane a new window starts with. */
+function openPanes(): void {
+  const saved = ui.panes.length > 0 ? ui.panes : [{ tabs: ui.selectedId ? [ui.selectedId] : [], activeId: ui.selectedId, preview: ui.preview }];
+  for (const shape of saved.slice(0, MAX_PANES)) {
+    const kept = keepTabs(shape, (id) => notes.some((n) => n.id === id));
+    const p = makePane({ ...kept, preview: shape.preview });
+    panes.push(p);
+    el.panes.append(p.root);
+  }
+  paneAt = Math.max(0, Math.min(panes.length - 1, ui.paneAt));
+  paneCtx = paneAt;
+  unstash(panes[paneAt]);
+  // A window whose remembered notes have all gone opens on the newest one.
+  if (!ui.selectedId) {
+    const first = sortByEdited(notes)[0]?.id ?? null;
+    if (first) {
+      panes[paneAt].tabs = [first];
+      ui.selectedId = first;
+    }
+  }
+  markFocused();
+}
 
 /**
  * Tray and hotkey settings. These live with the main process, which acts on
@@ -468,7 +1000,10 @@ function renderList(): void {
     const isSelected = n.id === ui.selectedId;
     const title = shownTitle(n);
     const item = document.createElement('div');
-    item.className = `item${isSelected ? ' selected' : ''}${title === 'Untitled' ? ' untitled' : ''}`;
+    // A note open in another pane carries the same margin rule, fainter: the
+    // list says what is on screen, and more than one thing can be.
+    const elsewhere = !isSelected && panes.some((p) => activeIn(p) === n.id);
+    item.className = `item${isSelected ? ' selected' : ''}${elsewhere ? ' open' : ''}${title === 'Untitled' ? ' untitled' : ''}`;
     item.dataset.id = n.id;
     item.setAttribute('role', 'option');
     item.setAttribute('aria-selected', String(isSelected));
@@ -513,17 +1048,31 @@ function renderMeta(): void {
     el.edited.textContent = '';
     el.edited.title = '';
     el.words.textContent = '';
-    document.title = 'Notes';
     return;
   }
   el.edited.textContent = relativeTime(n.updatedAt);
   el.edited.title = `Last edited ${absoluteTime(n.updatedAt)}`;
   const count = wordCount(n.body);
   el.words.textContent = `${count} ${count === 1 ? 'word' : 'words'}`;
-  document.title = `${shownTitle(n)} – Notes`;
 }
 
+/**
+ * Draws every pane. Each is drawn as though it were the pane in front, so the
+ * one editor the rest of this file knows about is, in turn, each of them.
+ */
 function renderEditor(): void {
+  pruneTabs();
+  for (const p of panes) {
+    withPane(p, () => {
+      renderPane();
+      renderTabs(p);
+    });
+  }
+  const n = selected();
+  document.title = n ? `${shownTitle(n)} – Notes` : 'Notes';
+}
+
+function renderPane(): void {
   const n = selected();
   const has = n !== null;
   el.editorWrap.hidden = !has;
@@ -572,7 +1121,24 @@ function renderEditor(): void {
   renderRelated();
   renderOutline();
   syncChipUi();
-  syncWriting();
+  // The caret is in one pane only; the others have nothing to follow.
+  if (inFocusedPane()) syncWriting();
+}
+
+/**
+ * The panes showing a note must draw it again: what is on their screens is no
+ * longer what the note says. The pane in front is left to its caller, which
+ * usually has a caret to put back.
+ */
+function forgetDrawn(id: string): void {
+  for (const p of panes) {
+    if (p !== panes[paneAt] && p.activeId === id) p.editorNoteId = null;
+  }
+}
+
+/** Every pane redraws: the way a body is drawn has changed, not the body. */
+function forgetAllDrawn(): void {
+  for (const p of panes) p.editorNoteId = null;
 }
 
 /** Puts a body into the editor: the DOM for it, then the live formatting over that. */
@@ -934,21 +1500,31 @@ function toggleTypewriter(): void {
 
 // --- actions ----------------------------------------------------------------
 
+/**
+ * Shows a note in the pane with the focus. The pane's open tab becomes that
+ * note — choosing from the list turns the page rather than piling up tabs —
+ * unless the note is already open in a tab of its own, which is then the one
+ * brought forward.
+ */
 function select(id: string | null): void {
+  const p = panes[paneCtx];
+  if (p) p.tabs = showTab({ tabs: p.tabs, activeId: ui.selectedId }, id).tabs;
   if (ui.selectedId !== id) {
     disarmDelete();
     // The history sheet and the find bar are about one note; they do not
     // follow you to another.
     if (!el.historySheet.hidden) toggleHistory(false);
     if (!el.findBar.hidden) closeFind(false);
-    // A command waiting on `notes open --wait` learns the note left the screen.
-    if (ui.selectedId) window.notesApi.noteClosed(ui.selectedId);
+    // A command waiting on `notes open --wait` learns the note left the screen —
+    // unless another pane still has it, in which case it never left.
+    const going = ui.selectedId;
+    if (going && !panes.some((p) => p !== panes[paneCtx] && p.activeId === going)) window.notesApi.noteClosed(going);
     // Where this note is being left from, for Back — unless Back itself is
     // doing the leaving, or this note was only where the search had landed
     // on the way: the reader's departure is from the note before that.
     if (!travelling && !arrivedIncidentally) {
-      const here = placeHere();
-      if (here) journey = leave(journey, here);
+      const from = placeHere();
+      if (from) journey = leave(journey, from);
     }
     // A title still being typed goes onto the note being left, not away with it.
     settlePendingTitle();
@@ -1179,6 +1755,35 @@ function commitEditor(): void {
   renderMeta();
   renderOutline();
   if (!el.findBar.hidden) refreshFind();
+  mirrorSoon(n.id);
+}
+
+/**
+ * A note open in two panes is one note. The other pane catches up shortly
+ * after the typing stops rather than on every keystroke: redrawing a long
+ * note twice per character is work nobody asked for, and the pane being
+ * written in is the one that has to stay quick.
+ */
+const MIRROR_DELAY = 150;
+let mirrorTimer: number | null = null;
+
+function mirrorSoon(id: string): void {
+  if (onlyPane()) return;
+  if (mirrorTimer !== null) clearTimeout(mirrorTimer);
+  mirrorTimer = window.setTimeout(() => {
+    mirrorTimer = null;
+    for (const p of panes) {
+      if (p === panes[paneAt] || p.activeId !== id) continue;
+      withPane(p, () => {
+        const top = el.editor.scrollTop;
+        const previewTop = el.preview.scrollTop;
+        editorNoteId = null;
+        renderPane();
+        el.editor.scrollTop = top;
+        el.preview.scrollTop = previewTop;
+      });
+    }
+  }, MIRROR_DELAY);
 }
 
 function altFor(fileName: string): string {
@@ -1295,6 +1900,9 @@ document.addEventListener('dragenter', (e) => {
   if (!hasFiles(e)) return;
   e.preventDefault();
   dragDepth++;
+  // Whichever pane the file is over is the pane it lands in.
+  const over = paneOf(e.target as Node);
+  if (over) focusPane(panes.indexOf(over));
   el.pane.classList.add('dropping');
 });
 document.addEventListener('dragover', (e) => {
@@ -1310,13 +1918,13 @@ document.addEventListener('dragleave', (e) => {
   if (!hasFiles(e)) return;
   if (--dragDepth <= 0) {
     dragDepth = 0;
-    el.pane.classList.remove('dropping');
+    for (const p of panes) p.root.classList.remove('dropping');
   }
 });
 document.addEventListener('drop', (e) => {
   e.preventDefault();
   dragDepth = 0;
-  el.pane.classList.remove('dropping');
+  for (const p of panes) p.root.classList.remove('dropping');
   if (dragChip) {
     // One of our own images being moved to another line, not a file from outside.
     const chip = dragChip;
@@ -1404,7 +2012,7 @@ function maxImageWidth(): number {
 
 let resizing: { chip: HTMLImageElement; startX: number; startW: number } | null = null;
 
-el.imgHandle.addEventListener('pointerdown', (e) => {
+onPane('imgHandle', 'pointerdown', (e) => {
   const chip = selectedChip();
   if (!chip || e.button !== 0) return;
   e.preventDefault();
@@ -1416,7 +2024,7 @@ el.imgHandle.addEventListener('pointerdown', (e) => {
   positionHandle(chip);
 });
 
-el.imgHandle.addEventListener('pointermove', (e) => {
+onPane('imgHandle', 'pointermove', (e) => {
   if (!resizing) return;
   const w = Math.min(maxImageWidth(), Math.max(MIN_IMAGE_WIDTH, resizing.startW + (e.clientX - resizing.startX)));
   setChipWidth(resizing.chip, w);
@@ -1433,10 +2041,10 @@ function endResize(): void {
   commitEditor();
   selectChip(chip);
 }
-el.imgHandle.addEventListener('pointerup', endResize);
-el.imgHandle.addEventListener('pointercancel', endResize);
+onPane('imgHandle', 'pointerup', endResize);
+onPane('imgHandle', 'pointercancel', endResize);
 
-el.editor.addEventListener('click', (e) => {
+onPane('editor', 'click', (e) => {
   if (isLink(e.target)) {
     e.preventDefault();
     openLink(linkTargetOf(e.target));
@@ -1536,6 +2144,7 @@ function applyBody(body: string): void {
   scheduleSave();
   // The editor only re-renders on a note switch, so tell it this counts as one.
   editorNoteId = null;
+  forgetDrawn(n.id);
   renderList();
   renderEditor();
   // The find bar's hits were offsets into the old text.
@@ -1696,7 +2305,7 @@ function redoEdit(): void {
 }
 
 // Links in the preview are the same links, and go to the same place.
-el.preview.addEventListener('click', (e) => {
+onPane('preview', 'click', (e) => {
   if (isLink(e.target)) {
     e.preventDefault();
     openLink(linkTargetOf(e.target));
@@ -1704,7 +2313,7 @@ el.preview.addEventListener('click', (e) => {
 });
 
 // Ticking a box in the preview writes the change back into the markdown.
-el.preview.addEventListener('click', (e) => {
+onPane('preview', 'click', (e) => {
   const box = e.target;
   if (!(box instanceof HTMLInputElement) || box.type !== 'checkbox' || box.dataset.task === undefined) return;
   const n = selected();
@@ -1785,7 +2394,7 @@ function caretToLineEnd(line: number): void {
 }
 
 // Double-click puts an image back at its natural size.
-el.editor.addEventListener('dblclick', (e) => {
+onPane('editor', 'dblclick', (e) => {
   if (!isChip(e.target)) return;
   e.preventDefault();
   rememberNow('resize');
@@ -1798,7 +2407,7 @@ document.addEventListener('selectionchange', () => {
   syncChipUi();
   syncWriting();
 });
-el.editor.addEventListener('scroll', () => positionHandle(selectedChip()));
+onPane('editor', 'scroll', () => positionHandle(selectedChip()));
 window.addEventListener('resize', () => {
   positionHandle(selectedChip());
   syncWriting();
@@ -1873,7 +2482,7 @@ function showDropLine(target: DropTarget | null): void {
 
 let dragChip: HTMLImageElement | null = null;
 
-el.editor.addEventListener('dragstart', (e) => {
+onPane('editor', 'dragstart', (e) => {
   if (!isChip(e.target) || !e.dataTransfer) return;
   dragChip = e.target;
   e.dataTransfer.effectAllowed = 'move';
@@ -1882,7 +2491,7 @@ el.editor.addEventListener('dragstart', (e) => {
   positionHandle(null);
 });
 
-el.editor.addEventListener('dragend', () => {
+onPane('editor', 'dragend', () => {
   dragChip?.classList.remove('dragging');
   dragChip = null;
   showDropLine(null);
@@ -1949,16 +2558,19 @@ async function runExport(kind: ExportKind): Promise<void> {
   }
 }
 
-el.exportBtn.addEventListener('click', () => {
+onPane('exportBtn', 'click', () => {
   if (el.exportMenu.hidden) openExportMenu();
   else closeExportMenu(true);
 });
 
-for (const item of menuItems()) {
-  item.addEventListener('click', () => void runExport(item.dataset.kind as ExportKind));
-}
+// One listener on the menu rather than one per row: the rows belong to a pane
+// that may not have been built yet.
+onPane('exportMenu', 'click', (e) => {
+  const item = (e.target as HTMLElement | null)?.closest<HTMLButtonElement>('.menu-item');
+  if (item?.dataset.kind) void runExport(item.dataset.kind as ExportKind);
+});
 
-el.exportMenu.addEventListener('keydown', (e) => {
+onPane('exportMenu', 'keydown', (e) => {
   const items = menuItems();
   const i = items.indexOf(document.activeElement as HTMLButtonElement);
   switch (e.key) {
@@ -1992,22 +2604,26 @@ el.exportMenu.addEventListener('keydown', (e) => {
 });
 
 document.addEventListener('pointerdown', (e) => {
-  if (!el.exportMenu.hidden && !el.exportWrap.contains(e.target as Node)) closeExportMenu(false);
+  // Every pane's menu, not just this one's: clicking into another pane is
+  // exactly the click that should put an open menu away.
+  for (const p of panes) {
+    if (!p.els.exportMenu.hidden && !p.els.exportWrap.contains(e.target as Node)) withPane(p, () => closeExportMenu(false));
+  }
 });
 
 // --- editor input -----------------------------------------------------------
 
 /** True between compositionstart and compositionend: an IME owns the text then. */
 let composing = false;
-el.editor.addEventListener('compositionstart', () => {
+onPane('editor', 'compositionstart', () => {
   composing = true;
 });
-el.editor.addEventListener('compositionend', () => {
+onPane('editor', 'compositionend', () => {
   composing = false;
   decorateAfterInput();
 });
 
-el.editor.addEventListener('input', (e) => {
+onPane('editor', 'input', (e) => {
   const kind = e instanceof InputEvent ? e.inputType : '';
   // Closing a link is the moment it becomes one, the way --- becomes a rule
   // on Enter. Anything else typed leaves the text exactly as it was typed.
@@ -2031,13 +2647,13 @@ function selectionRangeInEditor(): Range | null {
   const range = sel.getRangeAt(0);
   return el.editor.contains(range.commonAncestorContainer) ? range : null;
 }
-el.editor.addEventListener('copy', (e) => {
+onPane('editor', 'copy', (e) => {
   const range = selectionRangeInEditor();
   if (!range || !e.clipboardData) return;
   e.preventDefault();
   e.clipboardData.setData('text/plain', textOfRange(range));
 });
-el.editor.addEventListener('cut', (e) => {
+onPane('editor', 'cut', (e) => {
   const range = selectionRangeInEditor();
   if (!range || !e.clipboardData) return;
   e.preventDefault();
@@ -2046,7 +2662,7 @@ el.editor.addEventListener('cut', (e) => {
 });
 // What comes in is text: pasted HTML would bring its own tags, which the
 // serializer would drop and the formatting would then fight.
-el.editor.addEventListener('paste', (e) => {
+onPane('editor', 'paste', (e) => {
   if (!e.clipboardData || e.clipboardData.files.length > 0) return;
   const text = e.clipboardData.getData('text/plain');
   if (!text) return;
@@ -2057,7 +2673,7 @@ el.editor.addEventListener('paste', (e) => {
 
 // Enter inserts a plain line break rather than a new paragraph block, so the
 // content stays a flat run of text, breaks and image chips.
-el.editor.addEventListener('beforeinput', (e) => {
+onPane('editor', 'beforeinput', (e) => {
   // Undo and redo are the app's own, kept as text: the browser's would try to
   // undo the formatting's redraws along with the typing and lose its way.
   if (e.inputType === 'historyUndo' || e.inputType === 'historyRedo') {
@@ -2075,7 +2691,7 @@ el.editor.addEventListener('beforeinput', (e) => {
   }
 });
 
-el.editor.addEventListener('keydown', (e) => {
+onPane('editor', 'keydown', (e) => {
   const chip = selectedBlock();
   if (chip) {
     if (isChip(chip) && e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
@@ -2125,11 +2741,11 @@ el.editor.addEventListener('keydown', (e) => {
 let pendingTitle: string | null = null;
 let titleAtFocus: { id: string; title: string | undefined } | null = null;
 
-el.title.addEventListener('focus', () => {
+onPane('title', 'focus', () => {
   const n = selected();
   titleAtFocus = n ? { id: n.id, title: n.title } : null;
 });
-el.title.addEventListener('input', () => {
+onPane('title', 'input', () => {
   if (!selected()) return;
   pendingTitle = el.title.value;
   renderList();
@@ -2213,12 +2829,13 @@ function fillTitlePlaceholder(): void {
   if (!usesTitle(n.body)) return;
   notes = updateBody(notes, n.id, n.body.replace(/\{\{\s*title\s*\}\}/gi, title));
   editorNoteId = null;
+  forgetDrawn(n.id);
   renderEditor();
   scheduleSave();
 }
 
-el.title.addEventListener('blur', () => void commitTitle().then(fillTitlePlaceholder));
-el.title.addEventListener('keydown', (e) => {
+onPane('title', 'blur', () => void commitTitle().then(fillTitlePlaceholder));
+onPane('title', 'keydown', (e) => {
   if (e.key === 'Enter' || e.key === 'ArrowDown') {
     e.preventDefault();
     // The title is committed first — a rename that asks about links holds the
@@ -2658,11 +3275,11 @@ el.list.addEventListener('keydown', (e) => {
 // --- buttons ----------------------------------------------------------------
 
 el.newBtn.addEventListener('click', () => newNote());
-el.previewToggle.addEventListener('click', togglePreview);
-el.attachBtn.addEventListener('click', () => void pickImages());
-el.pinBtn.addEventListener('click', togglePinSelected);
-el.deleteBtn.addEventListener('click', armDelete);
-el.toggleSidebar.addEventListener('click', toggleSidebar);
+onPane('previewToggle', 'click', togglePreview);
+onPane('attachBtn', 'click', () => void pickImages());
+onPane('pinBtn', 'click', togglePinSelected);
+onPane('deleteBtn', 'click', armDelete);
+onPane('toggleSidebar', 'click', toggleSidebar);
 el.helpBtn.addEventListener('click', () => toggleHelp(true));
 el.helpSheet.addEventListener('click', (e) => {
   if (e.target === el.helpSheet) toggleHelp(false);
@@ -2903,14 +3520,14 @@ function replaceEvery(): void {
   showStatus(`Replaced ${count} ${count === 1 ? 'match' : 'matches'}`, 2500);
 }
 
-el.findInput.addEventListener('input', refreshFind);
-el.findInput.addEventListener('keydown', (e) => {
+onPane('findInput', 'input', refreshFind);
+onPane('findInput', 'keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
     stepFind(e.shiftKey ? -1 : 1);
   }
 });
-el.replaceInput.addEventListener('keydown', (e) => {
+onPane('replaceInput', 'keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
     if (e.ctrlKey || e.metaKey) replaceEvery();
@@ -2918,29 +3535,31 @@ el.replaceInput.addEventListener('keydown', (e) => {
   }
 });
 // Esc inside the bar closes it before the window's own Esc chain runs.
-el.findBar.addEventListener('keydown', (e) => {
+onPane('findBar', 'keydown', (e) => {
   if (e.key === 'Escape') {
     e.preventDefault();
     e.stopPropagation();
     closeFind(true);
   }
 });
-el.findPrev.addEventListener('click', () => stepFind(-1));
-el.findNext.addEventListener('click', () => stepFind(1));
-el.findClose.addEventListener('click', () => closeFind(false));
-el.findToggleReplace.addEventListener('click', () => {
+onPane('findPrev', 'click', () => stepFind(-1));
+onPane('findNext', 'click', () => stepFind(1));
+onPane('findClose', 'click', () => closeFind(false));
+onPane('findToggleReplace', 'click', () => {
   setReplaceRow(el.findReplaceRow.hidden);
   if (!el.findReplaceRow.hidden) el.replaceInput.focus();
 });
-el.replaceOne.addEventListener('click', replaceCurrent);
-el.replaceAll.addEventListener('click', replaceEvery);
-for (const [btn, key] of [
-  [el.findCase, 'caseSensitive'],
-  [el.findRegex, 'regex'],
+onPane('replaceOne', 'click', replaceCurrent);
+onPane('replaceAll', 'click', replaceEvery);
+for (const [name, key] of [
+  ['findCase', 'caseSensitive'],
+  ['findRegex', 'regex'],
 ] as const) {
-  btn.addEventListener('click', () => {
+  onPane(name, 'click', () => {
     findOpts[key] = !findOpts[key];
-    btn.setAttribute('aria-pressed', String(findOpts[key]));
+    // Case and regex are how this window searches, not how one pane does, so
+    // every pane's buttons say the same thing.
+    for (const p of panes) p.els[name].setAttribute('aria-pressed', String(findOpts[key]));
     refreshFind();
     el.findInput.focus();
   });
@@ -3146,6 +3765,7 @@ function toggleLiveFormat(): void {
   el.liveFormat.checked = ui.liveFormat;
   // The editor only re-renders on a note switch, so tell it this counts as one.
   editorNoteId = null;
+  forgetAllDrawn();
   renderEditor();
   if (selected() && !ui.preview) caretToEnd();
   showStatus(ui.liveFormat ? 'Live formatting on' : 'Live formatting off', 1500);
@@ -3308,6 +3928,7 @@ function captureToInbox(text: string): void {
   // caret left where the writer had it rather than at the top of the note.
   const caret = ui.selectedId === inbox.id && document.activeElement === el.editor ? caretOffsetOrStart() : null;
   if (ui.selectedId === inbox.id) editorNoteId = null;
+  forgetDrawn(inbox.id);
   renderList();
   renderEditor();
   if (caret !== null) placeCaretAt(caret);
@@ -3343,6 +3964,7 @@ function applyExternal(changes: ExternalChanges): void {
     else notes = notes.map((n) => (n.id === note.id ? note : n));
     touched++;
     if (note.id === ui.selectedId) editorNoteId = null;
+    forgetDrawn(note.id);
   }
   if (touched === 0) return;
   // Through select(), so the note taken away is left the way any other is:
@@ -3863,6 +4485,17 @@ function travel(dir: -1 | 1): void {
   el.editor.scrollTop = to.scroll;
 }
 
+/** A note to open beside this one, most recently edited first. */
+function pickForTab(): void {
+  const open = new Set(panes[paneAt]?.tabs ?? []);
+  const items: PickItem[] = sortByEdited(notes).map((n) => ({
+    label: shownTitle(n),
+    hint: open.has(n.id) ? 'already open here' : relativeTime(n.updatedAt),
+    run: () => openInTab(n.id),
+  }));
+  openPicker('Which note, in a tab of its own?', items);
+}
+
 /** The last notes opened, most recent first, to jump to one of them. */
 function pickRecent(): void {
   ui.recent = pruneRecent(ui.recent, (id) => notes.some((n) => n.id === id));
@@ -3927,6 +4560,7 @@ const refactorHost: RefactorHost = {
       editorNoteId = null;
       el.title.value = next.title ?? '';
     }
+    forgetDrawn(id);
   },
   trash: (id) => {
     // The trash copy is taken from the file: what was typed since the last save goes there first.
@@ -4024,11 +4658,53 @@ const ACTIONS: Action[] = [
   { id: 'prev', label: 'Previous note', group: 'Notes', chord: 'ctrl+arrowup', run: () => step(-1) },
   { id: 'next', label: 'Next note', group: 'Notes', chord: 'ctrl+arrowdown', run: () => step(1) },
   {
+    id: 'tab-new',
+    label: 'Open a note in a new tab…',
+    hint: 'Keeps this one open beside it; Ctrl and a number goes to the nth tab',
+    group: 'Notes',
+    chord: 'ctrl+t',
+    terms: 'tab open beside second',
+    enabled: () => notes.length > 0,
+    run: pickForTab,
+  },
+  {
+    id: 'tab-close',
+    label: 'Close this tab',
+    hint: 'The note stays; only the tab goes',
+    group: 'Notes',
+    chord: 'ctrl+w',
+    terms: 'tab shut',
+    enabled: () => hasNote(),
+    run: () => {
+      const p = panes[paneAt];
+      if (ui.selectedId) closeTab(p, ui.selectedId);
+    },
+  },
+  {
+    id: 'tab-next',
+    label: 'Next tab',
+    group: 'Notes',
+    chord: 'ctrl+tab',
+    terms: 'tab switch',
+    enabled: () => panes[paneAt]?.tabs.length > 1,
+    run: () => stepTab(1),
+  },
+  {
+    id: 'tab-prev',
+    label: 'Previous tab',
+    group: 'Notes',
+    chord: 'ctrl+shift+tab',
+    terms: 'tab switch',
+    enabled: () => panes[paneAt]?.tabs.length > 1,
+    run: () => stepTab(-1),
+  },
+  {
     id: 'title',
     label: 'Rename this note',
     hint: 'When other notes link to it by name, the links can follow',
     group: 'Notes',
-    chord: 'ctrl+t',
+    chord: 'ctrl+r',
+    also: ['f2'],
     terms: 'title',
     run: focusTitle,
   },
@@ -4334,6 +5010,43 @@ const ACTIONS: Action[] = [
 
   { id: 'sidebar', label: 'Toggle the sidebar', group: 'Window', chord: 'ctrl+\\', run: toggleSidebar },
   {
+    id: 'split',
+    label: 'Split the pane',
+    hint: 'The same note in a second pane beside this one, scrolled on its own',
+    group: 'Window',
+    chord: 'ctrl+shift+\\',
+    terms: 'pane side by side compare two',
+    enabled: () => panes.length < MAX_PANES,
+    run: splitPane,
+  },
+  {
+    id: 'pane-close',
+    label: 'Close this pane',
+    group: 'Window',
+    chord: 'ctrl+shift+w',
+    terms: 'pane unsplit',
+    enabled: () => panes.length > 1,
+    run: () => closePane(panes[paneAt]),
+  },
+  {
+    id: 'pane-next',
+    label: 'Focus the next pane',
+    group: 'Window',
+    chord: 'ctrl+alt+arrowright',
+    terms: 'pane move focus right',
+    enabled: () => panes.length > 1,
+    run: () => stepPane(1),
+  },
+  {
+    id: 'pane-prev',
+    label: 'Focus the previous pane',
+    group: 'Window',
+    chord: 'ctrl+alt+arrowleft',
+    terms: 'pane move focus left',
+    enabled: () => panes.length > 1,
+    run: () => stepPane(-1),
+  },
+  {
     id: 'layout',
     label: 'Layout and window settings',
     hint: 'Line width, margin, focus, the tray and the summon shortcut',
@@ -4606,6 +5319,15 @@ document.addEventListener('keydown', (e) => {
   }
   const chord = chordOf(e);
   if (!isCommandChord(chord)) return;
+  // Ctrl and a number goes to the nth open note of this pane, Ctrl+9 to the
+  // last of them — the tab keys every window with tabs has. They are not in
+  // the registry: nine near-identical rows would crowd the palette out.
+  const digit = /^ctrl\+([1-9])$/.exec(chord);
+  if (digit) {
+    e.preventDefault();
+    goToTab(Number(digit[1]));
+    return;
+  }
   const action = CHORDS.get(chord);
   if (!action || action.enabled?.() === false) return;
   e.preventDefault();
@@ -4621,7 +5343,7 @@ window.addEventListener('beforeunload', () => void flush());
 // Relative timestamps drift; refresh them once a minute.
 window.setInterval(() => {
   renderList();
-  renderMeta();
+  for (const p of panes) withPane(p, renderMeta);
 }, 60_000);
 
 // --- the command line -------------------------------------------------------
@@ -4650,8 +5372,8 @@ const CLI_BUSY = 4;
 const CLI_APP_ERROR = 6;
 
 /** The layout state as the command line sees it: the settings alone, the same shape from `ui get` and `ui set`. */
-function uiState(): Omit<UiState, 'recent'> {
-  const { recent: _recent, ...rest } = ui;
+function uiState(): Omit<UiState, 'recent' | 'panes' | 'paneAt'> {
+  const { recent: _recent, panes: _panes, paneAt: _paneAt, ...rest } = ui;
   return rest;
 }
 
@@ -4661,8 +5383,11 @@ function noteById(id: string): Note {
   return n;
 }
 
-/** Whether the note is the one on screen, with words not yet saved. */
-const beingTyped = (id: string): boolean => dirty && ui.selectedId === id;
+/** Whether the note has words in it that are not on disk yet. */
+const beingTyped = (id: string): boolean => dirty && typedId === id;
+
+/** Whether the note is on screen in any pane. */
+const isOpen = (id: string): boolean => panes.some((p) => activeIn(p) === id);
 
 function refuseIfTyping(id: string, force: boolean | undefined): void {
   if (beingTyped(id) && !force) throw new CliRefusal('That note is being typed in the window right now; pass --force to change it anyway', CLI_BUSY);
@@ -4694,6 +5419,7 @@ function takeIn(note: Note): void {
   if (ui.selectedId === note.id) rememberNow('cli');
   else if (i >= 0) rememberFor(note.id);
   notes = i < 0 ? [note, ...notes] : notes.map((n) => (n.id === note.id ? note : n));
+  forgetDrawn(note.id);
   if (ui.selectedId === note.id) {
     const caret = document.activeElement === el.editor ? caretOffsetOrStart() : null;
     editorNoteId = null;
@@ -4722,7 +5448,7 @@ const UI_TOGGLES: Record<string, () => void> = {
 const cliHandlers: Record<string, CliHandler> = {
   'note.list': () => notes,
   'note.get': ({ id }: { id: string }) => notes.find((n) => n.id === id) ?? null,
-  'note.status': ({ id }: { id: string }) => ({ open: ui.selectedId === id, dirty: beingTyped(id) }),
+  'note.status': ({ id }: { id: string }) => ({ open: isOpen(id), dirty: beingTyped(id) }),
   'note.put': async ({ note, force, expectUpdatedAt }: { note: Note; force?: boolean; expectUpdatedAt?: number }) => {
     const current = notes.find((n) => n.id === note.id);
     if (current) refuseIfTyping(note.id, force);
@@ -4881,6 +5607,8 @@ async function init(): Promise<void> {
   loaded = true;
   if (ui.selectedId && !notes.some((n) => n.id === ui.selectedId)) ui.selectedId = null;
   if (!ui.selectedId) ui.selectedId = sortByEdited(notes)[0]?.id ?? null;
+  // The panes come next: everything after this point is drawn into one.
+  openPanes();
   renderKeyGroups();
   applySidebar();
   applyLayout();

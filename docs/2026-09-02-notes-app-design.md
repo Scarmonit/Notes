@@ -2,6 +2,12 @@
 
 Approved design for the initial release of Notes, a minimal keyboard-first markdown notes desktop app.
 
+> **Superseded in part (0.17.0, 2026-09-03).** The single-window rule below —
+> "a single-window Windows app… a sidebar list, an editor" — no longer holds:
+> notes open in tabs and the window can be split into panes. See
+> [Panes and tabs](2026-09-03-panes-and-tabs.md). The rest of this document,
+> including the data model and the visual system, still stands.
+
 ## Goal
 
 A single-window Windows app for writing markdown notes: a sidebar list, an editor, instant search, create/delete, last-edited timestamps, a preview toggle, and keyboard-only navigation. Focused writing UI, dark, no chrome beyond what the work needs.

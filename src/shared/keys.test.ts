@@ -36,6 +36,18 @@ describe('isCommandChord', () => {
     expect(isCommandChord('shift+a')).toBe(false);
     expect(isCommandChord('')).toBe(false);
   });
+
+  it('accepts a function key on its own: nothing types an F2', () => {
+    expect(isCommandChord('f2')).toBe(true);
+    expect(isCommandChord('f12')).toBe(true);
+    expect(isCommandChord('fx')).toBe(false);
+  });
+});
+
+describe('keyLabel', () => {
+  it('draws a function key in capitals', () => {
+    expect(keyLabel('f2')).toEqual(['F2']);
+  });
 });
 
 describe('keyLabel', () => {

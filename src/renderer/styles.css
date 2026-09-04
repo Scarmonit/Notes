@@ -268,6 +268,11 @@ kbd {
   border-left-color: var(--margin);
   border-radius: 0 5px 5px 0;
 }
+/* Open in one of the other panes: the same rule, said more quietly. */
+.item.open {
+  border-left-color: var(--margin-rule);
+  border-radius: 0 5px 5px 0;
+}
 
 .item-title {
   display: flex;
@@ -355,6 +360,117 @@ kbd {
   color: var(--paper);
 }
 
+
+/* --- panes and tabs ------------------------------------------------------ */
+
+/* The panes share the room evenly. One pane looks exactly as one pane always
+   did; the rule between two of them is the same line as the sidebar's. */
+.panes {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.panes > .pane + .pane {
+  border-left: 1px solid var(--line);
+}
+/* Which pane the writing goes into, said as quietly as possible: the margin
+   rule of the page it belongs to, at the top of it. Only drawn when there is
+   more than one pane to tell apart. */
+.app.split .pane {
+  position: relative;
+}
+.app.split .pane::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: transparent;
+  pointer-events: none;
+  z-index: 3;
+}
+.app.split .pane.pane-focused::before {
+  background: var(--margin);
+}
+.app.split .pane:not(.pane-focused) .marginalia,
+.app.split .pane:not(.pane-focused) .pane-actions {
+  opacity: 0.55;
+}
+
+.tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0 8px;
+  height: 30px;
+  flex: none;
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-bottom: 1px solid var(--line);
+}
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 200px;
+  min-width: 0;
+  padding: 0 2px 0 8px;
+  border-radius: 5px 5px 0 0;
+  /* Every tab reserves the line the open one draws, so the words never shift. */
+  border-bottom: 2px solid transparent;
+  color: var(--paper-faint);
+}
+.tab:hover {
+  background: var(--hover);
+  color: var(--paper-dim);
+}
+.tab.active {
+  background: var(--raised);
+  border-bottom-color: var(--margin);
+  color: var(--paper);
+}
+
+.tab-name {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-close {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--paper-faint);
+  opacity: 0;
+}
+.tab:hover .tab-close,
+.tab.active .tab-close {
+  opacity: 1;
+}
+.tab-close:hover {
+  background: var(--hover);
+  color: var(--paper);
+}
+.tab-close:focus-visible {
+  opacity: 1;
+}
 /* --- editor pane -------------------------------------------------------- */
 
 .pane {
@@ -374,9 +490,16 @@ kbd {
   gap: 10px;
   height: var(--head-h);
   padding: 0 8px;
-  /* Leave room for the native caption buttons overlaid at the top right. */
-  padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 8px);
   flex: none;
+}
+/* Leave room for the native caption buttons overlaid at the top right. Only
+   the pane against that edge needs it; the others keep their full width. */
+.pane:last-child .pane-head {
+  padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 8px);
+}
+/* One sidebar button, on the pane beside the sidebar. */
+.pane:not(:first-child) .sidebar-btn {
+  display: none;
 }
 
 .pane-meta {
@@ -455,7 +578,7 @@ kbd {
   color: var(--paper-faint);
   text-align: right;
 }
-.marginalia #edited {
+.marginalia .edited {
   color: var(--paper-dim);
 }
 

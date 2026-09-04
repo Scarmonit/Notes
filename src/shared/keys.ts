@@ -30,13 +30,17 @@ export function chordOf(e: KeyLike): string {
   return parts.join('+');
 }
 
+const FUNCTION_KEY = /^f\d{1,2}$/;
+
 /**
  * True when the chord holds Ctrl or Alt, so it cannot be ordinary typing.
  * Shift alone does not count: Shift+A is a capital letter, not a command.
+ * A function key is a command on its own — nothing types an F2.
  */
 export function isCommandChord(chord: string): boolean {
   const parts = chord.split('+');
-  return parts.length > 1 && (parts.includes('ctrl') || parts.includes('alt'));
+  if (parts.length === 1) return FUNCTION_KEY.test(parts[0]);
+  return parts.includes('ctrl') || parts.includes('alt');
 }
 
 const NAMES: Record<string, string> = {
@@ -59,7 +63,7 @@ const NAMES: Record<string, string> = {
 /** The pieces of a chord as they should be drawn, one <kbd> each. */
 export function keyLabel(chord: string): string[] {
   if (!chord) return [];
-  return chord.split('+').map((part) => NAMES[part] ?? (part.length === 1 ? part.toUpperCase() : part));
+  return chord.split('+').map((part) => NAMES[part] ?? (part.length === 1 || FUNCTION_KEY.test(part) ? part.toUpperCase() : part));
 }
 
 const ACCELERATOR: Record<string, string> = {

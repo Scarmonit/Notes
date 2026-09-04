@@ -1,8 +1,10 @@
 # Notes
 
-A minimal, keyboard-first markdown notes app for Windows. One window, a sidebar of notes, an editor, and nothing else.
+A keyboard-first markdown notes app for Windows: a sidebar of notes and a page to write on. When one page is not enough, notes open in tabs and the window splits into panes, each scrolled and written in on its own.
 
 - Sidebar list sorted by last edit, with title, relative timestamp and a snippet
+- Tabs: `Ctrl+T` opens a note in a tab of its own beside the one you are on, `Ctrl+Tab` moves between them, `Ctrl+W` closes one and `Ctrl+1`…`Ctrl+9` goes straight to the nth. Choosing a note in the sidebar still turns the page rather than piling tabs up — a tab is something you ask for, and the strip only appears once a pane holds two
+- Split panes: `Ctrl+Shift+\` opens a second pane beside the first (three at most), each with its own tabs, its own scroll and its own preview, so a note can be written on one side and read on the other, or two notes held open at once. Typing in one pane reaches the other a moment later, because it is the same note. `Ctrl+Alt+←` / `Ctrl+Alt+→` move between panes and `Ctrl+Shift+W` closes one; the window opens again with the panes it had
 - Instant search across every note as you type; pressing `Enter` on a search that matches nothing starts a note with that title
 - Pin the notes you keep coming back to, and write `#tags` anywhere to filter the list by them; nest them as `#wow/commands` and the parent gathers everything filed under it
 - Link notes together with `[[Another note]]` — click a link to go there, or to start it; every note lists what points at it
@@ -48,7 +50,11 @@ The full list lives in the app on `Ctrl+/`, and every command is also reachable 
 | `↑` `↓` | Move through notes (in the list or the search box) |
 | `Enter` | Open the selected note, or start one titled with the search |
 | `Ctrl+↑` / `Ctrl+↓` | Previous / next note from anywhere |
-| `Ctrl+T` | Rename the note |
+| `Ctrl+R` / `F2` | Rename the note |
+| `Ctrl+T` | Open a note in a new tab |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
+| `Ctrl+W` | Close this tab |
+| `Ctrl+1` … `Ctrl+9` | The nth tab of this pane (`Ctrl+9` is the last) |
 | `Ctrl+Shift+P` | Pin or unpin |
 | `Ctrl+E` | Toggle markdown preview |
 | `Ctrl+Shift+F` | Focus mode |
@@ -73,6 +79,9 @@ The full list lives in the app on `Ctrl+/`, and every command is also reachable 
 | `Ctrl+Shift+D` | Delete note, press again within 3 s to confirm |
 | `Ctrl+Shift+Backspace` | Deleted notes: look at or put back anything deleted in the last month |
 | `Ctrl+\` | Toggle sidebar |
+| `Ctrl+Shift+\` | Split the pane |
+| `Ctrl+Shift+W` | Close this pane |
+| `Ctrl+Alt+←` / `Ctrl+Alt+→` | Move between panes |
 | `Ctrl+,` | Layout and window settings (both global shortcuts, the notes folder) |
 | `Ctrl+Alt+N` / `Ctrl+Alt+J` | From anywhere in Windows: summon Notes / the quick-note box |
 | `Esc` | Back to the list, clear search, or cancel |
