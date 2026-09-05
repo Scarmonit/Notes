@@ -4503,6 +4503,8 @@ function renderSettings(warnings: Partial<Record<HotkeyRow['key'], string>> = {}
     }
     row.clear.hidden = !chord || row.recording;
     row.note.textContent = warnings[row.key] ?? '';
+    // While the well is listening its note is an instruction; otherwise it is a warning.
+    row.note.classList.toggle('layout-warn', !row.recording && Boolean(warnings[row.key]));
   }
 }
 

@@ -284,125 +284,163 @@
         </div>
       </div>
 
+      <!-- The Layout sheet is set like the page it lays out: a ruled pad. The
+           section names sit in a margin column, right-aligned against a rule,
+           the way the app's own marginalia sit left of the margin rule; the
+           settings are the body. At the head of the body is the proof — the
+           window in miniature, drawn in CSS from the same tokens the real page
+           is set from, so a slider is seen before it is understood. -->
       <div id="layout-sheet" class="sheet" hidden role="dialog" aria-modal="true" aria-label="Layout and window">
         <div class="sheet-card layout-card" tabindex="-1">
-          <h2>Layout</h2>
-          <!-- Two sizes, kept apart: the interface around the note, and the note.
-               100 % is the designed size; the interface only goes up from it. -->
-          <label class="layout-row">
-            <span class="u">Interface size</span>
-            <input id="ui-scale" type="range" min="1" max="1.4" step="0.05" aria-label="Interface size" />
-            <output id="ui-scale-out" class="u" for="ui-scale"></output>
-          </label>
-          <label class="layout-row">
-            <span class="u">Reading size</span>
-            <input id="reading-scale" type="range" min="0.85" max="1.6" step="0.05" aria-label="Reading size" />
-            <output id="reading-scale-out" class="u" for="reading-scale"></output>
-          </label>
-          <label class="layout-row">
-            <span class="u">Line width</span>
-            <input id="text-w" type="range" min="520" max="1800" step="20" aria-label="Line width" />
-            <output id="text-w-out" class="u" for="text-w"></output>
-          </label>
-          <label class="layout-row">
-            <span class="u">Margin width</span>
-            <input id="margin-w" type="range" min="90" max="280" step="2" aria-label="Margin width" />
-            <output id="margin-w-out" class="u" for="margin-w"></output>
-          </label>
-          <label class="layout-row layout-check">
-            <input id="margin-show" type="checkbox" />
-            <span class="u layout-name">Margin</span>
-            <span class="layout-text">The edit time and word count, left of the rule</span>
-          </label>
-          <label class="layout-row layout-check">
-            <input id="outline-show" type="checkbox" />
-            <span class="u layout-name">Outline</span>
-            <span class="layout-text">The note’s headings beside it, to jump by</span>
-          </label>
-          <label class="layout-row layout-check">
-            <input id="footnotes-show" type="checkbox" />
-            <span class="u layout-name">Footnotes</span>
-            <span class="layout-text">Show footnotes beside the note to jump to and edit</span>
-          </label>
-          <label class="layout-row layout-check">
-            <input id="live-format" type="checkbox" />
-            <span class="u layout-name">Live formatting</span>
-            <span class="layout-text">Headings, bold and code take shape as you write</span>
-          </label>
-          <label class="layout-row layout-check">
-            <input id="controls-show" type="checkbox" />
-            <span class="u layout-name">Editor controls</span>
-            <span class="layout-text">The commands for this note, with their shortcuts, in the pane header</span>
-          </label>
-          <label class="layout-row layout-check">
-            <input id="focus-mode" type="checkbox" />
-            <span class="u layout-name">Focus mode</span>
-            <span class="layout-text">Dim everything but the paragraph you are in</span>
-          </label>
-          <label class="layout-row layout-check">
-            <input id="typewriter" type="checkbox" />
-            <span class="u layout-name">Typewriter</span>
-            <span class="layout-text">Keep the line you are writing in the middle</span>
-          </label>
+          <h2 class="layout-title">Layout</h2>
+          <div class="layout-proof" aria-hidden="true">
+            <div class="proof">
+              <div class="proof-bar"></div>
+              <div class="proof-pane">
+                <div class="proof-head"></div>
+                <div class="proof-page">
+                  <div class="proof-margin"><i></i><i></i></div>
+                  <div class="proof-text"><i class="proof-h"></i><i class="proof-p"></i><i class="proof-l"></i><i class="proof-p proof-rest"></i></div>
+                  <div class="proof-rail"><span class="proof-outline"><i></i><i></i><i></i></span><span class="proof-footnotes"><i></i><i></i></span></div>
+                </div>
+              </div>
+            </div>
+          </div>
 
-          <h3 class="layout-head">Window</h3>
-          <label class="layout-row layout-check">
-            <input id="close-tray" type="checkbox" />
-            <span class="u layout-name">Close to tray</span>
-            <span class="layout-text">Closing the window keeps Notes running in the tray</span>
-          </label>
-          <div class="layout-row">
-            <span class="u">Summon Notes</span>
-            <button id="hotkey" class="hotkey-btn" type="button" aria-label="Global shortcut, click to change"></button>
-            <button id="hotkey-clear" class="link-btn u" type="button">Clear</button>
+          <h3 class="layout-margin u">Page</h3>
+          <div class="layout-body">
+            <!-- Two sizes, kept apart: the interface around the note, and the note.
+                 100 % is the designed size; the interface only goes up from it. -->
+            <label class="layout-row">
+              <span class="u">Interface size</span>
+              <input id="ui-scale" type="range" min="1" max="1.4" step="0.05" aria-label="Interface size" />
+              <output id="ui-scale-out" class="u" for="ui-scale"></output>
+            </label>
+            <label class="layout-row">
+              <span class="u">Reading size</span>
+              <input id="reading-scale" type="range" min="0.85" max="1.6" step="0.05" aria-label="Reading size" />
+              <output id="reading-scale-out" class="u" for="reading-scale"></output>
+            </label>
+            <label class="layout-row">
+              <span class="u">Line width</span>
+              <input id="text-w" type="range" min="520" max="1800" step="20" aria-label="Line width" />
+              <output id="text-w-out" class="u" for="text-w"></output>
+            </label>
+            <label class="layout-row">
+              <span class="u">Margin width</span>
+              <input id="margin-w" type="range" min="90" max="280" step="2" aria-label="Margin width" />
+              <output id="margin-w-out" class="u" for="margin-w"></output>
+            </label>
           </div>
-          <p id="hotkey-note" class="layout-note u"></p>
-          <div class="layout-row">
-            <span class="u">Quick note</span>
-            <button id="capture-hotkey" class="hotkey-btn" type="button" aria-label="Quick-note shortcut, click to change"></button>
-            <button id="capture-hotkey-clear" class="link-btn u" type="button">Clear</button>
-          </div>
-          <p id="capture-hotkey-note" class="layout-note u"></p>
-          <label class="layout-row layout-check">
-            <input id="peek-on" type="checkbox" />
-            <span class="u layout-name">Preview notes on hover</span>
-            <span class="layout-text">Resting on a link, a backlink or a note in the list shows what it points at. <kbd>Alt+P</kbd> does the same from the keyboard, whether this is on or not</span>
-          </label>
-          <label class="layout-row layout-check">
-            <input id="reminders-on" type="checkbox" />
-            <span class="u layout-name">Reminders</span>
-            <span class="layout-text">A Windows notification when a task’s @date comes due, while Notes runs</span>
-          </label>
 
-          <h3 class="layout-head">Journal</h3>
-          <div class="layout-row">
-            <span class="u">Where entries go</span>
-            <input id="journal-path" class="layout-input" type="text" spellcheck="false" aria-label="Where journal entries go" />
-            <button id="journal-template" class="link-btn u" type="button">Template…</button>
+          <h3 class="layout-margin u">Beside the note</h3>
+          <div class="layout-body">
+            <label class="layout-row layout-check">
+              <input id="margin-show" type="checkbox" />
+              <span class="u layout-name">Margin</span>
+              <span class="layout-text">The edit time and word count, left of the rule</span>
+            </label>
+            <label class="layout-row layout-check">
+              <input id="outline-show" type="checkbox" />
+              <span class="u layout-name">Outline</span>
+              <span class="layout-text">The note’s headings beside it, to jump by</span>
+            </label>
+            <label class="layout-row layout-check">
+              <input id="footnotes-show" type="checkbox" />
+              <span class="u layout-name">Footnotes</span>
+              <span class="layout-text">The note’s footnotes under the outline, to jump to and edit</span>
+            </label>
           </div>
-          <p id="journal-note" class="layout-note u">A path for the dated note, where a slash makes a folder. YYYY, MM, DD, MMM and DDD become the date; anything else is the word it is. Changing this affects the days you open from now on — notes already written are not moved.</p>
 
-          <h3 class="layout-head">Files</h3>
-          <div class="layout-row">
-            <span class="u">Notes folder</span>
-            <span id="folder-path" class="layout-text">One markdown file per note.</span>
-            <button id="folder-change" class="link-btn u" type="button">Change…</button>
-            <button id="open-folder" class="pill u" type="button">Open</button>
+          <h3 class="layout-margin u">Writing</h3>
+          <div class="layout-body">
+            <label class="layout-row layout-check">
+              <input id="live-format" type="checkbox" />
+              <span class="u layout-name">Live formatting</span>
+              <span class="layout-text">Headings, bold and code take shape as you write</span>
+            </label>
+            <label class="layout-row layout-check">
+              <input id="controls-show" type="checkbox" />
+              <span class="u layout-name">Editor controls</span>
+              <span class="layout-text">The commands for this note, with their shortcuts, in the pane header</span>
+            </label>
+            <label class="layout-row layout-check">
+              <input id="focus-mode" type="checkbox" />
+              <span class="u layout-name">Focus mode</span>
+              <span class="layout-text">Dim everything but the paragraph you are in</span>
+            </label>
+            <label class="layout-row layout-check">
+              <input id="typewriter" type="checkbox" />
+              <span class="u layout-name">Typewriter</span>
+              <span class="layout-text">Keep the line you are writing in the middle</span>
+            </label>
           </div>
-          <p id="folder-note" class="layout-note u">Choose a folder in OneDrive, Dropbox or a git checkout and the notes are backed up and readable anywhere. An empty folder takes the notes you have; a folder that already holds notes becomes the notebook as it is.</p>
-          <div class="layout-row">
-            <span class="u">Web clipper</span>
-            <span class="layout-text">A bookmarklet that saves the page you are reading, or the words you have selected, as a note.</span>
-            <button id="clipper-copy" class="pill u" type="button">Copy</button>
+
+          <h3 class="layout-margin u">Window</h3>
+          <div class="layout-body">
+            <label class="layout-row layout-check">
+              <input id="close-tray" type="checkbox" />
+              <span class="u layout-name">Close to tray</span>
+              <span class="layout-text">Closing the window keeps Notes running in the tray</span>
+            </label>
+            <div class="layout-row">
+              <span class="u">Summon Notes</span>
+              <button id="hotkey" class="hotkey-btn" type="button" aria-label="Global shortcut, click to change"></button>
+              <button id="hotkey-clear" class="link-btn u" type="button">Clear</button>
+            </div>
+            <p id="hotkey-note" class="layout-note"></p>
+            <div class="layout-row">
+              <span class="u">Quick note</span>
+              <button id="capture-hotkey" class="hotkey-btn" type="button" aria-label="Quick-note shortcut, click to change"></button>
+              <button id="capture-hotkey-clear" class="link-btn u" type="button">Clear</button>
+            </div>
+            <p id="capture-hotkey-note" class="layout-note"></p>
+            <label class="layout-row layout-check">
+              <input id="peek-on" type="checkbox" />
+              <span class="u layout-name">Preview on hover</span>
+              <span class="layout-text">Resting on a link, a backlink or a note in the list shows what it points at. <kbd>Alt+P</kbd> does the same from the keyboard, whether this is on or not</span>
+            </label>
+            <label class="layout-row layout-check">
+              <input id="reminders-on" type="checkbox" />
+              <span class="u layout-name">Reminders</span>
+              <span class="layout-text">A Windows notification when a task’s @date comes due, while Notes runs</span>
+            </label>
           </div>
-          <p id="clipper-note" class="layout-note u">Copy it, then make a new bookmark in your browser and paste it as the address. It works while Notes is running.</p>
-          <div class="layout-row">
-            <span class="u">Command line</span>
-            <span id="cli-text" class="layout-text">The <code>notes</code> command works from cmd, PowerShell and Windows Terminal.</span>
-            <button id="cli-install" class="pill u" type="button">Install</button>
+
+          <h3 class="layout-margin u">Journal</h3>
+          <div class="layout-body">
+            <div class="layout-row">
+              <span class="u">Where entries go</span>
+              <input id="journal-path" class="layout-input" type="text" spellcheck="false" aria-label="Where journal entries go" />
+              <button id="journal-template" class="link-btn u" type="button">Template…</button>
+            </div>
+            <p id="journal-note" class="layout-note">A path for the dated note, where a slash makes a folder. YYYY, MM, DD, MMM and DDD become the date; anything else is the word it is. Changing this affects the days you open from now on — notes already written are not moved.</p>
           </div>
-          <p id="cli-note" class="layout-note u"></p>
-          <p class="sheet-foot u">Press <kbd>Esc</kbd> to close</p>
+
+          <h3 class="layout-margin u">Files</h3>
+          <div class="layout-body">
+            <div class="layout-row">
+              <span class="u">Notes folder</span>
+              <span id="folder-path" class="layout-text">One markdown file per note.</span>
+              <button id="folder-change" class="link-btn u" type="button">Change…</button>
+              <button id="open-folder" class="pill u" type="button">Open</button>
+            </div>
+            <p id="folder-note" class="layout-note">Choose a folder in OneDrive, Dropbox or a git checkout and the notes are backed up and readable anywhere. An empty folder takes the notes you have; a folder that already holds notes becomes the notebook as it is.</p>
+            <div class="layout-row">
+              <span class="u">Web clipper</span>
+              <span class="layout-text">A bookmarklet that saves the page you are reading, or the words you have selected, as a note.</span>
+              <button id="clipper-copy" class="pill u" type="button">Copy</button>
+            </div>
+            <p id="clipper-note" class="layout-note">Copy it, then make a new bookmark in your browser and paste it as the address. It works while Notes is running.</p>
+            <div class="layout-row">
+              <span class="u">Command line</span>
+              <span id="cli-text" class="layout-text">The <code>notes</code> command works from cmd, PowerShell and Windows Terminal.</span>
+              <button id="cli-install" class="pill u" type="button">Install</button>
+            </div>
+            <p id="cli-note" class="layout-note"></p>
+          </div>
+
+          <p class="sheet-foot layout-foot u">Press <kbd>Esc</kbd> to close</p>
         </div>
       </div>
 

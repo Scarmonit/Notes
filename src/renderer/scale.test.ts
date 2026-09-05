@@ -192,3 +192,80 @@ describe('the two size sliders', () => {
     expect(round(Number.NaN, 0.85, 1.6, 1)).toBe(1);
   });
 });
+
+// 0.29: the Layout sheet is set like the page it lays out — a ruled pad with the
+// section names in a margin column, and at the head of the body a proof of the
+// window drawn from the same tokens the page is set from.
+describe('the Layout sheet', () => {
+  const sheet = page.slice(page.indexOf('id="layout-sheet"'), page.indexOf('id="pick-sheet"'));
+
+  it('is a ruled pad: a margin of section names, each followed by its body', () => {
+    const parts = [...sheet.matchAll(/<h3 class="layout-margin u">([^<]+)<\/h3>\s*<div class="layout-body">/g)].map((m) => m[1]);
+    expect(parts).toEqual(['Page', 'Beside the note', 'Writing', 'Window', 'Journal', 'Files']);
+    expect(sheet.match(/class="layout-body"/g)).toHaveLength(6);
+    expect(sheet).toContain('<h2 class="layout-title">Layout</h2>');
+    expect(rule('.sheet-card.layout-card')).toContain('grid-template-columns: var(--pad-margin) minmax(0, 1fr);');
+    expect(rule('.layout-margin')).toContain('text-align: right;');
+    expect(rule('.layout-body,\n.layout-proof')).toContain('border-left: 1px solid var(--line);');
+    expect(rule('.layout-foot')).toContain('grid-column: 1 / -1;');
+  });
+
+  it('opens with the proof, before the first section', () => {
+    const proof = sheet.indexOf('class="layout-proof"');
+    expect(proof).toBeGreaterThan(-1);
+    expect(proof).toBeLessThan(sheet.indexOf('layout-margin'));
+    expect(sheet).toContain('<div class="layout-proof" aria-hidden="true">');
+    for (const part of ['proof-bar', 'proof-head', 'proof-margin', 'proof-text', 'proof-rail', 'proof-outline', 'proof-footnotes']) expect(sheet).toContain(`class="${part}"`);
+  });
+
+  it('draws the proof from the tokens the page is set from, never from numbers of its own', () => {
+    expect(rule('.proof-bar')).toContain('flex: 0 0 calc(var(--sidebar-w) * var(--k));');
+    expect(rule('.proof-head')).toContain('flex: 0 0 calc(var(--head-h) * var(--k));');
+    expect(rule('.proof-page')).toContain('max-width: calc((var(--text-w) + var(--margin-w)) * var(--k));');
+    expect(rule('.proof-margin')).toContain('flex: 0 0 calc(var(--margin-w) * var(--k));');
+    expect(rule('.proof-text')).toContain('border-left: 1px solid var(--margin-rule);');
+    expect(rule('.proof')).toContain('--proof-line: calc(3px * var(--reading-scale));');
+    expect(rule('.proof')).toContain('--proof-pitch: calc(7px * var(--reading-scale));');
+    expect(rule('.proof-h')).toContain('height: calc(5px * var(--reading-scale));');
+    // The proof's own numbers are the scale, the fixed window height and the
+    // side column's 200px, which is the page's own figure.
+    expect(rule('.proof')).toContain('--k: 0.24;');
+    expect(rule('.page.has-side')).toContain('200px');
+  });
+
+  it('follows the sheet’s own boxes for the margin and the rail, through :has()', () => {
+    expect(css).toContain('.layout-card:has(#margin-show:not(:checked)) .proof-margin {\n  display: none;');
+    expect(css).toContain('.layout-card:has(#margin-show:not(:checked)) .proof-text {\n  border-left: 0;');
+    expect(css).toContain('.layout-card:has(#outline-show:checked, #footnotes-show:checked) .proof-rail {\n  display: flex;');
+    expect(css).toContain('.layout-card:has(#outline-show:checked) .proof-outline,\n.layout-card:has(#footnotes-show:checked) .proof-footnotes {\n  display: flex;');
+    expect(css).toContain('.layout-card:has(#margin-show:not(:checked)):has(#outline-show:checked, #footnotes-show:checked) .proof-page');
+  });
+
+  it('keeps a note quiet, keeps only a warning red, and gives an empty one no room', () => {
+    expect(rule('.layout-note')).toContain('color: var(--paper-dim);');
+    expect(rule('.layout-note:empty')).toContain('display: none;');
+    expect(rule('.layout-warn')).toContain('color: var(--margin);');
+    for (const id of ['hotkey-note', 'capture-hotkey-note', 'journal-note', 'folder-note', 'clipper-note', 'cli-note']) expect(sheet).toMatch(new RegExp(`<p id="${id}" class="layout-note">`));
+    // The two shortcut wells decide: while one is listening its note is an
+    // instruction ("Esc cancels, Backspace clears."); afterwards it is a warning.
+    expect(main).toContain("row.note.classList.toggle('layout-warn', !row.recording && Boolean(warnings[row.key]));");
+    expect(rule('.layout-text')).toContain('overflow-wrap: anywhere;');
+    // A note is a sentence, not a label: none of them is in the utility register.
+    expect(sheet).not.toMatch(/class="layout-note[^"]*\bu\b/);
+    expect(sheet).not.toContain('layout-head');
+  });
+
+  it('sets the instruments in the ink: a hairline rule with a mark for a slider, a drawn box for a check', () => {
+    expect(rule(".layout-row input[type='range']")).toContain('appearance: none;');
+    expect(rule(".layout-row input[type='range']::-webkit-slider-runnable-track")).toContain('height: 1px;');
+    expect(rule(".layout-row input[type='range']::-webkit-slider-thumb")).toContain('width: calc(4px * var(--ui-scale));');
+    expect(rule(".layout-row input[type='range']:focus-visible")).toContain('box-shadow: none;');
+    expect(rule(".layout-row input[type='range']:focus-visible::-webkit-slider-thumb")).toContain('box-shadow: var(--focus);');
+    expect(rule('.layout-check input')).toContain('appearance: none;');
+    expect(rule('.layout-check input')).toContain('background: var(--ink-deep);');
+    expect(rule('.layout-check input:checked')).toContain('border-color: var(--blue);');
+    expect(rule('.layout-text')).toContain('color: var(--paper-dim);');
+    expect(rule('.layout-text')).not.toContain('paper-faint');
+    expect(css).toContain('@media (prefers-reduced-motion: reduce) {\n  .hotkey-btn.recording::after {\n    animation: none;');
+  });
+});

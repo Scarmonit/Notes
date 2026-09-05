@@ -1459,22 +1459,214 @@ kbd {
   display: flex;
   gap: 6px;
 }
-.layout-card {
-  width: min(calc(560px * var(--ui-scale)), calc(100vw - 48px));
+/* --- the Layout sheet: a ruled pad --------------------------------------- */
+
+/* The sheet is set like the page it lays out. A margin column holds the
+   section names, right-aligned against a rule, the way the app's own
+   marginalia sit left of the margin rule; the settings are the body. The card
+   is a grid of margin cells and body cells so the rule runs unbroken from the
+   title to the foot, and a hairline between sections crosses it. */
+.sheet-card.layout-card {
+  --pad-margin: calc(120px * var(--ui-scale));
+  --pad-gutter: calc(22px * var(--ui-scale));
+  display: grid;
+  grid-template-columns: var(--pad-margin) minmax(0, 1fr);
+  align-items: start;
+  width: min(calc(720px * var(--ui-scale)), calc(100vw - 48px));
 }
+.layout-card .layout-title {
+  grid-column: 1;
+  margin: 0;
+  padding: calc(6px * var(--ui-scale)) var(--pad-gutter) 0 0;
+  text-align: right;
+}
+.layout-margin {
+  grid-column: 1;
+  margin: 0;
+  padding: calc(22px * var(--ui-scale)) var(--pad-gutter) 0 0;
+  border-top: 1px solid var(--line);
+  text-align: right;
+  color: var(--paper-dim);
+  line-height: 1.35;
+}
+.layout-body,
+.layout-proof {
+  grid-column: 2;
+  min-width: 0;
+  border-left: 1px solid var(--line);
+  padding: calc(12px * var(--ui-scale)) 0 calc(16px * var(--ui-scale)) var(--pad-gutter);
+}
+.layout-body {
+  border-top: 1px solid var(--line);
+}
+.layout-proof {
+  padding-top: calc(4px * var(--ui-scale));
+  padding-bottom: calc(22px * var(--ui-scale));
+}
+.layout-foot {
+  grid-column: 1 / -1;
+}
+
+/* The proof: the window in miniature, at a quarter of its size. Everything in
+   it is set from the tokens the real page is set from — the sidebar and the
+   pane header from --sidebar-w and --head-h, the margin and the column from
+   --margin-w and --text-w, the greeked lines from --reading-scale — and the
+   margin and the rail follow the sheet's own boxes, so a slider is watched
+   rather than imagined. Fewer lines fit as the reading size grows, and a
+   column wider than the pane is cut by it, both as they are on the page. The
+   only red in the sheet is the margin rule, which is the margin rule. */
+.proof {
+  --k: 0.24;
+  --proof-line: calc(3px * var(--reading-scale));
+  --proof-pitch: calc(7px * var(--reading-scale));
+  display: flex;
+  height: 116px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--ink);
+  overflow: hidden;
+}
+.proof-bar {
+  flex: 0 0 calc(var(--sidebar-w) * var(--k));
+  background: var(--ink-deep);
+  border-right: 1px solid var(--line);
+}
+.proof-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.proof-head {
+  flex: 0 0 calc(var(--head-h) * var(--k));
+  border-bottom: 1px solid var(--line);
+}
+.proof-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  width: 100%;
+  max-width: calc((var(--text-w) + var(--margin-w)) * var(--k));
+  margin: 0 auto;
+}
+.layout-card:has(#margin-show:not(:checked)) .proof-page {
+  max-width: calc(var(--text-w) * var(--k));
+}
+.layout-card:has(#outline-show:checked, #footnotes-show:checked) .proof-page {
+  max-width: calc((var(--text-w) + var(--margin-w) + 200px) * var(--k));
+}
+.layout-card:has(#margin-show:not(:checked)):has(#outline-show:checked, #footnotes-show:checked) .proof-page {
+  max-width: calc((var(--text-w) + 200px) * var(--k));
+}
+.proof-margin {
+  flex: 0 0 calc(var(--margin-w) * var(--k));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  padding: calc(50px * var(--k)) calc(16px * var(--k)) 0 0;
+}
+.layout-card:has(#margin-show:not(:checked)) .proof-margin {
+  display: none;
+}
+.proof-margin i {
+  display: block;
+  width: 44%;
+  height: 2px;
+  background: var(--line);
+}
+.proof-margin i + i {
+  width: 60%;
+}
+.proof-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: calc(50px * var(--k)) calc(40px * var(--k)) 0;
+  border-left: 1px solid var(--margin-rule);
+  overflow: hidden;
+}
+.layout-card:has(#margin-show:not(:checked)) .proof-text {
+  border-left: 0;
+}
+.proof-text i {
+  display: block;
+  flex: none;
+}
+.proof-h {
+  width: 46%;
+  height: calc(5px * var(--reading-scale));
+  margin-bottom: var(--proof-pitch);
+  background: var(--paper-dim);
+}
+.proof-p {
+  height: calc(5 * var(--proof-pitch));
+  background: repeating-linear-gradient(to bottom, var(--line) 0 var(--proof-line), transparent var(--proof-line) var(--proof-pitch));
+}
+.proof-l {
+  width: 58%;
+  height: var(--proof-line);
+  margin-bottom: calc(var(--proof-pitch) * 1.6);
+  background: var(--line);
+}
+.proof-text .proof-rest {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+}
+.proof-rail {
+  display: none;
+  flex: 0 0 calc(200px * var(--k));
+  flex-direction: column;
+  padding: calc(58px * var(--k)) calc(12px * var(--k)) 0 calc(18px * var(--k));
+  border-left: 1px solid var(--line);
+}
+.layout-card:has(#outline-show:checked, #footnotes-show:checked) .proof-rail {
+  display: flex;
+}
+.proof-rail span {
+  display: none;
+  flex-direction: column;
+  gap: 3px;
+}
+.layout-card:has(#outline-show:checked) .proof-outline,
+.layout-card:has(#footnotes-show:checked) .proof-footnotes {
+  display: flex;
+}
+.layout-card:has(#outline-show:checked):has(#footnotes-show:checked) .proof-footnotes {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+.proof-rail i {
+  display: block;
+  width: 72%;
+  height: 2px;
+  background: var(--line);
+}
+.proof-rail i:nth-child(2) {
+  width: 50%;
+  margin-left: 14%;
+}
+.proof-rail i:nth-child(3) {
+  width: 60%;
+  margin-left: 14%;
+}
+
+/* The rows: a label column, then the instrument. */
 .layout-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin: 14px 0;
+  margin: 0;
+  padding: calc(5px * var(--ui-scale)) 0;
   color: var(--paper-dim);
 }
+/* The label column is the check rows' box, gap and name column together, so
+   a slider begins on the same rule as a description. */
 .layout-row > span:first-child {
-  flex: 0 0 calc(128px * var(--ui-scale));
-}
-.layout-row input[type='range'] {
-  flex: 1;
-  accent-color: var(--blue);
+  flex: 0 0 calc(158px * var(--ui-scale));
 }
 .layout-row output {
   flex: 0 0 calc(64px * var(--ui-scale));
@@ -1482,55 +1674,144 @@ kbd {
   color: var(--paper);
   font-variant-numeric: tabular-nums;
 }
+.layout-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--paper-dim);
+  font-size: var(--ui-sm);
+  line-height: 1.4;
+  /* A folder path has no space to break at; without this it runs under the buttons. */
+  overflow-wrap: anywhere;
+}
+.layout-row .link-btn {
+  flex: none;
+}
+.layout-row .pill {
+  flex: none;
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+.layout-row .pill:hover {
+  background: var(--blue);
+  color: var(--ink);
+}
+
+/* A slider is a rule with a tick on it: a hairline track, a mark for a thumb,
+   and the focus ring on the mark rather than around the whole row. */
+.layout-row input[type='range'] {
+  flex: 1;
+  min-width: 0;
+  height: calc(22px * var(--ui-scale));
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+.layout-row input[type='range']::-webkit-slider-runnable-track {
+  height: 1px;
+  background: var(--line);
+}
+.layout-row input[type='range']::-webkit-slider-thumb {
+  appearance: none;
+  width: calc(4px * var(--ui-scale));
+  height: calc(16px * var(--ui-scale));
+  margin-top: calc((1px - 16px * var(--ui-scale)) / 2);
+  border-radius: 1px;
+  background: var(--paper);
+  box-shadow: 0 0 0 3px var(--raised);
+}
+.layout-row input[type='range']:hover::-webkit-slider-thumb {
+  background: var(--blue);
+}
+.layout-row input[type='range']:focus-visible {
+  box-shadow: none;
+}
+.layout-row input[type='range']:focus-visible::-webkit-slider-thumb {
+  box-shadow: var(--focus);
+}
+
+/* A check is a box drawn on the ink, ticked in the link blue. */
 .layout-check {
-  cursor: default;
   align-items: baseline;
+  gap: 10px;
+  cursor: default;
 }
 .layout-check input {
-  position: relative;
-  top: 2px;
+  appearance: none;
+  flex: none;
   align-self: flex-start;
+  position: relative;
+  top: calc(2px * var(--ui-scale));
+  width: calc(14px * var(--ui-scale));
+  height: calc(14px * var(--ui-scale));
+  margin: 0;
+  display: grid;
+  place-content: center;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--ink-deep);
+  cursor: pointer;
+}
+.layout-check input::before {
+  content: '';
+  width: calc(8px * var(--ui-scale));
+  height: calc(4px * var(--ui-scale));
+  border: solid var(--blue);
+  border-width: 0 0 2px 2px;
+  transform: translateY(-30%) rotate(-45deg);
+  opacity: 0;
+}
+.layout-check input:checked {
+  border-color: var(--blue);
+}
+.layout-check input:checked::before {
+  opacity: 1;
+}
+.layout-check:hover input:not(:checked) {
+  border-color: var(--paper-faint);
 }
 .layout-name {
   flex: 0 0 calc(136px * var(--ui-scale));
   color: var(--paper-dim);
 }
-.layout-check .layout-text {
-  color: var(--paper-dim);
-}
+.layout-check:hover .layout-name,
 .layout-check:hover .layout-text {
   color: var(--paper);
 }
-.layout-check input {
-  accent-color: var(--blue);
-  margin: 0;
-}
-.layout-head {
-  margin: 22px 0 2px;
-  font: 500 var(--ui-xs)/1 var(--utility);
-  font-stretch: 87.5%;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--paper-dim);
-}
+
+/* A note under a row, set under the instrument rather than the label. Quiet
+   by default; only a warning is red (renderSettings decides: while a well is
+   listening its note is an instruction), and an empty one takes no room. */
 .layout-note {
-  margin: -6px 0 0;
-  min-height: 15px;
+  margin: calc(-2px * var(--ui-scale)) 0 calc(8px * var(--ui-scale)) calc(170px * var(--ui-scale));
+  color: var(--paper-dim);
+  font-size: var(--ui-sm);
+  line-height: 1.5;
+}
+.layout-note:empty {
+  display: none;
+}
+.layout-warn {
   color: var(--margin);
 }
 
-/* The recorder for the system-wide shortcut: a button that listens. */
+/* The wells: the shortcut recorder, a button that listens, and the journal
+   path. Both are cut into the ink so they read as places to write. */
+.hotkey-btn,
+.layout-input {
+  flex: 1;
+  min-width: 0;
+  min-height: calc(32px * var(--ui-scale));
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--ink-deep);
+  color: var(--paper-dim);
+}
 .hotkey-btn {
   display: flex;
   align-items: center;
-  gap: 4px;
-  flex: 1;
-  padding: 5px 10px;
-  min-height: calc(32px * var(--ui-scale));
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  background: var(--ink-deep);
-  color: var(--paper-dim);
+  gap: 6px;
   font: var(--ui-sm)/1 var(--utility);
 }
 .hotkey-btn:hover {
@@ -1539,6 +1820,34 @@ kbd {
 .hotkey-btn.recording {
   border-color: var(--blue);
   color: var(--blue);
+}
+.hotkey-btn.recording::after {
+  content: '';
+  width: 1px;
+  height: 1.1em;
+  background: var(--blue);
+  animation: listening 1s steps(2, jump-none) infinite;
+}
+@keyframes listening {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hotkey-btn.recording::after {
+    animation: none;
+  }
+}
+.layout-input {
+  font: var(--ui-sm)/1.2 var(--mono);
+  color: var(--paper);
+}
+.layout-input:focus-visible {
+  outline: none;
+  border-color: var(--blue);
 }
 
 /* --- shortcut sheet ----------------------------------------------------- */
@@ -2337,22 +2646,6 @@ body.capture {
   color: var(--paper-faint);
   font-size: inherit;
 }
-.layout-text {
-  flex: 1;
-  color: var(--paper-faint);
-  font-size: var(--ui-sm);
-  line-height: 1.35;
-}
-.layout-row .pill {
-  flex: none;
-  background: var(--blue-soft);
-  color: var(--blue);
-}
-.layout-row .pill:hover {
-  background: var(--blue);
-  color: var(--ink);
-}
-
 /* --- 0.13: search operators ------------------------------------------- */
 
 /* A line under the search box while an operator is being typed: what the
@@ -2959,23 +3252,6 @@ html.export.paper .markdown img {
 .vocab-value:focus-visible {
   background: var(--hover);
   outline: none;
-}
-
-.layout-input {
-  font: inherit;
-  font-size: var(--ui-sm);
-  font-family: var(--mono);
-  color: var(--paper);
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  padding: 3px 6px;
-  min-width: 0;
-}
-
-.layout-input:focus-visible {
-  outline: none;
-  border-color: var(--paper-dim);
 }
 
 /* --- peek, the slash menu, workspaces ----------------------------------- */
