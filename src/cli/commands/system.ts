@@ -90,7 +90,13 @@ export function register(program: Command, use: () => Ctx): void {
       const command = process.execPath;
       const args = [...(process.argv[1] ? [process.argv[1]] : []), 'mcp', ...(c.explicitUserData ? ['--user-data-dir', c.userData] : [])];
       if (opts.printConfig) {
-        const config = { mcpServers: { notes: { command, args } } };
+        // In an installed build the executable is Notes.exe, and it only runs
+        // this file as Node because the `notes` launcher sets this first. A
+        // config without it starts the app's window instead of a server, and
+        // the client waits for a protocol that never speaks.
+        const config = {
+          mcpServers: { notes: process.versions.electron ? { command, args, env: { ELECTRON_RUN_AS_NODE: '1' } } : { command, args } },
+        };
         c.out.value(config, () => JSON.stringify(config, null, 2));
         c.out.message('Add it with:  claude mcp add notes -- notes mcp');
         return;

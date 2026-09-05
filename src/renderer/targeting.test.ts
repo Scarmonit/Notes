@@ -49,6 +49,14 @@ describe('the note a command is about', () => {
     expect(fn).not.toContain('selected()');
   });
 
+  // Merge is the one note-menu command whose work is done by another module,
+  // so the target has to be handed across rather than read there: `refactor-ui`
+  // pairs `host.selected()` with the editor's caret for the line moves, and
+  // must go on doing so.
+  it('hands the targeted note to the merge, which cannot read the target itself', () => {
+    expect(source).toContain('run: () => refactorUi.mergeInto(targeted()),');
+  });
+
   it('greys a command against the clicked note rather than the open one', () => {
     // `hasNote` gates most of the section, and `menuRow` reads it while the
     // target is set: a right-click on a note must never grey its own commands.
@@ -181,5 +189,31 @@ describe('the menu and the registry agree', () => {
 
   it('keeps the two editor-bound commands in the menu it excuses them from', () => {
     for (const id of GOES_THERE) expect(NOTE_MENU).toContain(id);
+  });
+
+  // The guard that would have caught the merge: every row in the menu that is
+  // not excused by GOES_THERE must reach the target somehow, and the only two
+  // ways are reading `targeted()` or being handed it.
+  it('has every command in the menu answer to the clicked note', () => {
+    const knows = new Map<string, string>([
+      ['pin', 'togglePinSelected'],
+      ['note-move', 'moveNoteToFolder'],
+      ['note-unfile', 'unfileNote'],
+      ['export', 'runExport'],
+      ['note-show', 'showNoteFile'],
+      ['delete', 'armDelete'],
+    ]);
+    for (const id of NOTE_MENU) {
+      if (id === null || GOES_THERE.has(id)) continue;
+      const fn = knows.get(id);
+      if (fn) {
+        expect(body(fn), `${id} runs ${fn}, which must ask for the targeted note`).toContain('targeted()');
+        continue;
+      }
+      // Anything else has to be handed the target where the command is declared.
+      const at = source.indexOf(`    id: '${id}',`);
+      const decl = source.slice(at, source.indexOf('\n  },', at));
+      expect(decl, `${id} neither reads targeted() nor is handed it`).toContain('targeted()');
+    }
   });
 });

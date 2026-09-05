@@ -301,7 +301,10 @@ export function resolveLink(notes: Note[], target: string): LinkHit {
   const at = raw.lastIndexOf(FOLDER_SEP);
   if (at > 0) {
     const folder = normalizeFolder(raw.slice(0, at));
-    const name = raw.slice(at + 1).replace(/.md$/i, '');
+    // The dot is escaped: unescaped, `.md$` matched any character before "md",
+    // so a note called cmd or WebMD had its whole name stripped and the link
+    // pointed nowhere.
+    const name = raw.slice(at + 1).replace(/\.md$/i, '');
     const here = notes.filter((n) => folderKey(n.folder ?? ROOT_FOLDER) === folderKey(folder));
     const found = settle(answering(here, name));
     if (found) return found;

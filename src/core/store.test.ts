@@ -403,3 +403,28 @@ describe('store, a note that goes missing', () => {
     expect(notes.every((n) => n.id)).toBe(true);
   });
 });
+
+describe('watching the notes folder', () => {
+  it('notices a note edited in a folder, not only one at the top level', async () => {
+    // The watch was not recursive, so every note filed in a folder -- which is
+    // where notes have lived since 0.22.0 -- could be changed by another editor
+    // without the app ever reading it back, and the next save wrote over it.
+    const store = createStore(root);
+    await store.createFolder('Work');
+    await store.saveNotes({ version: 1, notes: [note('a', 'first', { title: 'Plan' })] });
+    await store.moveNote('a', 'Work');
+    await store.loadNotes();
+
+    const seen: string[] = [];
+    store.watchNotes((changes) => seen.push(...changes.upserts.map((n) => n.body)));
+    try {
+      const file = path.join(pathsFor(root).notes, 'Work', 'Plan.md');
+      await fs.writeFile(file, (await fs.readFile(file, 'utf8')).replace('first', 'second'), 'utf8');
+      // The watcher settles for 700ms before it re-reads the folder.
+      await new Promise((r) => setTimeout(r, 2500));
+      expect(seen.some((body) => body.includes('second'))).toBe(true);
+    } finally {
+      store.stopWatching();
+    }
+  }, 15000);
+});

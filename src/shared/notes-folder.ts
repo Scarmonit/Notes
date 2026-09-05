@@ -199,7 +199,11 @@ function splitOutsideQuotes(text: string): string[] {
     const c = text[i];
     if (quote) {
       if (c === quote && text[i - 1] !== '\\') quote = '';
-    } else if (c === '"' || c === "'") quote = c;
+      // YAML only opens a quoted scalar at the start of an item. Taking one
+      // mid-item swallowed every comma after an apostrophe, so `[Bob's plan,
+      // Draft]` read as a single alias — and aliases are rewritten on save, so
+      // the second name was then lost from the file for good.
+    } else if ((c === '"' || c === "'") && text.slice(at, i).trim() === '') quote = c;
     else if (c === ',') {
       out.push(text.slice(at, i));
       at = i + 1;
@@ -237,7 +241,11 @@ const MAX_TIME = 8.64e15;
  * about the file itself, so any text at all reads as some note.
  */
 export function parseNoteFile(text: string, facts: FileFacts): ParsedNoteFile {
-  const normalized = text.replace(/\r\n/g, '\n');
+  // A BOM belongs to the file, not to the note. Left in place it hides the
+  // `---` from the front-matter reader, so the whole block reads as body text
+  // and the next save writes a second one above it.
+  const withoutBom = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  const normalized = withoutBom.replace(/\r\n/g, '\n');
   const split = splitFrontMatter(normalized);
   // One trailing newline is the file's, added on write; the rest is the note's.
   const body = (split ? split.body : normalized).replace(/\n$/, '');

@@ -73,23 +73,27 @@ export const withoutMarker = (line: string): string => line.replace(INLINE, '');
  * Every line of a note that is inside a fenced code block, so a `^id` written
  * in an example is the characters that were typed and not an address.
  */
-function fenced(lines: readonly string[]): boolean[] {
-  const out = new Array<boolean>(lines.length).fill(false);
+function fenced(lines: readonly string[]): { inside: boolean[]; opens: boolean[] } {
+  const inside = new Array<boolean>(lines.length).fill(false);
+  // Which lines open a block. `inside` alone cannot tell two fences written
+  // straight after one another from one long fence.
+  const opens = new Array<boolean>(lines.length).fill(false);
   let open: string | null = null;
   for (let i = 0; i < lines.length; i++) {
     const m = FENCE.exec(lines[i]);
     if (open === null) {
       if (m) {
         open = m[1][0];
-        out[i] = true;
+        inside[i] = true;
+        opens[i] = true;
       }
     } else {
-      out[i] = true;
+      inside[i] = true;
       if (m && m[1][0] === open) open = null;
     }
   }
   // An unclosed fence runs to the end and nothing inside it is addressable.
-  return out;
+  return { inside, opens };
 }
 
 /** True when the line starts something other than more of the paragraph above it. */
@@ -129,16 +133,20 @@ const leading = (line: string): string => /^[ \t]*/.exec(line)?.[0] ?? '';
 const width = (space: string): number => [...space].reduce((n, c) => n + (c === '\t' ? 4 : 1), 0);
 
 /** The block starting at a line, and where it ends. Null for a line that starts nothing. */
-function blockAt(lines: readonly string[], start: number, inFence: readonly boolean[]): { kind: BlockKind; end: number } | null {
+function blockAt(lines: readonly string[], start: number, inFence: readonly boolean[], opens: readonly boolean[]): { kind: BlockKind; end: number } | null {
   const line = lines[start];
   if (line.trim() === '' || RULE.test(line)) return null;
   if (inFence[start]) {
     // Only the opening fence starts a block, and only a closed one is addressable.
-    if (start > 0 && inFence[start - 1]) return null;
+    if (!opens[start]) return null;
+    // The block ends at its own closing fence. Running on to the end of the
+    // run of fenced lines swallowed every block written straight after it: the
+    // second of two adjacent code blocks could not be addressed at all, and an
+    // id meant for the first was written after the second.
     let end = start + 1;
-    while (end < lines.length && inFence[end]) end++;
-    const closed = FENCE.test(lines[end - 1]) && end - 1 > start;
-    return closed ? { kind: 'code', end } : null;
+    while (end < lines.length && inFence[end] && !FENCE.test(lines[end])) end++;
+    const closed = end < lines.length && inFence[end] && FENCE.test(lines[end]);
+    return closed ? { kind: 'code', end: end + 1 } : null;
   }
   if (HEADING.test(line)) return { kind: 'heading', end: start + 1 };
   if (QUOTE.test(line)) {
@@ -169,7 +177,7 @@ const STANDS_ALONE = new Set<BlockKind>(['table', 'code']);
  */
 export function blocksIn(body: string): BlockSlice[] {
   const lines = body.split('\n');
-  const inFence = fenced(lines);
+  const { inside: inFence, opens } = fenced(lines);
   const out: BlockSlice[] = [];
   // A list item is addressable, and so is each item nested inside it — one
   // holds the other, which is why the walk goes in rather than past.
@@ -179,7 +187,7 @@ export function blocksIn(body: string): BlockSlice[] {
         i++;
         continue;
       }
-      const found = blockAt(lines, i, inFence);
+      const found = blockAt(lines, i, inFence, opens);
       if (!found) {
         i++;
         continue;
@@ -239,7 +247,7 @@ function contentOf(lines: readonly string[], start: number, end: number, kind: B
  */
 export function withoutMarkers(body: string): string {
   const lines = body.split('\n');
-  const inFence = fenced(lines);
+  const { inside: inFence } = fenced(lines);
   const out: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     if (inFence[i]) {

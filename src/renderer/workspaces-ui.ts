@@ -37,7 +37,17 @@ export function createWorkspacesUi(host: WorkspacesHost): WorkspacesUi {
   let sheet: HTMLElement | null = null;
   /** The row being renamed, or the one armed for deletion. */
   let renaming: string | null = null;
+  /** The workspace whose Delete button is asking to be clicked again. */
   let arming: string | null = null;
+  /**
+   * The workspace the save box is offering to replace.
+   *
+   * Its own state, not `arming`: one variable for both meant that offering to
+   * replace a snapshot silently armed that row's Delete button -- which still
+   * read "Delete", because the offer does not redraw -- so the next click on
+   * it deleted the workspace outright, with no confirmation ever shown.
+   */
+  let replacing: string | null = null;
 
   function close(): boolean {
     if (!sheet) return false;
@@ -45,6 +55,7 @@ export function createWorkspacesUi(host: WorkspacesHost): WorkspacesUi {
     sheet = null;
     renaming = null;
     arming = null;
+    replacing = null;
     host.focusEditor();
     return true;
   }
@@ -64,9 +75,10 @@ export function createWorkspacesUi(host: WorkspacesHost): WorkspacesUi {
       e.preventDefault();
       e.stopPropagation();
       // Esc backs out of a rename or an arming before it closes the sheet.
-      if (renaming || arming) {
+      if (renaming || arming || replacing) {
         renaming = null;
         arming = null;
+        replacing = null;
         draw();
         return;
       }
@@ -221,13 +233,13 @@ export function createWorkspacesUi(host: WorkspacesHost): WorkspacesUi {
       const name = cleanName(box.value);
       if (!name) return;
       const clash = host.held().find((w) => nameKey(w.name) === nameKey(name));
-      if (clash && arming !== clash.id) {
+      if (clash && replacing !== clash.id) {
         // An existing name is offered as a replacement, never taken silently.
-        arming = clash.id;
+        replacing = clash.id;
         host.status(`“${clash.name}” already exists — press Enter again to replace its snapshot`, 5000);
         return;
       }
-      arming = null;
+      replacing = null;
       host.save(name);
       draw();
       host.status(`Saved “${name}”`, 2500);

@@ -58,7 +58,12 @@ export interface RefactorUi {
   moveLines(): void;
   moveSection(): void;
   renameTag(): void;
-  mergeInto(): void;
+  /**
+   * Merges one note into another. The source is named by the caller rather
+   * than taken from the selection: this is on the right-click menu, where the
+   * note a command is about is the row that was clicked, not the one on screen.
+   */
+  mergeInto(source: Note | null): void;
   /**
    * A title just committed in the title box (`oldTitle` is the explicit title
    * the note had when the box took focus, or undefined when its first line
@@ -409,8 +414,7 @@ export function createRefactorUi(host: RefactorHostUi): RefactorUi {
     host.pick('Rename which tag?', items, {}, host.focusEditor);
   }
 
-  function mergeInto(): void {
-    const source = host.selected();
+  function mergeInto(source: Note | null): void {
     if (!source) return;
     const others = sortByEdited(host.notes()).filter((n) => n.id !== source.id);
     if (others.length === 0) {

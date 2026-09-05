@@ -5,7 +5,7 @@ import { CliError, type Backend } from '../core/backend';
 import { EXIT } from '../core/ipc-protocol';
 import { defaultUserData, userDataDirArg } from '../core/paths';
 import { parseDueWindow } from '../core/due';
-import { applyFilter, parseSort, parseWhen, parseWords, ROOT_ONLY, SORT_KEYS, type Filter } from '../core/query';
+import { applyFilter, parseSort, parseWhen, parseWords, ROOT_ONLY, SORT_KEYS, tokenize, type Filter } from '../core/query';
 import { resolveNote, resolveTrashed, type Resolution } from '../core/resolve';
 import { linksIn, snippetOf, tagsOf, titleOf, wordCount } from '../renderer/notes';
 import { taskProgress } from '../renderer/tasks';
@@ -259,7 +259,7 @@ const collect = (value: string, previous: string[] = []): string[] => [...previo
  * and --reverse order a list, and a command's own flags are not filters.
  */
 export function hasFilterOpts(opts: FilterOpts): boolean {
-  const narrowing: Array<keyof FilterOpts> = ['tag', 'folder', 'pinned', 'untitled', 'createdAfter', 'createdBefore', 'updatedAfter', 'updatedBefore', 'linksTo', 'linkedFrom', 'orphan', 'hasTasks', 'todo', 'done', 'due', 'limit'];
+  const narrowing: Array<keyof FilterOpts> = ['view', 'tag', 'folder', 'pinned', 'untitled', 'createdAfter', 'createdBefore', 'updatedAfter', 'updatedBefore', 'linksTo', 'linkedFrom', 'orphan', 'hasTasks', 'todo', 'done', 'due', 'limit'];
   return narrowing.some((key) => opts[key] !== undefined);
 }
 
@@ -331,10 +331,13 @@ export async function filterFrom(ctx: Ctx, opts: FilterOpts, words: readonly str
   }
   if (opts.pinned !== undefined) filter.pinned = opts.pinned;
   if (opts.untitled) filter.untitled = true;
-  filter.createdAfter = when(opts.createdAfter, '--created-after');
-  filter.createdBefore = when(opts.createdBefore, '--created-before');
-  filter.updatedAfter = when(opts.updatedAfter, '--updated-after');
-  filter.updatedBefore = when(opts.updatedBefore, '--updated-before');
+  // Only when the flag was actually given. Assigning undefined over the top
+  // threw away the bound `created:` / `updated:` / `edited:` had just parsed
+  // out of the words, so `notes list "updated:<7d"` matched everything.
+  if (opts.createdAfter !== undefined) filter.createdAfter = when(opts.createdAfter, '--created-after');
+  if (opts.createdBefore !== undefined) filter.createdBefore = when(opts.createdBefore, '--created-before');
+  if (opts.updatedAfter !== undefined) filter.updatedAfter = when(opts.updatedAfter, '--updated-after');
+  if (opts.updatedBefore !== undefined) filter.updatedBefore = when(opts.updatedBefore, '--updated-before');
   if (opts.linksTo) filter.linksTo = (await ctx.note(opts.linksTo, notes)).id;
   if (opts.linkedFrom) filter.linkedFrom = (await ctx.note(opts.linkedFrom, notes)).id;
   if (opts.orphan) filter.orphan = true;
@@ -355,9 +358,16 @@ export async function filterFrom(ctx: Ctx, opts: FilterOpts, words: readonly str
 }
 
 /** The notes a command's filter keeps. */
-/** A saved query back into the argv-shaped words parseWords reads, quotes kept whole. */
+/**
+ * A saved query back into the argv-shaped words `parseWords` reads.
+ *
+ * Split by the search box's own tokenizer, so a saved search means the same
+ * thing here as it does in the window. Splitting on whitespace and keeping the
+ * quotes made `"quick brown"` a search for the quote marks as well, and tore
+ * `links:"My Note"` in half.
+ */
 export function splitQuery(query: string): string[] {
-  return (query.match(/"[^"]*"|\S+/g) ?? []).map((w) => w);
+  return tokenize(query).map((t) => (t.kind === 'op' ? `${t.text}:${t.value}` : t.kind === 'regex' ? `/${t.text}/${t.value}` : t.text));
 }
 
 export async function filteredNotes(ctx: Ctx, opts: FilterOpts, words: readonly string[] = []): Promise<{ all: Note[]; kept: Note[] }> {

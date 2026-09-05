@@ -83,6 +83,13 @@ const ACCELERATOR: Record<string, string> = {
 };
 
 /**
+ * The punctuation Electron names as itself in an accelerator. Refusing these
+ * while `isCommandChord` accepted them meant the settings sheet took a chord
+ * like Ctrl+Alt+; and then stored no chord at all, saying nothing about why.
+ */
+const PUNCTUATION = /^[)!@#$%^&*(:;+=<_>?/~`{}[\]|'"-]$/;
+
+/**
  * The same chord as an Electron accelerator, for `globalShortcut`. Returns
  * null when the chord is not something Electron can register: a bare key with
  * no modifier, or one whose name Electron has no word for.
@@ -96,6 +103,7 @@ export function acceleratorOf(chord: string): string | null {
     if (named) out.push(named);
     else if (/^[a-z0-9]$/.test(part)) out.push(part.toUpperCase());
     else if (/^f\d{1,2}$/.test(part)) out.push(part.toUpperCase());
+    else if (PUNCTUATION.test(part)) out.push(part);
     else return null;
   }
   return out.join('+');

@@ -52,3 +52,38 @@ describe('bookmarklet', () => {
     expect(source).not.toMatch(/\bimport\b/);
   });
 });
+
+describe('clipPage, run against a page', () => {
+  /** Runs the bookmarklet body against the current document and returns what it posted. */
+  async function clip(html: string): Promise<{ title: string; text: string }> {
+    document.body.innerHTML = html;
+    let sent = '';
+    const real = globalThis.fetch;
+    globalThis.fetch = ((_url: string, init: { body: string }) => {
+      sent = init.body;
+      return Promise.resolve({ ok: true, text: () => Promise.resolve('clipped') });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      clipPage(1234, 'tok');
+      await new Promise((r) => setTimeout(r, 0));
+    } finally {
+      globalThis.fetch = real;
+    }
+    return JSON.parse(sent) as { title: string; text: string };
+  }
+
+  it('indents a list by how deep the list is, not by how deep the page is', async () => {
+    // The walker counted every element it descended through, so a list a few
+    // wrapper divs down came out indented four spaces or more -- which
+    // markdown reads as a code block rather than a list.
+    const { text } = await clip('<div><div><section><ul><li>One</li><li>Two</li></ul></section></div></div>');
+    expect(text).toContain('\n- One');
+    expect(text).toContain('\n- Two');
+    expect(text).not.toMatch(/\n {2,}- One/);
+  });
+
+  it('still indents a list that is nested inside another list', async () => {
+    const { text } = await clip('<ul><li>Top<ul><li>Under</li></ul></li></ul>');
+    expect(text).toMatch(/\n {2}- Under/);
+  });
+});

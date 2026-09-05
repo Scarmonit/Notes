@@ -1809,7 +1809,11 @@ document.addEventListener(
   'pointerout',
   (e) => {
     const target = (e.target as HTMLElement | null)?.closest<HTMLElement>(PEEKABLE);
-    if (target && !peek.isPinned()) peek.unhover();
+    // No pinned check here: `unhover` cancels the pending open before it
+    // looks at the card, and skipping it left that timer to fire and replace
+    // a pinned card with one for a link the pointer had already left --
+    // which then had nothing to close it.
+    if (target) peek.unhover();
   },
   true,
 );
@@ -1835,6 +1839,10 @@ function clearFilters(): void {
   el.search.value = '';
   tagFilter = null;
   folderScope = ROOT_FOLDER;
+  // `ui.folder` is the one that is written down and read back at the next
+  // launch, so leaving it behind reopened the window in a folder the reader
+  // had left -- with the note they were reading not in the list.
+  ui.folder = ROOT_FOLDER;
 }
 
 /**
@@ -3279,7 +3287,15 @@ function applyTableEdit<A extends unknown[]>(edit: (body: string, offset: number
   if (!n || ui.preview || document.activeElement !== el.editor) return false;
   const { text } = readEditor(el.editor);
   const next = edit(text, caretOffset(), ...args);
-  if (!next || next.body === text) return Boolean(next);
+  if (!next) return false;
+  // A table that is already laid out is left exactly as it is -- but the caret
+  // still has to move, or Tab in a tidy table does nothing at all while still
+  // swallowing the key. A fresh table is laid out from the start, so this was
+  // every table until the first edit untidied it.
+  if (next.body === text) {
+    placeCaretAt(next.caret);
+    return true;
+  }
   // One undo step: setBody remembers the text before it changed.
   setBody(next.body);
   placeCaretAt(next.caret);
@@ -6016,7 +6032,7 @@ const ACTIONS: Action[] = [
     menuSection: 'This note',
     terms: 'merge combine duplicate join',
     enabled: hasNote,
-    run: () => refactorUi.mergeInto(),
+    run: () => refactorUi.mergeInto(targeted()),
   },
   {
     id: 'delete',
@@ -6492,7 +6508,10 @@ const ACTIONS: Action[] = [
     hint: 'The same note in a second pane beside this one, scrolled on its own',
     group: 'Window',
     menuSection: 'Workspace',
-    chord: 'ctrl+shift+\\',
+    // Shift and backslash is what the fingers do, but `chordOf` reads
+    // `event.key`, which reports the character the key produces -- so this
+    // has to be written the way it actually arrives or it can never fire.
+    chord: 'ctrl+shift+|',
     terms: 'pane side by side compare two',
     enabled: () => panes.length < MAX_PANES,
     run: splitPane,
@@ -6755,6 +6774,14 @@ function menuHeading(name: string): HTMLElement {
   return head;
 }
 
+/** The export formats without a header to drill into, for when it is hidden. */
+function pickExportKind(): void {
+  openPicker(
+    'Export this note as…',
+    EXPORT_KINDS.map(({ kind, label, ext }) => ({ label, hint: ext, run: () => void runExport(kind) })),
+  );
+}
+
 /** The export formats, as the page you land on after choosing Export. */
 function exportPage(panel: HTMLElement): void {
   const back = document.createElement('button');
@@ -6821,7 +6848,14 @@ function openMenu(which: string, drill: string | null = null): void {
   const wanted = box.querySelector<HTMLButtonElement>(`.menu-btn[data-menu="${which}"]`);
   // A pane narrow enough to have collapsed its menus answers on Commands.
   const button = wanted && wanted.offsetParent !== null ? wanted : box.querySelector<HTMLButtonElement>('.menu-all .menu-btn');
-  if (!button) return;
+  // With the header hidden there is no button to hang a menu on. Hanging one
+  // on a hidden button opened nothing a reader could see while still claiming
+  // the next Escape -- and hiding the controls is only meant to hide the
+  // buttons, so a command that stands behind one has to go on working.
+  if (!button || button.offsetParent === null) {
+    if (drill === 'export') pickExportKind();
+    return;
+  }
   if (openMenuButton && openMenuButton !== button) closeMenu(false);
   const panel = panelOf(button);
   if (!panel) return;
@@ -7776,6 +7810,10 @@ async function init(): Promise<void> {
     console.error('[notes] could not read settings', err);
   }
   renderSettings();
+  // The list was drawn before the settings arrived, so the saved-search rail
+  // was drawn from none at all. Nothing else redraws it until the reader
+  // touches something, so it is drawn again here.
+  renderList();
   void refreshFolderRow();
 }
 

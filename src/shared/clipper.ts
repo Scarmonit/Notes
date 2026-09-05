@@ -18,7 +18,7 @@ export function clipPage(port: number, token: string): void {
   const doc = document;
 
   /** The markdown for one element's children, walked in order. */
-  const walk = (node: Node, depth: number): string => {
+  const walk = (node: Node, lists: number): string => {
     let out = '';
     node.childNodes.forEach((child) => {
       if (child.nodeType === 3) {
@@ -28,7 +28,9 @@ export function clipPage(port: number, token: string): void {
       if (child.nodeType !== 1) return;
       const el = child as HTMLElement;
       const tag = el.tagName.toLowerCase();
-      const inner = (): string => walk(el, depth + 1);
+      // Only a list nests a list: counting every wrapper element indented a
+      // clipped item by four spaces or more, which markdown reads as code.
+      const inner = (): string => walk(el, tag === 'ul' || tag === 'ol' ? lists + 1 : lists);
       if (tag === 'script' || tag === 'style' || tag === 'noscript' || tag === 'svg' || tag === 'nav' || tag === 'footer') return;
       if (/^h[1-6]$/.test(tag)) out += `\n\n${'#'.repeat(Number(tag[1]))} ${inner().trim()}\n\n`;
       else if (tag === 'p') out += `\n\n${inner().trim()}\n\n`;
@@ -54,7 +56,7 @@ export function clipPage(port: number, token: string): void {
       } else if (tag === 'li') {
         const ordered = el.parentElement?.tagName.toLowerCase() === 'ol';
         const at = Array.prototype.indexOf.call(el.parentElement?.children ?? [], el) + 1;
-        const pad = '  '.repeat(Math.max(0, depth - 1));
+        const pad = '  '.repeat(Math.max(0, lists - 1));
         out += `\n${pad}${ordered ? `${at}.` : '-'} ${inner().trim()}`;
       } else if (tag === 'ul' || tag === 'ol') out += `\n${inner()}\n`;
       else out += inner();

@@ -817,7 +817,7 @@ export function createStore(root: string): Store {
         change.all && change.value === undefined
           ? withoutProperty(entry.frontMatter, key)
           : withProperty(entry.frontMatter, key, change.value, change.occurrence ?? 1);
-      const parsed = parseNoteFile(entry.text, { id, name: baseNameOf(entry.name).replace(/.md$/i, ''), mtime: Date.now() });
+      const parsed = parseNoteFile(entry.text, { id, name: baseNameOf(entry.name).replace(/\.md$/i, ''), mtime: Date.now() });
       const text = formatNoteFile(parsed.note, next, parsed.deletedAt);
       await writeAtomic(fileAt(notesDir, entry.name), text);
       index.set(id, { ...entry, text, frontMatter: next });
@@ -891,7 +891,11 @@ export function createStore(root: string): Store {
     try {
       // Persistent: `notes watch` with the app closed has nothing else keeping
       // the process up. The app closes it on quit, so it costs the app nothing.
-      watcher = watch(notesDir, { persistent: true }, () => {
+      // Recursive: notes have lived in real folders on disk since 0.22.0, and
+      // a non-recursive watch is blind to every one of them -- an edit made to
+      // a filed note in another editor was never read back, and the next
+      // keystroke here saved over it.
+      watcher = watch(notesDir, { persistent: true, recursive: true }, () => {
         if (watchTimer) clearTimeout(watchTimer);
         watchTimer = setTimeout(() => void checkExternal(onChange), WATCH_SETTLE_MS);
       });

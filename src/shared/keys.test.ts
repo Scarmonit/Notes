@@ -72,3 +72,24 @@ describe('acceleratorOf', () => {
     expect(acceleratorOf('')).toBeNull();
   });
 });
+
+describe('a chord on a punctuation key', () => {
+  it('becomes an accelerator, since the settings sheet lets one be recorded', () => {
+    // `isCommandChord` accepted these and `acceleratorOf` refused them, so the
+    // hotkey was stored as no hotkey at all with nothing said about why.
+    for (const key of [';', '/', "'", '[', ']', '-', '=']) {
+      expect(isCommandChord(`ctrl+alt+${key}`), key).toBe(true);
+      expect(acceleratorOf(`ctrl+alt+${key}`), key).toBe(`Control+Alt+${key}`);
+    }
+  });
+
+  it('keeps the names Electron has its own word for', () => {
+    expect(acceleratorOf('ctrl+alt+,')).toBe('Control+Alt+Comma');
+    expect(acceleratorOf('ctrl+alt+.')).toBe('Control+Alt+Period');
+  });
+
+  it('still refuses a bare key and a name Electron has no word for', () => {
+    expect(acceleratorOf('k')).toBe(null);
+    expect(acceleratorOf('ctrl+alt+somekey')).toBe(null);
+  });
+});

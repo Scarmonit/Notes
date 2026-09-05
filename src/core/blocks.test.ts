@@ -122,3 +122,33 @@ describe('blockAtLine and summarize', () => {
     expect(summarize(blocksIn('#### A heading')[0])).toBe('A heading');
   });
 });
+
+describe('two fenced blocks with no line between them', () => {
+  const body = ['```js', 'const a = 1;', '```', '```js', 'const b = 2;', '```'].join('\n');
+
+  it('are two blocks, not one', () => {
+    // `fenced()` marks every line of both runs, so ending the block at the end
+    // of the run swallowed the second fence whole.
+    const blocks = blocksIn(body);
+    expect(blocks.map((b) => [b.start, b.end])).toEqual([
+      [0, 3],
+      [3, 6],
+    ]);
+  });
+
+  it('are told apart by the line the caret is on', () => {
+    expect(blockAtLine(body, 1)?.start).toBe(0);
+    expect(blockAtLine(body, 4)?.start).toBe(3);
+  });
+
+  it('take an id each, on their own closing fence', () => {
+    // The id for the first block used to land after the second one, so an
+    // embed of the first quietly carried both.
+    const withFirst = withBlockId(body, blocksIn(body)[0], 'aaa111');
+    expect(withFirst.split('\n')[3]).toBe('^aaa111');
+  });
+
+  it('still read as one block when the fence is left open', () => {
+    expect(blocksIn(['```js', 'const a = 1;'].join('\n'))).toEqual([]);
+  });
+});

@@ -646,3 +646,47 @@ describe('notes 0.23: the journal, properties and block addresses', () => {
     expect(await run('show', lines()[0], '--block', 'dup001')).toBe(7);
   });
 });
+
+describe('notes 0.25.1: the filters a command was given', () => {
+  it('keeps the bound a date operator set, instead of wiping it', async () => {
+    // The four --created/--updated flags were assigned unconditionally, so
+    // giving none of them overwrote whatever `updated:` had just parsed.
+    expect(await run('new', 'Fresh', '--content', 'today')).toBe(0);
+    // `updated:<7d` is "edited more than 7 days ago", so a note made a moment
+    // ago must not match it; `updated:>7d` is "edited since then", so it must.
+    expect(await run('list', '--plain', 'updated:<7d')).toBe(0);
+    expect(lines()).toHaveLength(0);
+    expect(await run('list', '--plain', 'updated:>7d')).toBe(0);
+    expect(lines()).toHaveLength(1);
+  });
+
+  it('narrows an export to the saved search it was given', async () => {
+    expect(await run('new', 'Alpha', '--content', 'alpha')).toBe(0);
+    expect(await run('new', 'Beta', '--content', 'beta')).toBe(0);
+    expect(await run('view', 'save', 'Only', 'alpha')).toBe(0);
+    const out = path.join(root, 'out');
+    // Made first, so -o is a folder either way and the count is the only thing
+    // the test is reading: without --view counted as a filter, both notes went in.
+    await fs.mkdir(out, { recursive: true });
+    expect(await run('export', '--view', 'Only', '-o', out)).toBe(0);
+    expect((await fs.readdir(out)).sort()).toEqual(['Alpha.md']);
+  });
+
+  it('finds the notes a saved search names by phrase', async () => {
+    expect(await run('new', 'A', '--content', 'the quick brown fox')).toBe(0);
+    expect(await run('view', 'save', 'Phrase', '"quick brown"')).toBe(0);
+    expect(await run('list', '--plain', '--view', 'Phrase')).toBe(0);
+    expect(lines()).toHaveLength(1);
+  });
+
+  it('gives two notes of the same name a file each when exporting', async () => {
+    // Two notes may share a title -- that is what folders are for -- and the
+    // second used to be written straight over the first.
+    expect(await run('folders', 'new', 'Work')).toBe(0);
+    expect(await run('new', 'Plan', '--content', 'the root one')).toBe(0);
+    expect(await run('new', 'Plan', '--content', 'the filed one', '--folder', 'Work')).toBe(0);
+    const out = path.join(root, 'both');
+    expect(await run('export', '-o', out)).toBe(0);
+    expect((await fs.readdir(out)).sort()).toEqual(['Plan 2.md', 'Plan.md']);
+  });
+});

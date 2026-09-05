@@ -263,7 +263,7 @@ describe('merge into', () => {
   it('lists the other notes, confirms, and merges', async () => {
     const h = fakeHost([note('s', 'dup', 'Dup'), note('t', 'keep', 'Plan'), note('o', '[[Dup]]')], 's', null);
     const ui = createRefactorUi(h.host);
-    ui.mergeInto();
+    ui.mergeInto(h.host.selected());
     expect(h.last().placeholder).toBe("Merge 'Dup' into which note?");
     expect(h.last().items.map((it) => it.label)).toEqual(['Plan', 'Dup']);
     h.choose('Plan');
@@ -276,6 +276,24 @@ describe('merge into', () => {
     ]);
     expect(h.statuses[0]).toContain("Merged 'Dup' into 'Plan'");
     expect(ui.isOpen()).toBe(false);
+  });
+
+  // Reached from the right-click menu, the source is the row that was clicked.
+  // Taking it from the selection instead merged — and trashed — the note on
+  // screen, which is not the note that was asked about.
+  it('merges the note it was handed, not the one on screen', async () => {
+    const h = fakeHost([note('s', 'reading', 'Reading'), note('c', 'dup', 'Clicked'), note('t', 'keep', 'Plan')], 's', null);
+    const ui = createRefactorUi(h.host);
+    ui.mergeInto(h.notes.find((n) => n.id === 'c') ?? null);
+    expect(h.last().placeholder).toBe("Merge 'Clicked' into which note?");
+    // The note on screen is a destination like any other; the clicked one is not.
+    expect(h.last().items.map((it) => it.label)).toEqual(['Plan', 'Reading']);
+    h.choose('Plan');
+    key(document.querySelector('.confirm-card')!, 'Enter');
+    await flush();
+    expect(h.notes.map((n) => n.id).sort()).toEqual(['s', 't']);
+    expect(h.notes.find((n) => n.id === 't')?.body).toBe('keep\n\n## Clicked\n\ndup');
+    expect(h.statuses[0]).toContain("Merged 'Clicked' into 'Plan'");
   });
 });
 
@@ -350,7 +368,7 @@ describe('one sheet at a time', () => {
     await flush();
     expect(document.querySelector('.confirm-text')?.textContent).toBe("Rename 'Old' to 'New' and update 1 link in 1 note?");
     // A merge started meanwhile asks its own question on the same sheet.
-    ui.mergeInto();
+    ui.mergeInto(h.host.selected());
     h.choose('Plan');
     expect(document.querySelector('.confirm-text')?.textContent).toContain("Merge 'Old' into 'Plan'");
     expect(await rename).toBe('title');

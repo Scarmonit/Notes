@@ -167,9 +167,21 @@ export function register(program: Command, use: () => Ctx): void {
     }
     const written: string[] = [];
     const attachments = createAttachments(c.userData);
+    // Two notes may share a title — filing them in different folders is how
+    // the app says which is which — so the second one exported into a folder
+    // needs a name of its own rather than writing over the first.
+    const taken = new Set<string>();
+    const freeName = (title: string): string => {
+      const wanted = exportFileName(title, kind);
+      const stem = wanted.slice(0, wanted.length - kind.length - 1);
+      let name = wanted;
+      for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${stem} ${n}.${kind}`;
+      taken.add(name.toLowerCase());
+      return name;
+    };
     for (const note of targets) {
       const body = exportBody(note);
-      const target = toStdout ? '-' : folder ? path.join(opts.out ?? '.', exportFileName(titleOf(note), kind)) : (opts.out ?? exportFileName(titleOf(note), kind));
+      const target = toStdout ? '-' : folder ? path.join(opts.out ?? '.', freeName(titleOf(note))) : (opts.out ?? exportFileName(titleOf(note), kind));
       if (kind === 'png' || kind === 'pdf') {
         await backend.exportRendered(note.id, path.resolve(target), kind);
       } else if (kind === 'html') {

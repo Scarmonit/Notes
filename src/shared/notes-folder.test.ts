@@ -155,3 +155,46 @@ describe('fileNameFor and isNoteFileName agree', () => {
     expect(fileNameFor('..')).toBe('Untitled');
   });
 });
+
+describe('front matter a quote appears in', () => {
+  it('splits an alias list on the commas even when a name holds an apostrophe', () => {
+    // A quote only opens a YAML scalar at the start of an item. Treating one
+    // mid-item swallowed the comma after it, so the two names read as one --
+    // and aliases are rewritten on save, so the second was lost from the file.
+    const text = ['---', 'id: a', "aliases: [Bob's plan, Draft]", '---', 'body', ''].join('\n');
+    const parsed = parseNoteFile(text, facts);
+    expect(parsed.note.aliases).toEqual(["Bob's plan", 'Draft']);
+  });
+
+  it('still keeps a real quoted alias whole, commas and all', () => {
+    const text = ['---', 'id: a', 'aliases: ["Plan, revised", Draft]', '---', 'body', ''].join('\n');
+    expect(parseNoteFile(text, facts).note.aliases).toEqual(['Plan, revised', 'Draft']);
+  });
+
+  it('survives a save without losing a name', () => {
+    const text = ['---', 'id: a', "aliases: [Bob's plan, Draft]", '---', 'body', ''].join('\n');
+    const parsed = parseNoteFile(text, facts);
+    const again = parseNoteFile(formatNoteFile(parsed.note, parsed.frontMatter), facts);
+    expect(again.note.aliases).toEqual(["Bob's plan", 'Draft']);
+  });
+});
+
+describe('a file that carries a byte-order mark', () => {
+  const bom = String.fromCharCode(0xfeff);
+
+  it('reads its front matter rather than treating it as body text', () => {
+    // Notepad and older PowerShell write one. Left in place it hid the `---`,
+    // so the note was read as having no front matter at all and the next save
+    // wrote a second block above the first.
+    const text = bom + ['---', 'id: abc', 'title: Plan', '---', 'the body', ''].join('\n');
+    const parsed = parseNoteFile(text, facts);
+    expect(parsed.note.id).toBe('abc');
+    expect(parsed.note.title).toBe('Plan');
+    expect(parsed.note.body).toBe('the body');
+  });
+
+  it('leaves a mark anywhere else in the file alone', () => {
+    const text = ['---', 'id: abc', '---', `a${bom}b`, ''].join('\n');
+    expect(parseNoteFile(text, facts).note.body).toBe(`a${bom}b`);
+  });
+});

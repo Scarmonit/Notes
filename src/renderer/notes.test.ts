@@ -388,3 +388,23 @@ describe('links, once two notes may share a title', () => {
     expect(noteForLink(notes, 'Dog')?.id).toBe('a');
   });
 });
+
+describe('a folder-qualified link to a title that ends in md', () => {
+  const notes: Note[] = [
+    { id: 'a', title: 'Plan', body: 'x', folder: 'Work', createdAt: 1, updatedAt: 1 },
+    { id: 'b', title: 'cmd', body: 'y', folder: 'Work', createdAt: 1, updatedAt: 2 },
+    { id: 'c', title: 'WebMD', body: 'z', folder: 'Work', createdAt: 1, updatedAt: 3 },
+  ];
+
+  it('finds the note, rather than stripping the last three letters of its name', () => {
+    // The extension was stripped with an unescaped dot, so `.md$` matched any
+    // character followed by "md" -- turning `cmd` into an empty name.
+    expect(resolveLink(notes, 'Work/cmd')).toEqual({ kind: 'one', note: notes[1] });
+    expect(resolveLink(notes, 'Work/WebMD')).toEqual({ kind: 'one', note: notes[2] });
+  });
+
+  it('goes on taking a real .md off the end', () => {
+    expect(resolveLink(notes, 'Work/Plan.md')).toEqual({ kind: 'one', note: notes[0] });
+    expect(resolveLink(notes, 'Work/cmd.md')).toEqual({ kind: 'one', note: notes[1] });
+  });
+});
