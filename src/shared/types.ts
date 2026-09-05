@@ -106,6 +106,18 @@ export interface ImportedFile {
 
 export type ExportKind = 'md' | 'txt' | 'png' | 'html' | 'pdf';
 
+/** Where an export went, and the attachments it could not take along. */
+export interface ExportResult {
+  path: string;
+  missing: string[];
+}
+
+/** A file chosen in the attach dialog: stored, and the name it had. */
+export interface PickedAttachment {
+  url: string;
+  name: string;
+}
+
 /** The three exports that are the preview laid on a page: the window renders, the main process writes. */
 export interface RenderedExport {
   title: string;
@@ -182,14 +194,20 @@ export interface NotesApi {
   clipperBookmarklet(): Promise<string | null>;
   /** Asks for a folder to keep them in; null when nothing was chosen. */
   pickNotesFolder(): Promise<FolderChange | null>;
-  /** Stores image bytes in the attachments folder; resolves to its note-asset:// URL. */
+  /** Stores a file's bytes in the attachments folder; resolves to its note-asset:// URL. */
   attach(bytes: Uint8Array, name: string): Promise<string>;
-  /** Opens a file picker for images; resolves to the URLs of the ones chosen. */
-  pickAttachments(): Promise<string[]>;
+  /** Opens a file picker; resolves to the URL and original name of each file chosen. */
+  pickAttachments(): Promise<PickedAttachment[]>;
+  /** Opens an attachment in its own app. Resolves to an empty string, or the reason it did not open. */
+  openAttachment(name: string): Promise<string>;
+  /** The size in bytes of each attachment named, null for one that is gone. */
+  assetSizes(names: string[]): Promise<Record<string, number | null>>;
+  /** Tells the main process which attachment a right-click landed on, before its menu opens. */
+  contextAttachment(name: string | null): void;
   /** Opens a file picker for markdown and text files; resolves to their contents. */
   pickImports(): Promise<ImportedFile[]>;
-  /** Shows a Save dialog and writes the export; resolves to the path, or null if cancelled. */
-  exportNote(request: ExportRequest): Promise<string | null>;
+  /** Shows a Save dialog and writes the export; resolves to where it went, or null if cancelled. */
+  exportNote(request: ExportRequest): Promise<ExportResult | null>;
   /** The tray and hotkey settings the main process is acting on. */
   getSettings(): Promise<Settings>;
   /**

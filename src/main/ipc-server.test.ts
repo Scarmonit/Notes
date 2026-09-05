@@ -73,9 +73,11 @@ describe('ipc server', () => {
       // A method this app does not have is named as unknown, so the command line can say "update the app".
       socket.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'note.frobnicate', params: {} })}\n`);
       expect((await next()).error).toMatchObject({ code: RPC_ERROR.methodNotFound, data: { exit: EXIT.appError } });
-      // A file that is not an image is the caller's mistake: the same exit code as with no app running.
-      socket.write(`${JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'attach', params: { bytes: Buffer.from('not an image').toString('base64'), name: 'x.txt' } })}\n`);
+      // Any kind of file attaches since 0.28; an empty one is the caller's mistake: the same exit code as with no app running.
+      socket.write(`${JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'attach', params: { bytes: '', name: 'x.txt' } })}\n`);
       expect((await next()).error).toMatchObject({ code: RPC_ERROR.invalidParams, data: { exit: EXIT.usage } });
+      socket.write(`${JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'attach', params: { bytes: Buffer.from('plain words').toString('base64'), name: 'x.txt' } })}\n`);
+      expect(((await next()).result as { url: string }).url).toMatch(/^note-asset:\/\/[a-f0-9]{16}\.txt$/);
       socket.destroy();
     } finally {
       await server.close();

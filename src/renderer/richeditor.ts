@@ -1,4 +1,4 @@
-import { assetNameFromUrl, assetUrl, isSafeAssetName } from '../shared/assets';
+import { assetNameFromUrl, assetUrl, isImageAsset } from '../shared/assets';
 import { isFenceLine } from './fences';
 import { LINK_PATTERN, formatLinkAddress, linkLabel, linkMarkdown, parseLinkAddress } from './notes';
 
@@ -70,7 +70,8 @@ function refOf(match: RegExpExecArray): ImageRef | null {
   if (match[2] !== undefined) return { name: match[2], alt: match[1], width: null };
   const attrs = match[3] ?? '';
   const name = assetNameFromUrl(attrOf(attrs, 'src') ?? '');
-  if (!name) return null;
+  // Only a picture is a picture chip; an <img> pointing at a PDF is left as the text it is.
+  if (!name || !isImageAsset(name)) return null;
   const width = parseWidth(attrOf(attrs, 'width'));
   return { name, alt: attrOf(attrs, 'alt') ?? 'image', width };
 }
@@ -340,6 +341,22 @@ export interface Segment {
   kind: 'text' | 'block';
   /** Text inside a formatting wrapper, which a caret placed by the app should keep out of. */
   wrapped: boolean;
+  /** Text inside a fold, which is not on screen: the last place to put a caret. */
+  hidden: boolean;
+}
+
+/** The class of the element a fold hides its lines in, and of the marker around it. */
+export const FOLD_CLASS = 'fold-hidden';
+export const FOLD_CONTENT_CLASS = 'fold-content';
+
+/** Whether a DOM position sits inside a folded-away run of lines. */
+export function inFold(root: HTMLElement, pos: DomPos): boolean {
+  let node: Node | null = pos.node;
+  while (node && node !== root) {
+    if (node instanceof HTMLElement && node.classList.contains(FOLD_CONTENT_CLASS)) return true;
+    node = node.parentNode;
+  }
+  return false;
 }
 
 export interface Analysis {
@@ -376,14 +393,15 @@ function analyze(root: HTMLElement, keepTrailing = false): Analysis {
     start = next;
     out += '\n';
   };
+  let hidden = false;
   const block = (elm: HTMLElement, length: number, wrapped: boolean): void => {
-    segments.push({ node: elm.parentNode as Node, offset: indexIn(elm), at: out.length, length, kind: 'block', wrapped });
+    segments.push({ node: elm.parentNode as Node, offset: indexIn(elm), at: out.length, length, kind: 'block', wrapped, hidden });
   };
   const walk = (node: Node, wrapped: boolean): void => {
     node.childNodes.forEach((child) => {
       if (child.nodeType === Node.TEXT_NODE) {
         const text = child.textContent ?? '';
-        segments.push({ node: child, offset: 0, at: out.length, length: text.length, kind: 'text', wrapped });
+        segments.push({ node: child, offset: 0, at: out.length, length: text.length, kind: 'text', wrapped, hidden });
         let from = 0;
         for (;;) {
           const nl = text.indexOf('\n', from);
@@ -408,7 +426,7 @@ function analyze(root: HTMLElement, keepTrailing = false): Analysis {
       switch (elm.tagName) {
         case 'IMG': {
           const name = elm.dataset.asset ?? assetNameFromUrl(elm.getAttribute('src') ?? '');
-          if (name && isSafeAssetName(name)) {
+          if (name && isImageAsset(name)) {
             const alt = elm.dataset.alt ?? elm.getAttribute('alt') ?? 'image';
             const md = imageMarkdown({ name, alt, width: parseWidth(elm.getAttribute('width')) });
             block(elm, md.length, wrapped);
@@ -437,8 +455,14 @@ function analyze(root: HTMLElement, keepTrailing = false): Analysis {
           }
           walk(elm, wrapped);
           break;
-        default:
+        default: {
+          // A fold's lines are still the text; they are only not on screen.
+          const folds = elm.classList.contains(FOLD_CONTENT_CLASS);
+          const was = hidden;
+          if (folds) hidden = true;
           walk(elm, wrapped || isFormatWrapper(elm));
+          hidden = was;
+        }
       }
     });
   };
@@ -475,6 +499,8 @@ export function posAt(segments: Segment[], offset: number): DomPos | null {
       rank = 4;
       pos = { node: seg.node, offset: seg.offset + (offset === seg.at ? 0 : 1) };
     }
+    // Folded text is last of all: a caret there could not be seen.
+    if (seg.hidden) rank += 10;
     if (!best || rank < best.rank) best = { rank, pos };
   }
   if (best) return best.pos;

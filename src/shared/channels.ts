@@ -22,6 +22,11 @@ export const IPC = {
   notesFolder: 'notes:notes-folder',
   attach: 'notes:attach',
   pickAttachments: 'notes:pick-attachments',
+  /** Open an attachment in its own app, and the sizes of attachments for the chips that show them. */
+  openAttachment: 'notes:open-attachment',
+  assetSizes: 'notes:asset-sizes',
+  /** Notes window -> main: the attachment under the pointer as a right-click begins, so the native menu can offer to open it. */
+  contextAttachment: 'notes:context-attachment',
   pickImports: 'notes:pick-imports',
   exportNote: 'notes:export',
   /** Export to a path already chosen (by the command line), no dialog. */

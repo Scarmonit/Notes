@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: note-asset:; font-src 'self' data:; connect-src 'self' ws: http://localhost:*;"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: note-asset:; font-src 'self' data:; connect-src 'self' ws: http://localhost:*; frame-src note-asset:; media-src note-asset:; object-src 'none';"
     />
     <title>Notes</title>
     <link rel="stylesheet" href="/src/renderer/styles.css" />
@@ -163,11 +163,20 @@
                 <div data-el="imgSize" class="img-size u" hidden></div>
                 <div data-el="dropLine" class="drop-line" hidden></div>
               </div>
-              <!-- The note's headings, to jump by. Only there when the note has
-                   some; a note with none is not made narrower for it. -->
-              <nav data-el="outline" class="outline" aria-label="Outline" hidden></nav>
+              <!-- The column beside the page: the note's headings, to jump by,
+                   and under them its footnotes, to jump by and to edit. Only there
+                   when either has something to show; a note with neither is not
+                   made narrower for it. -->
+              <aside data-el="side" class="side" hidden>
+                <nav data-el="outline" class="outline" aria-label="Outline" hidden></nav>
+                <section data-el="footnotes" class="footnotes-rail" aria-label="Footnotes" hidden></section>
+              </aside>
             </div>
           </section>
+
+          <!-- A saved search laid out as a table or as cards: the notes it finds
+               as rows, their properties as columns, in the place of a note. -->
+          <section data-el="view" class="view-pane" aria-label="Search as a table" hidden></section>
 
           <section data-el="empty" class="empty" hidden>
             <p class="empty-title">Nothing here yet.</p>
@@ -221,12 +230,15 @@
             <dt><kbd>#template</kbd> <kbd>{{date}}</kbd></dt><dd>A note tagged #template is a template; {{title}}, {{date}}, {{time}} and {{date:DDD D MMM}} are filled in when it is used</dd>
             <dt><kbd>$x^2$</kbd> <kbd>```mermaid</kbd></dt><dd>Math between dollars ($$ on its own lines for a block) and mermaid fences render in the preview and every export</dd>
             <dt><kbd>**bold**</kbd> <kbd># Heading</kbd></dt><dd>Markdown takes its shape as you write it; the markers fade, and hide on every line but the one you are on</dd>
+            <dt><kbd>&gt; [!info]</kbd></dt><dd>Start a callout with an optional title after the type; <kbd>[!info]-</kbd> starts it folded</dd>
+            <dt><kbd>[^1]</kbd></dt><dd>Reference a footnote defined with <kbd>[^1]: text</kbd>; <kbd>^[words]</kbd> writes one in place. The rail beside the note lists and edits them</dd>
+            <dt><kbd>Click</kbd> <kbd>›</kbd></dt><dd>Beside a heading or a nested list: expand or fold it (<kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>.</kbd> at the caret)</dd>
             <dt><kbd>---</kbd> <kbd>Enter</kbd></dt><dd>Turns into a section divider</dd>
             <dt><kbd>| a | b |</kbd></dt><dd>A table. <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>J</kbd> makes one or lines up the one you are in; <kbd>Tab</kbd> moves between cells and the last cell makes a row</dd>
             <dt><kbd>Click</kbd> a heading</dt><dd>In the outline beside the note, jumps there</dd>
             <dt><kbd>Click</kbd> an image</dt><dd>Select it, then drag the corner handle to resize; double-click for the original size</dd>
             <dt><kbd>Alt</kbd> <kbd>↑</kbd> / <kbd>Alt</kbd> <kbd>↓</kbd></dt><dd>Move the selected image up or down a line (or drag it)</dd>
-            <dt><kbd>Drop</kbd> a file</dt><dd>Images attach; .md and .txt files come in as notes</dd>
+            <dt><kbd>Drop</kbd> a file</dt><dd>Attach a file; dropping Markdown or text imports notes</dd>
             <dt><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>J</kbd></dt><dd>Anywhere in Windows: a quick-note box that files a line in the Inbox note (change it in Layout)</dd>
             <dt><kbd>Ctrl</kbd> <kbd>1</kbd> … <kbd>9</kbd></dt><dd>The nth note open in this pane; <kbd>Ctrl</kbd> <kbd>9</kbd> is the last of them</dd>
             <dt><kbd>Middle-click</kbd> a tab</dt><dd>Closes it, as it does in a browser</dd>
@@ -306,6 +318,11 @@
             <input id="outline-show" type="checkbox" />
             <span class="u layout-name">Outline</span>
             <span class="layout-text">The note’s headings beside it, to jump by</span>
+          </label>
+          <label class="layout-row layout-check">
+            <input id="footnotes-show" type="checkbox" />
+            <span class="u layout-name">Footnotes</span>
+            <span class="layout-text">Show footnotes beside the note to jump to and edit</span>
           </label>
           <label class="layout-row layout-check">
             <input id="live-format" type="checkbox" />

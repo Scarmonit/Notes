@@ -68,7 +68,9 @@ const sectionOrder = (group: string): string[] => {
 
 describe('the command registry', () => {
   it('reads every command out of main.ts', () => {
-    expect(ACTIONS.length).toBe(74);
+    // 0.28.0 added eight: two inserts (callout, footnote), the footnotes rail,
+    // three folding commands, the layout of a search, and opening an attachment.
+    expect(ACTIONS.length).toBe(82);
     expect(new Set(ACTIONS.map((a) => a.id)).size).toBe(ACTIONS.length);
   });
 
@@ -77,7 +79,7 @@ describe('the command registry', () => {
     // Notes insert here?". A command that does not put something at the
     // caret has no business in this menu, and no formatting command has any
     // business in the registry at all.
-    expect(ACTIONS.filter((a) => a.slash).map((a) => a.id)).toEqual(['attach', 'divider', 'task', 'template-insert', 'block-link', 'date', 'table']);
+    expect(ACTIONS.filter((a) => a.slash).map((a) => a.id)).toEqual(['attach', 'divider', 'callout', 'footnote', 'task', 'template-insert', 'block-link', 'date', 'table']);
     for (const a of ACTIONS.filter((x) => x.slash)) expect([a.id, a.group], a.id).toEqual([a.id, 'Writing']);
   });
 
@@ -96,16 +98,20 @@ describe('the command registry', () => {
   });
 
   it('gives every command in a sectioned menu a heading to sit under', () => {
-    const homeless = ACTIONS.filter((a) => a.group !== 'View' && !a.menuSection);
+    const homeless = ACTIONS.filter((a) => !a.menuSection);
     expect(homeless.map((a) => a.id)).toEqual([]);
   });
 
-  it('leaves View unsectioned, because a handful of related commands need no headings', () => {
-    expect(inGroup('View').every((a) => a.menuSection === null)).toBe(true);
+  it('sections View now that folding joined it: how the note reads, how to move about it, what folds, the workspace', () => {
+    expect(sectionOrder('View')).toEqual(['Reading', 'Navigation', 'Folding', 'Workspace']);
+    expect(idsUnder('View', 'Reading')).toEqual(['preview', 'live']);
+    expect(idsUnder('View', 'Navigation')).toEqual(['outline', 'footnotes']);
+    expect(idsUnder('View', 'Folding')).toEqual(['fold-toggle', 'fold-all', 'unfold-all']);
+    expect(idsUnder('View', 'Workspace')).toEqual(['focus', 'typewriter', 'peek', 'graph']);
   });
 
   it('keeps each heading in one run, so a section is never drawn twice', () => {
-    for (const group of ['Notes', 'Writing', 'Window']) {
+    for (const group of ['Notes', 'Writing', 'View', 'Window']) {
       const order = sectionOrder(group);
       expect(new Set(order).size).toBe(order.length);
     }
@@ -117,7 +123,7 @@ describe('the command registry', () => {
     expect(idsUnder('Notes', 'Find and navigate')).toEqual(['find', 'recent', 'prev', 'next', 'back', 'forward']);
     expect(idsUnder('Notes', 'This note')).toEqual(['title', 'aliases', 'properties', 'pin', 'history', 'save', 'export', 'merge-into', 'delete', 'note-move', 'note-unfile', 'note-show']);
     expect(idsUnder('Notes', 'Tabs')).toEqual(['tab-new', 'tab-close', 'tab-next', 'tab-prev']);
-    expect(idsUnder('Notes', 'Saved searches')).toEqual(['view-save', 'view-open', 'view-forget']);
+    expect(idsUnder('Notes', 'Saved searches')).toEqual(['view-save', 'view-open', 'view-forget', 'view-layout']);
     // Folders sits immediately before Library: the notebook's own tree, then
     // the things that are about the notebook as a whole.
     expect(idsUnder('Notes', 'Folders')).toEqual(['folder-rename', 'folder-move', 'folder-delete']);
@@ -126,8 +132,8 @@ describe('the command registry', () => {
 
   it('files the Write menu the same way', () => {
     expect(sectionOrder('Writing')).toEqual(['Edit', 'Insert', 'Table', 'Move']);
-    expect(idsUnder('Writing', 'Edit')).toEqual(['undo', 'redo', 'find-in-note', 'replace-in-note']);
-    expect(idsUnder('Writing', 'Insert')).toEqual(['attach', 'divider', 'code', 'task', 'template-insert', 'block-copy', 'block-link', 'date']);
+    expect(idsUnder('Writing', 'Edit')).toEqual(['undo', 'redo', 'find-in-note', 'replace-in-note', 'attachment-open']);
+    expect(idsUnder('Writing', 'Insert')).toEqual(['attach', 'divider', 'callout', 'footnote', 'code', 'task', 'template-insert', 'block-copy', 'block-link', 'date']);
     expect(idsUnder('Writing', 'Table')).toEqual(['table', 'table-row', 'table-column', 'table-remove-row']);
     expect(idsUnder('Writing', 'Move')).toEqual(['move-lines', 'move-section']);
   });
@@ -154,6 +160,27 @@ describe('the command registry', () => {
 
   it('keeps the buttons short enough to stay in the uppercase register', () => {
     for (const a of ACTIONS) if (a.pill) expect(a.pill.label.length).toBeLessThanOrEqual(8);
+  });
+
+  it('gives the eight commands of 0.28.0 the chords the design settled on', () => {
+    const chordOf = (id: string): string | null => ACTIONS.find((a) => a.id === id)?.chord ?? null;
+    expect(chordOf('callout')).toBe('ctrl+alt+c');
+    expect(chordOf('footnote')).toBe('ctrl+alt+e');
+    expect(chordOf('footnotes')).toBe('ctrl+alt+o');
+    // No Shift with a bracket: `event.key` would arrive as `{`, which is the 0.26.0 backslash trap again.
+    expect(chordOf('fold-toggle')).toBe('ctrl+alt+.');
+    expect(chordOf('fold-all')).toBe('ctrl+alt+[');
+    expect(chordOf('unfold-all')).toBe('ctrl+alt+]');
+    expect(chordOf('view-layout')).toBe('ctrl+alt+v');
+    expect(chordOf('attachment-open')).toBe('ctrl+alt+a');
+    // Ctrl+Alt+N is the window's own summon hotkey, registered with Windows; it must not be spent here.
+    expect(ACTIONS.some((a) => a.chord === 'ctrl+alt+n')).toBe(false);
+  });
+
+  it('renamed Attach for every kind of file, keeping its place', () => {
+    const attach = ACTIONS.find((a) => a.id === 'attach');
+    expect(attach?.label).toBe('Attach a file…');
+    expect(attach?.chord).toBe('ctrl+shift+i');
   });
 
   it('holds the line on formatting: no bold, italic, heading or list command', () => {

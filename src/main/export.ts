@@ -1,9 +1,9 @@
 import { app, BrowserWindow, dialog } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { exportFileName } from '../shared/assets';
+import { assetRefs, exportFileName } from '../shared/assets';
 import { exportPage } from '../shared/export-page';
-import type { ExportRequest, RenderedExport } from '../shared/types';
+import type { ExportRequest, ExportResult, RenderedExport } from '../shared/types';
 import { attachments } from './attachments';
 
 const FILTERS = {
@@ -14,39 +14,51 @@ const FILTERS = {
   pdf: [{ name: 'PDF document', extensions: ['pdf'] }],
 };
 
-/** Shows the Save dialog and writes the export. Resolves to the path, or null when cancelled. */
-export async function exportNote(win: BrowserWindow, request: ExportRequest): Promise<string | null> {
+/** Shows the Save dialog and writes the export. Resolves to where it went, or null when cancelled. */
+export async function exportNote(win: BrowserWindow, request: ExportRequest): Promise<ExportResult | null> {
   const { canceled, filePath } = await dialog.showSaveDialog(win, {
     title: 'Export note',
     defaultPath: path.join(app.getPath('documents'), exportFileName(request.title, request.kind)),
     filters: FILTERS[request.kind],
   });
   if (canceled || !filePath) return null;
-  await exportTo(filePath, request);
-  return filePath;
+  const missing = await exportTo(filePath, request);
+  return { path: filePath, missing };
 }
 
-/** Writes an export to a path already chosen: by the dialog, or by the command line. */
-export async function exportTo(filePath: string, request: ExportRequest): Promise<void> {
+/**
+ * Writes an export to a path already chosen: by the dialog, or by the command
+ * line. Resolves to the names of attachments the note mentions that were not
+ * there to take along, so the caller can say so.
+ */
+export async function exportTo(filePath: string, request: ExportRequest): Promise<string[]> {
   switch (request.kind) {
     case 'md':
-      await attachments.writeMarkdownExport(filePath, request.body);
-      break;
+      return attachments.writeMarkdownExport(filePath, request.body);
     case 'txt':
       await fs.writeFile(filePath, request.text, 'utf8');
-      break;
+      return [];
     case 'png':
       await fs.writeFile(filePath, await renderPng(request));
-      break;
-    case 'html':
-      // One self-contained file: the page the PNG is drawn from, with the
-      // pictures inlined, at whatever width the window that opens it has.
-      await fs.writeFile(filePath, await pageFor(request, 'ink'), 'utf8');
-      break;
+      return missingIn(request.html);
+    case 'html': {
+      // One page: the pictures inlined, and every other attachment copied
+      // into a folder beside it, the way a browser saves a page with its files.
+      const beside = await attachments.writeSidecars(request.html, filePath);
+      await fs.writeFile(filePath, await pageFor({ ...request, html: beside.html }, 'ink'), 'utf8');
+      return beside.missing;
+    }
     case 'pdf':
       await fs.writeFile(filePath, await renderPdf(request));
-      break;
+      return missingIn(request.html);
   }
+}
+
+/** The attachments a rendered note mentions that are not in the folder. */
+async function missingIn(html: string): Promise<string[]> {
+  const names = assetRefs(html);
+  const sizes = await attachments.sizesOf(names);
+  return names.filter((n) => sizes[n] === null);
 }
 
 const PNG_WIDTH = 820;
@@ -56,7 +68,7 @@ const LOAD_TIMEOUT_MS = 30_000;
 
 /** The export page for a rendered note, pictures inlined. */
 async function pageFor(request: RenderedExport, look: 'ink' | 'paper', width?: number): Promise<string> {
-  const html = await attachments.inlineAssets(request.html);
+  const html = await attachments.fillSizes(await attachments.inlineAssets(request.html));
   return exportPage({ title: request.title, html, css: request.css, mathCss: request.mathCss, edited: request.edited, look, width });
 }
 

@@ -1,5 +1,5 @@
 import DOMPurify from 'dompurify';
-import { parseMarkdown, type EmbedSource } from '../shared/markdown-core';
+import { parseMarkdown, type EmbedSource, type RenderOptions } from '../shared/markdown-core';
 
 /**
  * The preview's HTML: the shared markdown core, then DOMPurify. Math comes
@@ -29,12 +29,23 @@ DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
 // from the attachments folder and nowhere else.
 const ALLOWED_URI = /^(?:(?:https?|mailto|note-asset):|[^a-z]|[a-z+.-]+(?:[^a-z+.:-]|$))/i;
 
+// The one frame allowed is the one the markdown core makes for an attached
+// PDF: our own class, our own scheme, a PDF's name. Anything else that arrives
+// as an <iframe> — written by hand into a note, say — is taken out whole.
+const PDF_FRAME = /^note-asset:\/\/[a-f0-9]{8,32}\.pdf$/i;
+DOMPurify.addHook('uponSanitizeElement', (node, data) => {
+  if (data.tagName !== 'iframe') return;
+  const el = node as Element;
+  if (!el.classList.contains('attachment-frame') || !PDF_FRAME.test(el.getAttribute('src') ?? '')) el.parentNode?.removeChild(el);
+});
+
 /** Markdown source to sanitized HTML, safe to assign to innerHTML. */
-export function renderMarkdown(source: string, embeds?: EmbedSource): string {
-  const html = parseMarkdown(source, embeds);
+export function renderMarkdown(source: string, embeds?: EmbedSource, options: RenderOptions = {}): string {
+  const html = parseMarkdown(source, embeds, options);
   return DOMPurify.sanitize(html, {
     USE_PROFILES: { html: true, mathMl: true, svg: true, svgFilters: true },
-    ADD_ATTR: ['target', 'data-diagram', 'data-link'],
+    ADD_TAGS: ['iframe'],
+    ADD_ATTR: ['target', 'data-diagram', 'data-link', 'data-footnote', 'data-footnote-id', 'data-footnote-inline', 'data-asset', 'data-asset-size', 'data-callout', 'controls', 'preload'],
     FORBID_TAGS: ['style'],
     ALLOWED_URI_REGEXP: ALLOWED_URI,
   });

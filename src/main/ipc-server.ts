@@ -178,7 +178,7 @@ export async function startIpcServer(deps: ServerDeps): Promise<IpcServer> {
         try {
           return { url: await deps.attachments.saveAttachment(new Uint8Array(Buffer.from(p.bytes, 'base64')), p.name) };
         } catch (err) {
-          // A file that is not an image is the caller's mistake, the same exit code as with no app running.
+          // A file too large, or empty, is the caller's mistake, the same exit code as with no app running.
           throw new IpcError(errorShape(RPC_ERROR.invalidParams, err instanceof Error ? err.message : String(err), EXIT.usage));
         }
       }

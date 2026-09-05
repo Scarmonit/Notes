@@ -1,7 +1,7 @@
 import { assetNameFromUrl } from '../shared/assets';
 import { cleanAliases } from '../shared/notes-folder';
 import { chordOf, isCommandChord, keyLabel } from '../shared/keys';
-import { DEFAULT_SETTINGS, viewNamed, withView, type Settings } from '../shared/settings';
+import { cleanPresentation, DEFAULT_SETTINGS, presentationOf, viewNamed, withView, type Settings, type ViewLayout, type ViewPresentation } from '../shared/settings';
 import {
   folderKey,
   folderLabel,
@@ -15,12 +15,20 @@ import {
   ROOT_LABEL,
   type FolderNode,
 } from '../shared/folders';
-import type { CliStatus, ExportKind, ExportRequest, FolderResult, ImportedFile, Note, NotesFile } from '../shared/types';
+import type { CliStatus, ExportKind, ExportRequest, FolderResult, ImportedFile, Note, NotesFile, PickedAttachment } from '../shared/types';
 import { keyMap, matchActions, menuModel, pillActions, slashActions, type Action, type Match } from './actions';
 import { toggleFence } from './fences';
 import { findMatches, matchFrom, replaceAll, replaceOne, validQuery, type FindMatch, type FindOptions } from './find';
+import { isFenceLine } from './fences';
 import { isTextFile, noteFromFile } from './importer';
-import { decorateLines, isDecorated, type Protected } from './inline';
+import { nextFootnoteId, withNewDefinition } from '../shared/footnotes';
+import { viewTabLabel } from '../core/viewtable';
+import { propertyVocabulary } from '../core/vocabulary';
+import { renderView, type ViewHost, type ViewRecord } from './viewtab';
+import { createFootnotesRail, type FocusState, type FootnotesHost, type FootnotesRail } from './footnotes-ui';
+import { attachmentLinkAt, attachmentMarkdown, canOpenAsset, formatSize, isImageAsset, type AttachmentLink } from '../shared/assets';
+import { decorateLines, isDecorated, type FoldHint, type Protected } from './inline';
+import { foldableAt, foldableRanges, foldContaining, foldHeads, foldsHiding, parseFolds, pruneFolds, restoreFolds, withFolds, type FoldRange, type NoteFolds } from '../core/folds';
 import { renderGlance, renderMarkdown } from './markdown';
 import { headingAt, headingsIn, type Heading } from './outline';
 import { addColumn, addRow, newTable, removeRow, stepCell, tidyTable, type TableEdit } from './tables';
@@ -87,6 +95,8 @@ import {
   textOfRange,
   type LineSpan,
   type Segment,
+  FOLD_CLASS,
+  FOLD_CONTENT_CLASS,
 } from './richeditor';
 import stylesText from './styles.css?inline';
 import { absoluteTime, relativeTime } from './time';
@@ -98,7 +108,7 @@ import type { SnapshotSummary } from '../shared/history';
 import type { ExternalChanges, RenderedExport, TrashedNote } from '../shared/types';
 // 0.13: templates, scheduled tasks, search operators, math and diagrams, related notes and the graph.
 import { dueLabel, dueTasks, type DueTask } from '../core/due';
-import { applyFilter, hasOperators, OPERATORS, parseQuery } from '../core/query';
+import { applyFilter, hasOperators, OPERATORS, parseQuery, type Filter } from '../core/query';
 import { graphOf, neighbourhood, relatedNotes, type Graph } from '../core/related';
 import { DATE_FORMAT, expandTemplate, formatDate, templatesOf, TIME_FORMAT, usesTitle } from '../core/templates';
 import { hasDiagrams, hasMath } from '../shared/markdown-core';
@@ -155,6 +165,9 @@ function paneEls(root: HTMLElement) {
     imgSize: q('imgSize'),
     dropLine: q('dropLine'),
     outline: q('outline'),
+    side: q('side'),
+    footnotes: q('footnotes'),
+    view: q('view'),
     empty: q('empty'),
     findBar: q('findBar'),
     findInput: q<HTMLInputElement>('findInput'),
@@ -223,6 +236,7 @@ const el = {
   historyNote: $('history-note'),
   helpSheet: $('help-sheet'),
   outlineShow: $<HTMLInputElement>('outline-show'),
+  footnotesShow: $<HTMLInputElement>('footnotes-show'),
   liveFormat: $<HTMLInputElement>('live-format'),
   controlsShow: $<HTMLInputElement>('controls-show'),
   trashSheet: $('trash-sheet'),
@@ -321,6 +335,15 @@ const el = {
   get outline(): HTMLElement {
     return here().els.outline;
   },
+  get side(): HTMLElement {
+    return here().els.side;
+  },
+  get footnotes(): HTMLElement {
+    return here().els.footnotes;
+  },
+  get view(): HTMLElement {
+    return here().els.view;
+  },
   get empty(): HTMLElement {
     return here().els.empty;
   },
@@ -386,6 +409,16 @@ interface UiState {
   typewriter: boolean;
   /** The note's headings in a column beside it. */
   outline: boolean;
+  /** The note's footnotes under them, to jump by and edit. */
+  footnotes: boolean;
+  /** Which headings and lists are folded, per note, by the line each fold heads. */
+  folds: Record<string, NoteFolds>;
+  /**
+   * The searches open as tables or cards, by the id their tab carries. A tab
+   * id of `view:<id>` names one of these; the record says which search and
+   * how it is shown, and whether it is a saved search's.
+   */
+  viewTabs: Record<string, ViewRecord>;
   /** Markdown drawn as what it means while it is typed. */
   liveFormat: boolean;
   /** The commands, and their shortcuts, in the pane's header. */
@@ -467,6 +500,9 @@ function loadUi(): UiState {
     focusMode: false,
     typewriter: false,
     outline: true,
+    footnotes: true,
+    folds: {},
+    viewTabs: {},
     liveFormat: true,
     controls: true,
     recent: [],
@@ -489,6 +525,10 @@ function loadUi(): UiState {
     state.paneAt = Number.isInteger(state.paneAt) ? Math.max(0, state.paneAt) : 0;
     state.folder = typeof state.folder === 'string' ? normalizeFolder(state.folder) : ROOT_FOLDER;
     state.tags = state.tags === true;
+    // Missing means on: the rail is the footnotes feature's own surface.
+    state.footnotes = state.footnotes !== false;
+    state.folds = parseFolds(state.folds);
+    state.viewTabs = parseViewTabs(state.viewTabs);
     // Missing means on: hover preview is the promised feature, and a 450ms
     // dwell is what stops ordinary pointer travel opening it constantly.
     state.linkPeek = state.linkPeek !== false;
@@ -502,6 +542,7 @@ function loadUi(): UiState {
 function saveUi(): void {
   try {
     syncPanes();
+    pruneViewTabs();
     localStorage.setItem(UI_KEY, JSON.stringify(ui));
   } catch {
     // Nothing to do: the app works fine without remembered UI state.
@@ -533,6 +574,10 @@ interface Pane extends PaneShape {
   revealedLines: string;
   outlineKey: string;
   outlineHeadings: Heading[];
+  /** The head lines of the folds closed in this pane's editor. */
+  folded: Set<number>;
+  /** The footnotes rail beside this pane's page, made when the pane is. */
+  footnotesRail: FootnotesRail;
   findHits: FindMatch[];
   findAt: number;
   caretBefore: { id: string; at: number } | null;
@@ -566,6 +611,7 @@ function stash(p: Pane): void {
   p.revealedLines = revealedLines;
   p.outlineKey = outlineKey;
   p.outlineHeadings = outlineHeadings;
+  p.folded = folded;
   p.findHits = findHits;
   p.findAt = findAt;
   p.caretBefore = caretBefore;
@@ -583,6 +629,7 @@ function unstash(p: Pane): void {
   revealedLines = p.revealedLines;
   outlineKey = p.outlineKey;
   outlineHeadings = p.outlineHeadings;
+  folded = p.folded;
   findHits = p.findHits;
   findAt = p.findAt;
   caretBefore = p.caretBefore;
@@ -682,12 +729,15 @@ function makePane(shape: PaneShape): Pane {
     revealedLines: '',
     outlineKey: '',
     outlineHeadings: [],
+    folded: new Set(),
+    footnotesRail: null as unknown as FootnotesRail,
     findHits: [],
     findAt: -1,
     caretBefore: null,
     pendingTitle: null,
     titleAtFocus: null,
   };
+  p.footnotesRail = createFootnotesRail(footnotesHostFor(p));
   // Anything done in a pane makes it the pane in front, whether the pointer
   // arrives first or the focus does.
   root.addEventListener('pointerdown', () => focusPane(panes.indexOf(p)), true);
@@ -726,7 +776,7 @@ function setPanes(shapes: readonly PaneShape[], at: number): void {
   panes.length = 0;
   const wanted = shapes.length > 0 ? shapes : [{ tabs: [], activeId: null, preview: false }];
   for (const shape of wanted.slice(0, MAX_PANES)) {
-    const p = makePane({ ...keepTabs(shape, (id) => notes.some((n) => n.id === id)), preview: shape.preview });
+    const p = makePane({ ...keepTabs(shape, tabExists), preview: shape.preview });
     panes.push(p);
     el.panes.append(p.root);
   }
@@ -814,10 +864,12 @@ function goToTab(n: number): void {
 }
 
 /** Notes that have gone leave the tabs they were open in. */
+/** Whether a tab id still names something: a note that exists, or a view whose record is kept. */
+const tabExists = (id: string): boolean => (isViewId(id) ? viewOf(id) !== null : notes.some((n) => n.id === id));
+
 function pruneTabs(): void {
-  const alive = (id: string): boolean => notes.some((n) => n.id === id);
   for (const p of panes) {
-    const kept = keepTabs({ tabs: p.tabs, activeId: activeIn(p) }, alive);
+    const kept = keepTabs({ tabs: p.tabs, activeId: activeIn(p) }, tabExists);
     p.tabs = kept.tabs;
     if (p === panes[paneCtx]) ui.selectedId = kept.activeId;
     else p.activeId = kept.activeId;
@@ -837,9 +889,14 @@ function renderTabs(p: Pane): void {
   const active = activeIn(p);
   for (const id of p.tabs) {
     const n = notes.find((x) => x.id === id);
-    if (!n) continue;
-    const name = shownTitle(n);
+    const v = isViewId(id) ? viewOf(id) : null;
+    if (!n && !v) continue;
+    const name = n ? shownTitle(n) : viewTabLabel(v?.name, v?.query ?? '');
     const tab = document.createElement('div');
+    if (v) {
+      tab.classList.add('tab-view');
+      tab.title = v.query;
+    }
     tab.className = `tab${id === active ? ' active' : ''}`;
     tab.setAttribute('role', 'tab');
     tab.setAttribute('aria-selected', String(id === active));
@@ -847,7 +904,7 @@ function renderTabs(p: Pane): void {
     open.type = 'button';
     open.className = 'tab-name';
     open.textContent = name;
-    open.title = name;
+    open.title = v ? v.query : name;
     open.addEventListener('click', () => {
       focusPane(panes.indexOf(p));
       select(id);
@@ -887,7 +944,7 @@ function syncPanes(): void {
 function openPanes(): void {
   const saved = ui.panes.length > 0 ? ui.panes : [{ tabs: ui.selectedId ? [ui.selectedId] : [], activeId: ui.selectedId, preview: ui.preview }];
   for (const shape of saved.slice(0, MAX_PANES)) {
-    const kept = keepTabs(shape, (id) => notes.some((n) => n.id === id));
+    const kept = keepTabs(shape, tabExists);
     const p = makePane({ ...kept, preview: shape.preview });
     panes.push(p);
     el.panes.append(p.root);
@@ -1219,7 +1276,11 @@ function renderViews(): void {
   }
 }
 
-/** Puts a saved view's query in the search box, or clears the box when the name is null. */
+/**
+ * Puts a saved view's query in the search box, or clears the box when the
+ * name is null. A view laid out as a table or as cards opens as a tab in the
+ * pane in front as well — the same tab again, if it is already open there.
+ */
 function runView(name: string | null): void {
   const view = name === null ? null : viewNamed(settings.views, name);
   if (name !== null && !view) {
@@ -1230,6 +1291,12 @@ function runView(name: string | null): void {
   el.search.value = query;
   tagFilter = null;
   renderSearchOps();
+  if (view && view.layout && view.layout !== 'list') {
+    renderList();
+    openViewTab(view.name, view.query, presentationOf(view));
+    showStatus(`${view.name}: ${view.query}`, 2500);
+    return;
+  }
   const vis = visibleNotes();
   if (vis.length > 0 && !vis.some((n) => n.id === ui.selectedId)) {
     incidental = true;
@@ -1237,6 +1304,170 @@ function runView(name: string | null): void {
     incidental = false;
   } else renderList();
   if (view) showStatus(`${view.name}: ${view.query}`, 2500);
+}
+
+// --- a search as a table or cards -------------------------------------------
+
+const VIEW_PREFIX = 'view:';
+const isViewId = (id: string): boolean => id.startsWith(VIEW_PREFIX);
+const viewOf = (tabId: string): ViewRecord | null => ui.viewTabs[tabId.slice(VIEW_PREFIX.length)] ?? null;
+const viewTabId = (record: ViewRecord): string => `${VIEW_PREFIX}${record.id}`;
+
+/** View records as read from a store that may hold anything. */
+function parseViewTabs(raw: unknown): Record<string, ViewRecord> {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: Record<string, ViewRecord> = {};
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object') continue;
+    const v = value as Partial<ViewRecord>;
+    if (typeof v.query !== 'string' || !v.query.trim()) continue;
+    out[id] = { id, query: v.query.trim(), ...(typeof v.name === 'string' && v.name.trim() ? { name: v.name.trim() } : {}), ...cleanPresentation(v) };
+  }
+  return out;
+}
+
+/** Forgets the records no pane and no workspace still refers to. */
+function pruneViewTabs(): void {
+  const used = new Set<string>();
+  for (const p of ui.panes) for (const id of p.tabs) if (isViewId(id)) used.add(id.slice(VIEW_PREFIX.length));
+  for (const w of ui.workspaces) for (const p of w.panes) for (const id of p.tabs) if (isViewId(id)) used.add(id.slice(VIEW_PREFIX.length));
+  for (const id of Object.keys(ui.viewTabs)) if (!used.has(id)) delete ui.viewTabs[id];
+}
+
+/**
+ * Opens a search as a table or cards in the pane in front. A saved search
+ * already open in this pane is brought forward rather than opened twice; an
+ * ad hoc query the same. The other tabs stay.
+ */
+function openViewTab(name: string | undefined, q: string, presentation: ViewPresentation): void {
+  const p = panes[paneAt];
+  stash(p);
+  const same = (r: ViewRecord): boolean => (name ? r.name === name : !r.name && r.query === q);
+  let record = p.tabs.map((id) => (isViewId(id) ? viewOf(id) : null)).find((r): r is ViewRecord => r !== null && same(r)) ?? null;
+  if (record) {
+    record = { ...record, query: q, ...cleanPresentation({ ...presentationOf(record), ...presentation }) };
+    if (!record.layout) record.layout = 'table';
+    ui.viewTabs[record.id] = record;
+  } else {
+    record = { id: newId(), query: q, ...(name ? { name } : {}), ...cleanPresentation(presentation) };
+    if (!record.layout) record.layout = 'table';
+    ui.viewTabs[record.id] = record;
+    p.tabs = addTab(p, viewTabId(record)).tabs;
+  }
+  select(viewTabId(record));
+}
+
+/** The view the pane in front is showing, or null while it shows a note or nothing. */
+const currentView = (): ViewRecord | null => (ui.selectedId && isViewId(ui.selectedId) ? viewOf(ui.selectedId) : null);
+
+/** Changes how a view is shown: on its record, and on the saved search it is, so the chip opens it that way next time. */
+function updateView(view: ViewRecord, patch: ViewPresentation): void {
+  const presentation = cleanPresentation({ ...presentationOf(view), ...patch, ...(patch.groupBy === undefined && 'groupBy' in patch ? { groupBy: undefined } : {}) });
+  // A patch that names a key as undefined means "none"; cleanPresentation dropped it already.
+  if ('groupBy' in patch && patch.groupBy === undefined) delete presentation.groupBy;
+  if ('sortBy' in patch && patch.sortBy === undefined) {
+    delete presentation.sortBy;
+    delete presentation.sortDir;
+  }
+  const next: ViewRecord = { id: view.id, query: view.query, ...(view.name ? { name: view.name } : {}), ...presentation };
+  if (!next.layout) next.layout = 'table';
+  ui.viewTabs[view.id] = next;
+  saveUi();
+  if (view.name && settings.views.some((v) => v.name === view.name)) {
+    void saveSettings({ ...settings, views: withView(settings.views, view.name, view.query, presentation) });
+  }
+  renderEditor();
+}
+
+/** The layout picker: the one the command opens and the one the view's own bar opens. */
+function pickViewLayout(view: ViewRecord | null): void {
+  const q = view ? view.query : query.trim();
+  if (!q) {
+    showStatus('Type a search first, then choose how to show it', 3000);
+    return;
+  }
+  const saved = view?.name ? settings.views.find((v) => v.name === view.name) : settings.views.find((v) => v.query === q);
+  const current: ViewLayout = view ? (view.layout ?? 'table') : (saved?.layout ?? 'list');
+  const choose = (layout: ViewLayout): void => {
+    if (view) {
+      if (layout === 'list') {
+        // Back to the list: the saved search opens as one from now on, and this tab closes.
+        if (view.name && saved) void saveSettings({ ...settings, views: withView(settings.views, view.name, view.query, { ...presentationOf(saved), layout: undefined }) });
+        const p = panes[paneAt];
+        query = view.query;
+        el.search.value = query;
+        renderSearchOps();
+        closeTab(p, viewTabId(view));
+        renderList();
+        return;
+      }
+      updateView(view, { layout });
+      return;
+    }
+    if (layout === 'list') {
+      if (saved) void saveSettings({ ...settings, views: withView(settings.views, saved.name, saved.query, { ...presentationOf(saved), layout: undefined }) });
+      showStatus(saved ? `“${saved.name}” opens as a list` : 'A search is a list until it is shown as a table or cards', 2500);
+      return;
+    }
+    const presentation: ViewPresentation = { ...(saved ? presentationOf(saved) : {}), layout };
+    if (saved) void saveSettings({ ...settings, views: withView(settings.views, saved.name, saved.query, presentation) });
+    openViewTab(saved?.name, q, presentation);
+  };
+  const items: PickItem[] = (['list', 'table', 'cards'] as ViewLayout[]).map((layout) => ({
+    label: layout === 'list' ? 'List' : layout === 'table' ? 'Table' : 'Cards',
+    hint: layout === current ? 'Shown this way now' : layout === 'list' ? 'The notes in the sidebar, as always' : layout === 'table' ? 'One row per note, the properties as columns, editable in place' : 'One card per note, the first properties on each',
+    run: () => choose(layout),
+  }));
+  openPicker(`Show “${saved?.name ?? q}” as…`, items, undefined, { at: ['list', 'table', 'cards'].indexOf(current) });
+}
+
+/** The notes a view's query finds: the notebook asked the search box's question, without the sidebar's folder or tag. */
+function runQuery(q: string): { notes: Note[]; filter: Filter } {
+  const all = sortByEdited(notes);
+  const filter = parseQuery(q);
+  return { notes: hasOperators(q) ? applyFilter(all, filter) : searchNotes(all, q, null), filter };
+}
+
+const viewHost: ViewHost = {
+  run: runQuery,
+  vocabulary: () => propertyVocabulary(notes).map((u) => u.key),
+  open: (id) => openInTab(id),
+  setProperty: async (id, change) => {
+    try {
+      const props = await window.notesApi.setProperty(id, change);
+      notes = notes.map((n) => (n.id === id ? withProperties(n, props) : n));
+      renderList();
+      renderEditor();
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : 'That property could not be written';
+    }
+  },
+  update: updateView,
+  pickLayout: (view) => pickViewLayout(view),
+  pick: (title, items) => openPicker(title, items),
+  status: (message) => showStatus(message, 3500),
+  root: document.body,
+};
+
+/** Draws the view the pane in front shows. */
+function renderViewPane(view: ViewRecord): void {
+  const head = document.createElement('div');
+  head.className = 'view-head';
+  const name = document.createElement('h2');
+  name.className = 'view-name';
+  name.textContent = view.name ?? view.query;
+  head.append(name);
+  if (view.name) {
+    const q = document.createElement('span');
+    q.className = 'view-query';
+    q.textContent = view.query;
+    head.append(q);
+  }
+  const body = document.createElement('div');
+  body.className = 'view-body';
+  renderView(body, view, viewHost);
+  el.view.replaceChildren(head, body);
 }
 
 /** Saves the search in the box under a name, so one click asks it again. */
@@ -1249,7 +1480,13 @@ async function saveView(): Promise<void> {
   const existing = settings.views.find((v) => v.query === q);
   const name = await refactorUi.prompt('Name this search', existing?.name ?? q.slice(0, 24));
   if (name === null || !name.trim()) return;
-  await saveSettings({ ...settings, views: withView(settings.views, name, q) });
+  const open = Object.values(ui.viewTabs).find((r) => !r.name && r.query === q);
+  await saveSettings({ ...settings, views: withView(settings.views, name, q, open ? presentationOf(open) : undefined) });
+  if (open) {
+    ui.viewTabs[open.id] = { ...open, name: name.trim() };
+    saveUi();
+    renderEditor();
+  }
   renderList();
   showStatus(`Saved as “${name.trim()}”`, 2500);
 }
@@ -1265,7 +1502,11 @@ function forgetView(): void {
     hint: v.query,
     run: () => {
       void saveSettings({ ...settings, views: settings.views.filter((o) => o.name !== v.name) }).then(() => {
+        // A tab open on it stays, as the search it was, without the name.
+        for (const r of Object.values(ui.viewTabs)) if (r.name === v.name) ui.viewTabs[r.id] = { ...r, name: undefined };
+        saveUi();
         renderList();
+        renderEditor();
         showStatus(`Forgot “${v.name}”`, 2500);
       });
     },
@@ -1441,11 +1682,15 @@ function renderEditor(): void {
 function renderPane(): void {
   const n = selected();
   const has = n !== null;
+  const view = !has && ui.selectedId && isViewId(ui.selectedId) ? viewOf(ui.selectedId) : null;
   el.editorWrap.hidden = !has;
-  el.empty.hidden = has;
+  el.view.hidden = view === null;
+  el.empty.hidden = has || view !== null;
   syncControls();
   renderWhere(n);
   renderMeta();
+  if (view) renderViewPane(view);
+  else el.view.replaceChildren();
   if (!n) {
     editorNoteId = null;
     return;
@@ -1473,6 +1718,7 @@ function renderPane(): void {
       : '<p class="preview-empty">Nothing to preview yet.</p>';
     liveTaskBoxes();
     liveCodeBlocks();
+    fillAttachmentSizes(el.preview);
     // Diagrams are drawn in after the words are on the page; the source
     // block stands in until then, so nothing jumps.
     void renderDiagrams(el.preview).catch((err) => console.error('[notes] diagrams failed', err));
@@ -1481,7 +1727,7 @@ function renderPane(): void {
   renderBacklinks();
   renderRelated();
   renderMentions();
-  renderOutline();
+  renderSide();
   syncChipUi();
   // The caret is in one pane only; the others have nothing to follow.
   if (inFocusedPane()) syncWriting();
@@ -1503,10 +1749,254 @@ function forgetAllDrawn(): void {
   for (const p of panes) p.editorNoteId = null;
 }
 
-/** Puts a body into the editor: the DOM for it, then the live formatting over that. */
+/** Puts a body into the editor: the DOM for it, the live formatting over that, and the folds the note had. */
 function drawEditor(body: string): void {
   renderEditorDom(el.editor, body);
+  const n = selected();
+  const ranges = foldableRanges(body.split('\n'));
+  folded = n ? restoreFolds(ranges, ui.folds[n.id]?.heads ?? []) : new Set();
   decorateAll();
+  wrapFolds(ranges);
+  if (n) saveFolds(ranges);
+}
+
+// --- folding ----------------------------------------------------------------
+
+/**
+ * The head lines of the folds closed in the editor in front. A fold is a
+ * marker element around the lines it hides — they are still the text, only
+ * not on screen — and the marker itself is the ellipsis at the head's end.
+ * Which lines are folded is kept per note in `ui.folds`, never in the file.
+ */
+let folded = new Set<number>();
+/** True while refreshFolds has the markers out of the DOM, so the redraw does not read that as every fold gone. */
+let foldsDetached = false;
+
+/** The fold hints for the decorator: which lines head something foldable, and which of those are closed. */
+function foldHints(rows: string[]): FoldHint[] {
+  const hints: FoldHint[] = [];
+  for (const r of foldableRanges(rows)) hints[r.head] = folded.has(r.head) ? 'folded' : 'foldable';
+  return hints;
+}
+
+/** Puts the lines a fold hides inside its marker; the marker sits where the head line ends. */
+function wrapFold(range: FoldRange): void {
+  const { lines } = readEditor(el.editor);
+  const head = lines[range.head];
+  const last = lines[range.end - 1];
+  if (!head || !last) return;
+  const r = document.createRange();
+  r.setStart(head.end.node, head.end.offset);
+  r.setEnd(last.end.node, last.end.offset);
+  const content = document.createElement('span');
+  content.className = FOLD_CONTENT_CLASS;
+  content.append(r.extractContents());
+  const marker = document.createElement('span');
+  marker.className = FOLD_CLASS;
+  marker.setAttribute('contenteditable', 'false');
+  const count = range.end - range.head - 1;
+  marker.title = `${count} ${count === 1 ? 'line' : 'lines'} hidden — click to unfold`;
+  marker.setAttribute('role', 'button');
+  marker.setAttribute('aria-label', `${count} ${count === 1 ? 'line' : 'lines'} hidden`);
+  marker.append(content);
+  r.insertNode(marker);
+}
+
+/** Wraps every closed fold, innermost first, so an outer fold takes the inner marker whole. */
+function wrapFolds(ranges: readonly FoldRange[]): void {
+  for (const r of ranges.filter((x) => folded.has(x.head)).sort((a, b) => b.head - a.head)) wrapFold(r);
+}
+
+const unwrapMarker = (m: Element): void => {
+  const content = m.querySelector(`.${FOLD_CONTENT_CLASS}`);
+  m.replaceWith(...(content ? Array.from(content.childNodes) : []));
+};
+
+function unwrapAllFolds(): void {
+  for (const m of Array.from(el.editor.querySelectorAll(`.${FOLD_CLASS}`))) unwrapMarker(m);
+}
+
+/**
+ * The folds as the DOM has them after an edit: the head line each marker sits
+ * on, checked against what the text now says can fold there. A marker whose
+ * head is gone, or that no longer covers exactly the head's lines, is taken
+ * out — the lines come back rather than stay hidden under a head that is not
+ * theirs. Line numbers are read fresh, so lines added or removed above a fold
+ * move it without anything having to be mapped.
+ */
+function foldsFromDom(): Set<number> {
+  for (;;) {
+    const markers = Array.from(el.editor.querySelectorAll<HTMLElement>(`.${FOLD_CLASS}`));
+    if (markers.length === 0) return new Set();
+    const { text, lines } = readEditor(el.editor);
+    const ranges = foldableRanges(text.split('\n'));
+    const out = new Set<number>();
+    let removed = false;
+    for (const m of markers) {
+      const content = m.querySelector(`.${FOLD_CONTENT_CLASS}`);
+      const head = content ? lineIndexIn(lines, { node: content, offset: 0 }) : -1;
+      const last = content ? lineIndexIn(lines, { node: content, offset: content.childNodes.length }) : -1;
+      const range = foldableAt(ranges, head);
+      if (range && range.end - 1 === last) out.add(head);
+      else {
+        unwrapMarker(m);
+        // The DOM under the other markers moved; read it again.
+        removed = true;
+        break;
+      }
+    }
+    if (!removed) return out;
+  }
+}
+
+/** Redraws the folds from `folded`: the head lines take their chevron state, and the hidden lines their markers. */
+function refreshFolds(): void {
+  foldsDetached = true;
+  try {
+    unwrapAllFolds();
+    // The head lines' HTML changed with their state; the ordinary redraw finds them.
+    decorateAfterInput();
+  } finally {
+    foldsDetached = false;
+  }
+  const { text } = readEditor(el.editor);
+  const ranges = foldableRanges(text.split('\n'));
+  folded = new Set([...folded].filter((h) => foldableAt(ranges, h) !== null));
+  wrapFolds(ranges);
+  saveFolds(ranges);
+}
+
+/** Writes the folds of the note in front into the window's state, and tells the other panes showing it. */
+function saveFolds(ranges: readonly FoldRange[]): void {
+  const n = selected();
+  if (!n) return;
+  const heads = foldHeads(ranges, folded);
+  const before = ui.folds[n.id];
+  const same = (before?.heads.length ?? 0) === heads.length && (before?.heads ?? []).every((h, i) => h.line === heads[i].line && h.text === heads[i].text && h.kind === heads[i].kind);
+  if (same) return;
+  ui.folds = pruneFolds(withFolds(ui.folds, n.id, heads), (id) => notes.some((x) => x.id === id));
+  saveUi();
+  // Another pane on the same note reads the folds back when it is next drawn.
+  for (const p of panes) if (p !== here() && p.activeId === n.id) p.editorNoteId = null;
+}
+
+/** The fold to act on from a line: the head there, else the innermost fold the line is inside. */
+function foldFor(line: number): { range: FoldRange; ranges: FoldRange[] } | null {
+  const { text } = readEditor(el.editor);
+  const ranges = foldableRanges(text.split('\n'));
+  const range = foldableAt(ranges, line) ?? foldContaining(ranges, line);
+  return range ? { range, ranges } : null;
+}
+
+/** Folds or unfolds at the caret: the heading or list item it is on, or the one it is inside. */
+function toggleFoldAtCaret(): void {
+  if (ui.preview || !selected()) return;
+  const at = editorLines();
+  if (!at) return;
+  const found = foldFor(at.first);
+  if (!found) {
+    showStatus('Nothing to fold here: put the caret on a heading, or a list item with lines under it', 3500);
+    return;
+  }
+  const { range } = found;
+  const closing = !folded.has(range.head);
+  if (closing) folded.add(range.head);
+  else folded.delete(range.head);
+  refreshFolds();
+  // The caret cannot stay in lines that are no longer on screen.
+  if (closing && at.first > range.head) caretToLineEnd(range.head);
+  showStatus(closing ? `Folded: ${range.end - range.head - 1} ${range.end - range.head - 1 === 1 ? 'line' : 'lines'} hidden` : 'Unfolded', 1500);
+}
+
+function foldAll(): void {
+  if (ui.preview || !selected()) return;
+  const at = editorLines();
+  const { text } = readEditor(el.editor);
+  const ranges = foldableRanges(text.split('\n'));
+  if (ranges.length === 0) {
+    showStatus('Nothing to fold: no heading or nested list in this note', 3000);
+    return;
+  }
+  folded = new Set(ranges.map((r) => r.head));
+  refreshFolds();
+  // The caret lands on the outermost head hiding where it was.
+  if (at) {
+    const outer = foldsHiding(ranges, folded, at.first)[0];
+    if (outer) caretToLineEnd(outer.head);
+  }
+  showStatus(`Folded ${ranges.length} ${ranges.length === 1 ? 'section' : 'sections'}`, 1500);
+}
+
+function unfoldAll(): void {
+  if (ui.preview || !selected()) return;
+  if (folded.size === 0) {
+    showStatus('Nothing is folded', 1500);
+    return;
+  }
+  folded = new Set();
+  refreshFolds();
+  showStatus('Unfolded everything', 1500);
+}
+
+/** Opens every fold hiding a line, so a jump there lands on something visible. */
+function revealLine(line: number): void {
+  if (folded.size === 0 || ui.preview) return;
+  const { text } = readEditor(el.editor);
+  const hiding = foldsHiding(foldableRanges(text.split('\n')), folded, line);
+  if (hiding.length === 0) return;
+  for (const r of hiding) folded.delete(r.head);
+  refreshFolds();
+}
+
+/** Opens the folds whose markers an edit would touch: the words come back before anything can happen to them. */
+function revealMarkers(markers: Element[]): void {
+  if (markers.length === 0) return;
+  const { lines } = readEditor(el.editor);
+  for (const m of markers) {
+    const content = m.querySelector(`.${FOLD_CONTENT_CLASS}`);
+    if (content) folded.delete(lineIndexIn(lines, { node: content, offset: 0 }));
+  }
+  refreshFolds();
+}
+
+/** The fold marker a collapsed selection is about to delete into, by direction, or null. */
+function markerBeside(range: Range, direction: 'back' | 'forward'): Element | null {
+  const { startContainer: node, startOffset: offset } = range;
+  let beside: Node | null = null;
+  if (node.nodeType === Node.TEXT_NODE) {
+    const text = node.textContent ?? '';
+    if (direction === 'back' && offset === 0) beside = node.previousSibling;
+    if (direction === 'forward' && offset === text.length) beside = node.nextSibling;
+  } else {
+    beside = direction === 'back' ? node.childNodes[offset - 1] ?? null : node.childNodes[offset] ?? null;
+  }
+  return beside instanceof Element && beside.classList.contains(FOLD_CLASS) ? beside : null;
+}
+
+/** The fold markers an edit made with the current selection would cross or delete. */
+function markersTouched(inputType: string): Element[] {
+  if (folded.size === 0) return [];
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return [];
+  const range = sel.getRangeAt(0);
+  const markers = Array.from(el.editor.querySelectorAll(`.${FOLD_CLASS}`));
+  if (!range.collapsed) return markers.filter((m) => range.intersectsNode(m));
+  if (inputType.startsWith('deleteContentBackward') || inputType === 'deleteWordBackward' || inputType === 'deleteSoftLineBackward' || inputType === 'deleteHardLineBackward') {
+    const m = markerBeside(range, 'back');
+    return m ? [m] : [];
+  }
+  if (inputType.startsWith('deleteContentForward') || inputType === 'deleteWordForward' || inputType === 'deleteSoftLineForward' || inputType === 'deleteHardLineForward') {
+    const m = markerBeside(range, 'forward');
+    return m ? [m] : [];
+  }
+  return [];
+}
+
+/** Makes an offset of the body visible: a jump into a folded section unfolds it first. */
+function revealOffset(offset: number): void {
+  if (ui.preview || folded.size === 0) return;
+  const { text } = readEditor(el.editor);
+  revealLine(text.slice(0, Math.max(0, offset)).split('\n').length - 1);
 }
 
 /**
@@ -1812,7 +2302,18 @@ function chipBesideCaret(): HTMLElement | null {
  * that qualifies is delegated from one listener rather than wired per row —
  * a hover must not cost anything while nothing is being hovered.
  */
-const PEEKABLE = '.inline-link, [data-link], [data-peek]';
+const PEEKABLE = '.inline-link, [data-link], [data-peek], .footnote-ref a[data-footnote]';
+
+/** The words of a footnote as the preview drew them, without the way back, for the card. */
+function footnoteCard(sup: HTMLElement): { label: string; html: string } | null {
+  const number = sup.dataset.footnote ?? '';
+  const article = sup.closest('.preview, .peek-body');
+  const item = article?.querySelector(`.footnotes-list li:nth-child(${Number(number)})`);
+  if (!number || !item) return null;
+  const copy = item.cloneNode(true) as HTMLElement;
+  for (const back of copy.querySelectorAll('.footnote-back')) back.remove();
+  return { label: `Footnote ${number}`, html: copy.innerHTML };
+}
 
 document.addEventListener(
   'pointerover',
@@ -1823,6 +2324,17 @@ document.addEventListener(
     // A palette row, a picker row, an outline heading and a folder row are
     // not peekable: a sheet must not spawn a second floating surface.
     if (target.closest('#palette, #pick-sheet, .sheet, #outline, #folder-tree')) return;
+    if (target.dataset.footnote !== undefined) {
+      // A footnote's words, in the card; never from inside a card, which is one glance.
+      if (target.closest('.peek')) return;
+      const ready = footnoteCard(target);
+      if (!ready) return;
+      peek.hover({ address: `footnote:${selected()?.id ?? ''}:${ready.label}`, ready }, () => {
+        const box = target.getBoundingClientRect();
+        return box.width === 0 && box.height === 0 ? null : box;
+      });
+      return;
+    }
     const address = target.dataset.peek ?? target.dataset.link ?? '';
     if (!address) return;
     peek.hover({ address, fromId: selected()?.id }, () => {
@@ -2154,7 +2666,7 @@ function select(id: string | null): void {
     }
     // A title still being typed goes onto the note being left, not away with it.
     settlePendingTitle();
-    if (id && !incidental) ui.recent = visited(ui.recent, id, Date.now());
+    if (id && !incidental && !isViewId(id)) ui.recent = visited(ui.recent, id, Date.now());
   }
   // Choosing the note the search had landed on makes the arrival deliberate.
   arrivedIncidentally = incidental;
@@ -2533,46 +3045,67 @@ function altFor(fileName: string): string {
   return base && base.toLowerCase() !== 'image' ? base : 'image';
 }
 
-const isImage = (f: File): boolean => f.type.startsWith('image/');
-
-/** Files dropped on the window: pictures go into the note, notes become notes. */
+/**
+ * Files dropped on the window: markdown and text files become notes, and
+ * every other kind of file — a picture, a PDF, a spreadsheet — is attached
+ * to the note on screen.
+ */
 async function takeFiles(files: File[]): Promise<void> {
-  const texts = files.filter((f) => !isImage(f) && isTextFile(f.name));
-  const images = files.filter(isImage);
+  const texts = files.filter((f) => isTextFile(f.name));
+  const others = files.filter((f) => !isTextFile(f.name));
   if (texts.length > 0) {
     await importFiles(await Promise.all(texts.map(async (f) => ({ name: f.name, text: await f.text() }))));
   }
-  if (images.length > 0) await attachFiles(images);
-  if (texts.length === 0 && images.length === 0) showStatus('Only images and .md or .txt files can be dropped in', 3500);
+  if (others.length > 0) await attachFiles(others);
 }
 
-async function attachFiles(files: File[]): Promise<void> {
-  const images = files.filter(isImage);
-  if (images.length === 0) {
-    showStatus('Only images can be attached', 3000);
+/** What was attached, and what was not and why. */
+function attachedStatus(attached: number, failed: string[]): void {
+  const done = attached === 0 ? '' : attached === 1 ? 'Attached 1 file' : `Attached ${attached} files`;
+  if (failed.length === 0) {
+    showStatus(done, 2500);
     return;
   }
+  showStatus(`${done ? `${done}. ` : ''}${failed.join('; ')}`, 6000);
+}
+
+/**
+ * Puts each file in the attachments folder and a reference to it in the note:
+ * a picture as a picture, anything else as a link carrying the file's own name.
+ */
+async function attachFiles(files: File[]): Promise<void> {
+  if (files.length === 0) return;
   ensureEditable();
   const target = ui.selectedId;
   let attached = 0;
-  for (const file of images) {
+  const failed: string[] = [];
+  for (const file of files) {
     try {
-      const url = await window.notesApi.attach(new Uint8Array(await file.arrayBuffer()), file.name || 'image.png');
+      const url = await window.notesApi.attach(new Uint8Array(await file.arrayBuffer()), file.name || 'file');
       if (ui.selectedId !== target) {
-        // The picture was written, but the note it was for is no longer on screen; it is not put into this one.
+        // The file was written, but the note it was for is no longer on screen; it is not put into this one.
         showStatus('The note changed while attaching; nothing was inserted', 4000);
         return;
       }
       const name = assetNameFromUrl(url);
-      if (name) insertImageChip(name, altFor(file.name));
+      if (name) insertAttachment(name, file.name);
       attached++;
     } catch (err) {
       console.error('[notes] attach failed', err);
-      showStatus(err instanceof Error ? err.message.replace(/^.*Error: /, '') : 'Could not attach that image', 4000);
-      return;
+      failed.push(`${file.name || 'A file'}: ${err instanceof Error ? err.message.replace(/^.*Error: /, '') : 'could not be attached'}`);
     }
   }
-  showStatus(attached === 1 ? 'Image attached' : `${attached} images attached`, 2500);
+  attachedStatus(attached, failed);
+}
+
+/** A stored attachment into the note at the caret: a chip for a picture, a link on its own line for anything else. */
+function insertAttachment(name: string, originalName: string): void {
+  if (isImageAsset(name)) {
+    insertImageChip(name, altFor(originalName));
+    return;
+  }
+  // On a line of its own, so the preview draws the file rather than a word.
+  insertAtCaret(`${attachmentMarkdown(name, originalName)}\n`);
 }
 
 /**
@@ -2605,28 +3138,71 @@ async function pickImports(): Promise<void> {
   }
 }
 
-async function pickImages(): Promise<void> {
-  let urls: string[];
+async function pickFiles(): Promise<void> {
+  let picked: PickedAttachment[];
   try {
-    urls = await window.notesApi.pickAttachments();
+    picked = await window.notesApi.pickAttachments();
   } catch (err) {
     console.error('[notes] attach failed', err);
-    showStatus(err instanceof Error ? err.message.replace(/^.*Error: /, '') : 'Could not attach that image', 4000);
+    showStatus(err instanceof Error ? err.message.replace(/^.*Error: /, '') : 'Could not attach that file', 4000);
     return;
   }
-  if (urls.length === 0) return;
+  if (picked.length === 0) return;
   ensureEditable();
-  for (const url of urls) {
-    const name = assetNameFromUrl(url);
-    if (name) insertImageChip(name, 'image');
+  for (const { url, name } of picked) {
+    const stored = assetNameFromUrl(url);
+    if (stored) insertAttachment(stored, name);
   }
-  showStatus(urls.length === 1 ? 'Image attached' : `${urls.length} images attached`, 2500);
+  attachedStatus(picked.length, []);
 }
 
-// Paste an image from anywhere in the window, whatever holds focus. A text
+/**
+ * The attachment link the caret is on, in the note on screen, or null. Only
+ * an existing, openable one counts for the command that opens it.
+ */
+function attachmentAtCaret(): AttachmentLink | null {
+  const n = selected();
+  if (!n || ui.preview) return null;
+  const at = caretOffsetOrStart();
+  const start = n.body.lastIndexOf('\n', at - 1) + 1;
+  const end = n.body.indexOf('\n', at);
+  return attachmentLinkAt(n.body.slice(start, end < 0 ? n.body.length : end), at - start);
+}
+
+/** Hands an attachment to Windows to open, and says why when it will not. */
+async function openAttachment(name: string): Promise<void> {
+  try {
+    const why = await window.notesApi.openAttachment(name);
+    if (why) showStatus(why, 3500);
+  } catch (err) {
+    console.error('[notes] open attachment failed', err);
+    showStatus('Could not open that attachment', 3500);
+  }
+}
+
+/** Writes each attachment's size into the chips of a rendered article, and marks the ones whose file is gone. */
+function fillAttachmentSizes(root: HTMLElement): void {
+  const slots = Array.from(root.querySelectorAll<HTMLElement>('.attachment-size[data-asset-size]'));
+  if (slots.length === 0) return;
+  const names = Array.from(new Set(slots.map((s) => s.dataset.assetSize ?? '').filter(Boolean)));
+  void window.notesApi
+    .assetSizes(names)
+    .then((sizes) => {
+      for (const slot of slots) {
+        const size = sizes[slot.dataset.assetSize ?? ''];
+        if (size === null || size === undefined) {
+          slot.textContent = 'Missing attachment';
+          slot.classList.add('attachment-missing');
+        } else slot.textContent = formatSize(size);
+      }
+    })
+    .catch((err) => console.error('[notes] attachment sizes failed', err));
+}
+
+// Paste a file from anywhere in the window, whatever holds focus. A text
 // paste has no files, so it falls through to the browser untouched.
 window.addEventListener('paste', (e) => {
-  const files = Array.from(e.clipboardData?.files ?? []).filter(isImage);
+  const files = Array.from(e.clipboardData?.files ?? []);
   if (files.length === 0) return;
   e.preventDefault();
   void attachFiles(files);
@@ -2786,10 +3362,45 @@ function endResize(): void {
 onPane('imgHandle', 'pointerup', endResize);
 onPane('imgHandle', 'pointercancel', endResize);
 
+onPane('editor', 'contextmenu', (e) => {
+  // The native menu opens after this; it is told which attachment, if any,
+  // the pointer is on, since to it the editor's link is only text.
+  const pos = document.caretPositionFromPoint?.(e.clientX, e.clientY);
+  let name: string | null = null;
+  if (pos && el.editor.contains(pos.offsetNode)) {
+    const { text, lines } = readEditor(el.editor);
+    const line = lineIndexIn(lines, { node: pos.offsetNode, offset: pos.offset });
+    const rows = text.split('\n');
+    const before = rows.slice(0, line).reduce((n, l) => n + l.length + 1, 0);
+    const col = offsetOf(el.editor, { node: pos.offsetNode, offset: pos.offset }) - before;
+    name = attachmentLinkAt(rows[line] ?? '', col)?.name ?? null;
+  }
+  window.notesApi.contextAttachment(name);
+});
+
 onPane('editor', 'click', (e) => {
   if (isLink(e.target)) {
     e.preventDefault();
     openLink(linkTargetOf(e.target));
+    return;
+  }
+  const target = e.target instanceof Element ? e.target : null;
+  const marker = target?.closest(`.${FOLD_CLASS}`);
+  if (marker) {
+    e.preventDefault();
+    revealMarkers([marker]);
+    return;
+  }
+  // The chevron is drawn in the gutter, left of the words, on a line that can fold.
+  const head = target?.closest<HTMLElement>('.md-foldable');
+  if (head && e.clientX < head.getBoundingClientRect().left) {
+    e.preventDefault();
+    const line = lineIndexAt(el.editor, { node: head, offset: 0 });
+    const found = foldFor(line);
+    if (!found) return;
+    if (folded.has(found.range.head)) folded.delete(found.range.head);
+    else folded.add(found.range.head);
+    refreshFolds();
     return;
   }
   if (isChip(e.target) || isRule(e.target)) selectChip(e.target);
@@ -2883,6 +3494,11 @@ function applyBody(body: string): void {
   const n = selected();
   if (!n || n.body === body) return;
   peek.forget(n.id);
+  // The folds as they stand, so the redraw can find them again in the new text.
+  if (editorNoteId === n.id) {
+    folded = foldsFromDom();
+    saveFolds(foldableRanges(n.body.split('\n')));
+  }
   notes = updateBody(notes, n.id, body);
   scheduleSave();
   // The editor only re-renders on a note switch, so tell it this counts as one.
@@ -3073,6 +3689,28 @@ onPane('preview', 'click', (e) => {
   }
 });
 
+// A footnote's number goes to its words and the arrow comes back: in-page
+// anchors, which every other link's new-window rule would otherwise swallow.
+onPane('preview', 'click', (e) => {
+  const a = e.target instanceof Element ? e.target.closest<HTMLAnchorElement>('a[href^="#"]') : null;
+  if (!a) return;
+  e.preventDefault();
+  const id = decodeURIComponent(a.getAttribute('href')?.slice(1) ?? '');
+  const found = id ? Array.from(el.preview.querySelectorAll<HTMLElement>('[id]')).find((x) => x.id === id) : null;
+  found?.scrollIntoView({ block: 'center' });
+});
+
+// An attachment in the preview opens in its own app; the window never
+// navigates to a note-asset URL, which is all the browser would do with it.
+onPane('preview', 'click', (e) => {
+  const link = e.target instanceof Element ? e.target.closest<HTMLElement>('[data-asset]') : null;
+  if (!link || link.tagName === 'FIGURE') return;
+  const name = link.dataset.asset ?? '';
+  if (!name) return;
+  e.preventDefault();
+  void openAttachment(name);
+});
+
 // Ticking a box in the preview writes the change back into the markdown.
 onPane('preview', 'click', (e) => {
   const box = e.target;
@@ -3137,6 +3775,7 @@ function toggleCodeBlock(): void {
 /** Puts the caret at the end of a line, after the editor has been re-rendered. */
 function caretToLineEnd(line: number): void {
   el.editor.focus();
+  revealLine(line);
   const spans = lineSpans(el.editor);
   const span = spans[Math.min(line, spans.length - 1)];
   if (!span) return;
@@ -3278,9 +3917,10 @@ const fileNameOf = (p: string): string => p.split(/[\\/]/).pop() ?? p;
  * stylesheets the page needs. The PNG, the PDF and the HTML export all
  * start from this, as does `notes render --html` through the window.
  */
-async function renderedExport(n: Note, look: 'ink' | 'paper' = 'ink'): Promise<RenderedExport> {
+async function renderedExport(n: Note, look: 'ink' | 'paper' = 'ink', paper = look === 'paper'): Promise<RenderedExport> {
   const body = exportBody(n);
-  let html = renderMarkdown(body, embedsFrom(notes));
+  // Paper is the PDF and the PNG: nothing on it can be clicked or played.
+  let html = renderMarkdown(body, embedsFrom(notes), { paper });
   if (hasDiagrams(html)) {
     const holder = document.createElement('div');
     holder.innerHTML = html;
@@ -3302,10 +3942,11 @@ async function runExport(kind: ExportKind): Promise<void> {
     let request: ExportRequest;
     if (kind === 'md') request = { kind, title, body };
     else if (kind === 'txt') request = { kind, title, text: markdownToText(body) };
-    else request = { kind, ...(await renderedExport(n, kind === 'pdf' ? 'paper' : 'ink')) };
-    const savedTo = await window.notesApi.exportNote(request);
-    if (savedTo) showStatus(`Exported to ${fileNameOf(savedTo)}`, 4000);
-    else clearStatus();
+    else request = { kind, ...(await renderedExport(n, kind === 'pdf' ? 'paper' : 'ink', kind !== 'html')) };
+    const result = await window.notesApi.exportNote(request);
+    if (!result) clearStatus();
+    else if (result.missing.length > 0) showStatus(`Exported to ${fileNameOf(result.path)} without ${result.missing.length === 1 ? 'a missing attachment' : `${result.missing.length} missing attachments`}: ${result.missing.join(', ')}`, 7000);
+    else showStatus(`Exported to ${fileNameOf(result.path)}`, 4000);
   } catch (err) {
     console.error('[notes] export failed', err);
     showStatus('Export failed', 4000);
@@ -3445,11 +4086,28 @@ onPane('editor', 'beforeinput', (e) => {
     else redoEdit();
     return;
   }
+  // An edit that would cross or delete folded lines opens them instead: the
+  // words come back into view, and the next keystroke does what was meant.
+  const touched = markersTouched(e.inputType);
+  if (touched.length > 0) {
+    e.preventDefault();
+    revealMarkers(touched);
+    return;
+  }
   // What the note looked like before this edit, kept if the edit goes through.
   const n = selected();
   if (n && editorNoteId === n.id) pendingEdit = { text: n.body, caret: caretOffsetOrStart() };
   if (e.inputType === 'insertParagraph') {
     e.preventDefault();
+    // Enter on a folded head opens it first: the new line belongs to what is under it.
+    const pos = caretPos();
+    if (pos && folded.size > 0) {
+      const line = lineIndexAt(el.editor, pos);
+      if (folded.has(line)) {
+        folded.delete(line);
+        refreshFolds();
+      }
+    }
     if (!convertDashesOnEnter()) document.execCommand('insertLineBreak');
   }
 });
@@ -3673,6 +4331,9 @@ el.typewriter.addEventListener('change', () => {
 });
 el.outlineShow.addEventListener('change', () => {
   if (el.outlineShow.checked !== ui.outline) toggleOutline();
+});
+el.footnotesShow.addEventListener('change', () => {
+  if (el.footnotesShow.checked !== ui.footnotes) toggleFootnotes();
 });
 el.controlsShow.addEventListener('change', () => {
   if (el.controlsShow.checked !== ui.controls) toggleControls();
@@ -4194,7 +4855,6 @@ function renderOutline(): void {
   const show = headings.length >= 2 && !el.editorWrap.hidden;
   const key = show ? headings.map((h) => `${h.level}:${h.line}:${h.text}`).join('\n') : '';
   el.outline.hidden = !show;
-  el.outline.closest('.page')?.classList.toggle('has-outline', show);
   if (key === outlineKey) return;
   outlineKey = key;
   outlineHeadings = headings;
@@ -4250,10 +4910,101 @@ function toggleOutline(): void {
   ui.outline = !ui.outline;
   saveUi();
   el.outlineShow.checked = ui.outline;
-  renderOutline();
+  renderSide();
   syncWriting();
   showStatus(ui.outline ? 'Outline on' : 'Outline off', 1500);
 }
+
+// --- the footnotes rail -----------------------------------------------------
+
+function toggleFootnotes(): void {
+  ui.footnotes = !ui.footnotes;
+  saveUi();
+  el.footnotesShow.checked = ui.footnotes;
+  for (const p of panes) withPane(p, renderSide);
+  showStatus(ui.footnotes ? 'Footnotes on' : 'Footnotes off', 1500);
+}
+
+/**
+ * The column beside the page: the outline, and the footnotes under it. The
+ * column is there when either has something to say, and the page is made
+ * narrower for it only then.
+ */
+function renderSide(): void {
+  renderOutline();
+  here().footnotesRail.render();
+  const show = !el.outline.hidden || !el.footnotes.hidden;
+  el.side.hidden = !show;
+  el.side.closest('.page')?.classList.toggle('has-side', show);
+}
+
+/** The document selection as offsets into the body, and how far the editor is scrolled. */
+function captureFocus(): FocusState {
+  const sel = window.getSelection();
+  const inEditor = sel && sel.rangeCount > 0 && sel.anchorNode && sel.focusNode && el.editor.contains(sel.anchorNode) && el.editor.contains(sel.focusNode);
+  const anchor = inEditor ? offsetOf(el.editor, { node: sel.anchorNode as Node, offset: sel.anchorOffset }) : caretOffsetOrStart();
+  const focus = inEditor ? offsetOf(el.editor, { node: sel.focusNode as Node, offset: sel.focusOffset }) : anchor;
+  return { anchor, focus, scrollTop: ui.preview ? el.preview.scrollTop : el.editor.scrollTop };
+}
+
+function restoreFocus(state: FocusState): void {
+  if (ui.preview) {
+    el.preview.focus();
+    el.preview.scrollTop = state.scrollTop;
+    return;
+  }
+  el.editor.focus();
+  const { segments } = readEditor(el.editor);
+  const a = posAt(segments, state.anchor);
+  const f = posAt(segments, state.focus);
+  const sel = window.getSelection();
+  if (a && f && sel) sel.setBaseAndExtent(a.node, a.offset, f.node, f.offset);
+  el.editor.scrollTop = state.scrollTop;
+}
+
+/** Scrolls the preview to an element, or to the first text run holding some words. */
+function scrollPreviewTo(selector: string | null, text?: string): void {
+  let target: Element | null = selector ? el.preview.querySelector(selector) : null;
+  if (!target && text) {
+    const walker = document.createTreeWalker(el.preview, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      if ((walker.currentNode.textContent ?? '').includes(text)) {
+        target = walker.currentNode.parentElement;
+        break;
+      }
+    }
+  }
+  target?.scrollIntoView({ block: 'center' });
+}
+
+function footnotesHostFor(p: Pane): FootnotesHost {
+  const on = <T>(fn: () => T): T => withPane(p, fn);
+  return {
+    body: () => on(() => selected()?.body ?? null),
+    preview: () => on(() => ui.preview),
+    enabled: () => ui.footnotes,
+    pageShown: () => on(() => !el.editorWrap.hidden),
+    capture: () => on(captureFocus),
+    restore: (state) => on(() => restoreFocus(state)),
+    goTo: (offset) =>
+      on(() => {
+        revealOffset(offset);
+        placeCaretAt(offset);
+      }),
+    scrollPreview: (selector, text) => on(() => scrollPreviewTo(selector, text)),
+    setBody: (next) =>
+      on(() => {
+        // The redraw would put the editor back at the top; the rail is beside the words being read.
+        const top = el.editor.scrollTop;
+        setBody(next);
+        el.editor.scrollTop = top;
+      }),
+    status: (message) => showStatus(message, 3500),
+    root: p.els.footnotes,
+  };
+}
+
+
 
 // --- find and replace -------------------------------------------------------
 
@@ -4372,6 +5123,14 @@ function paintFind(): void {
   if (current) scrollRangeIntoView(current);
 }
 
+// Stepping to a match inside a fold opens the fold; the highlight pass reads
+// the DOM after, so it paints what is now on screen.
+const paintFindRevealing = (): void => {
+  const hit = findHits[findAt];
+  if (hit && folded.size > 0) revealOffset(hit.start);
+  paintFind();
+};
+
 function scrollRangeIntoView(range: Range): void {
   const rect = range.getBoundingClientRect();
   const box = el.editor.getBoundingClientRect();
@@ -4384,7 +5143,7 @@ function scrollRangeIntoView(range: Range): void {
 function stepFind(delta: 1 | -1): void {
   if (findHits.length === 0) return;
   findAt = (findAt + delta + findHits.length) % findHits.length;
-  paintFind();
+  paintFindRevealing();
 }
 
 /** Replaces the current match, then moves on to the next. */
@@ -4511,6 +5270,8 @@ function rangeOverLines(from: LineSpan, to: LineSpan): Range {
  */
 function currentLineHtml(range: Range): string {
   const frag = range.cloneContents();
+  // A fold's marker begins on the head line; it is the editor's, not the decorator's.
+  for (const fold of Array.from(frag.querySelectorAll(`.${FOLD_CLASS}`))) fold.remove();
   for (const chip of Array.from(frag.querySelectorAll(CHIP_SELECTOR))) chip.replaceWith(document.createComment('chip'));
   for (const empty of Array.from(frag.querySelectorAll('[class^="md-"]'))) {
     if (!empty.textContent && !empty.querySelector(CHIP_SELECTOR) && !empty.querySelector('br')) empty.remove();
@@ -4561,7 +5322,7 @@ function decorateAll(): void {
   if (!ui.liveFormat) return;
   const { text, lines, segments } = readEditor(el.editor);
   const rows = text.split('\n');
-  const html = decorateLines(rows, chipSpansByLine(text, rows, segments));
+  const html = decorateLines(rows, chipSpansByLine(text, rows, segments), foldHints(rows));
   // Bottom up, so redrawing a line cannot move the spans of the lines still to do.
   for (let i = Math.min(lines.length, html.length) - 1; i >= 0; i--) {
     if (isDecorated(html[i])) patchBlock(lines, i, i, html);
@@ -4578,10 +5339,12 @@ function decorateAll(): void {
  * is put back by its offset in the text, which the redraw does not change.
  */
 function decorateAfterInput(): void {
+  // Whatever the edit did to the lines, the markers moved with them: they say where the folds are now.
+  if (!foldsDetached && folded.size > 0) folded = foldsFromDom();
   if (!ui.liveFormat || ui.preview) return;
   const { text, lines, segments } = readEditor(el.editor);
   const rows = text.split('\n');
-  const html = decorateLines(rows, chipSpansByLine(text, rows, segments));
+  const html = decorateLines(rows, chipSpansByLine(text, rows, segments), foldHints(rows));
   const count = Math.min(lines.length, html.length);
   const stale: boolean[] = [];
   let any = false;
@@ -4905,7 +5668,7 @@ function applyExternal(changes: ExternalChanges): void {
     .catch((err) => console.error('[notes] could not read the folders', err));
   // Through select(), so the note taken away is left the way any other is:
   // `notes open --wait` told, the provisional title and the Back stack settled.
-  if (ui.selectedId && !notes.some((n) => n.id === ui.selectedId)) select(sortByEdited(notes)[0]?.id ?? null);
+  if (ui.selectedId && !tabExists(ui.selectedId)) select(sortByEdited(notes)[0]?.id ?? null);
   renderList();
   renderEditor();
   showStatus(touched === 1 ? 'A note changed on disk' : `${touched} notes changed on disk`, 3000);
@@ -5268,6 +6031,78 @@ function insertDate(): void {
 
 /** The chord that ran the current command, for commands that read a modifier. */
 let lastChord = '';
+
+/** The line the caret is on in the note on screen: its bounds, and the caret's column. */
+function caretLineText(): { body: string; at: number; start: number; end: number } | null {
+  const n = selected();
+  if (!n) return null;
+  const at = caretOffsetOrStart();
+  const start = n.body.lastIndexOf('\n', at - 1) + 1;
+  const nl = n.body.indexOf('\n', at);
+  return { body: n.body, at, start, end: nl < 0 ? n.body.length : nl };
+}
+
+/** Whether the caret sits inside a code fence or a code span, where a footnote would be characters and nothing more. */
+function inCodeAtCaret(): boolean {
+  const line = caretLineText();
+  if (!line) return false;
+  const rows = line.body.slice(0, line.start).split('\n');
+  let inFence = false;
+  for (const row of rows) if (isFenceLine(row)) inFence = !inFence;
+  const here = line.body.slice(line.start, line.end);
+  if (inFence || isFenceLine(here)) return true;
+  // Inside a span: an odd number of backticks before the caret on this line, one after.
+  const before = here.slice(0, line.at - line.start);
+  const ticks = (before.match(/`/g) ?? []).length;
+  return ticks % 2 === 1 && here.slice(line.at - line.start).includes('`');
+}
+
+/** Blank-line padding so a block put at this seam does not run into what is beside it. */
+const padBefore = (before: string): string => (before === '' || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n');
+const padAfter = (after: string): string => (after === '' || after.startsWith('\n\n') ? '' : after.startsWith('\n') ? '\n' : '\n\n');
+
+/**
+ * A callout, `> [!note]` and an empty quoted line under it, before the
+ * caret's line when the caret is at its start and after it otherwise, kept
+ * apart from its neighbours by a blank line. The caret lands after the second
+ * line's space, where the words go; the type is edited in place.
+ */
+function insertCallout(): void {
+  ensureEditable();
+  if (!selectionInEditor()) caretToEnd();
+  const line = caretLineText();
+  if (!line) return;
+  const seam = line.at === line.start ? line.start : line.end;
+  const before = line.body.slice(0, seam);
+  const after = line.body.slice(seam);
+  const text = '> [!note]\n> ';
+  const lead = padBefore(before);
+  setBody(`${before}${lead}${text}${padAfter(after)}${after}`);
+  placeCaretAt(before.length + lead.length + text.length);
+}
+
+/**
+ * A footnote: `[^N]` at the caret (after a selection, which is kept), and
+ * `[^N]: ` at the end of the note for its words, where the caret goes. N is
+ * one above the largest number already in use. One step to undo.
+ */
+function insertFootnote(): void {
+  ensureEditable();
+  const n = selected();
+  if (!n) return;
+  if (!selectionInEditor()) caretToEnd();
+  const sel = window.getSelection();
+  let at = caretOffsetOrStart();
+  if (sel && sel.rangeCount > 0 && !sel.isCollapsed && sel.anchorNode && el.editor.contains(sel.anchorNode)) {
+    const anchor = offsetOf(el.editor, { node: sel.anchorNode, offset: sel.anchorOffset });
+    at = Math.max(at, anchor);
+  }
+  const id = nextFootnoteId(n.body);
+  const marked = `${n.body.slice(0, at)}[^${id}]${n.body.slice(at)}`;
+  const made = withNewDefinition(marked, id);
+  setBody(made.body);
+  placeCaretAt(made.at);
+}
 
 // --- scheduled tasks -------------------------------------------------------------
 
@@ -5667,7 +6502,7 @@ const refactorHost: RefactorHost = {
 /** After a Plan ran, was undone or redone: the screen and the files catch up. */
 function afterPlan(plan: Plan): void {
   if (plan.select && notes.some((n) => n.id === plan.select) && ui.selectedId !== plan.select) select(plan.select);
-  if (ui.selectedId && !notes.some((n) => n.id === ui.selectedId)) select(sortByEdited(notes)[0]?.id ?? null);
+  if (ui.selectedId && !tabExists(ui.selectedId)) select(sortByEdited(notes)[0]?.id ?? null);
   scheduleSave();
   renderList();
   renderEditor();
@@ -5852,6 +6687,10 @@ const workspacesUi = createWorkspacesUi({
   status: showStatus,
   focusEditor,
   titleOf: (id) => {
+    if (isViewId(id)) {
+      const v = viewOf(id);
+      return v ? viewTabLabel(v.name, v.query) : null;
+    }
     const n = notes.find((x) => x.id === id);
     return n ? shownTitle(n) : null;
   },
@@ -5879,7 +6718,7 @@ async function loadWorkspace(id: string): Promise<void> {
     showStatus('Could not save what is open; the workspace was not opened', 5000);
     return;
   }
-  const resolved = resolveWorkspace(workspace, (noteId) => notes.some((n) => n.id === noteId));
+  const resolved = resolveWorkspace(workspace, tabExists);
   setPanes(resolved.panes, resolved.paneAt);
   loadedWorkspace = id;
   saveUi();
@@ -6194,6 +7033,16 @@ const ACTIONS: Action[] = [
     run: forgetView,
   },
   {
+    id: 'view-layout',
+    label: 'Layout for this search…',
+    hint: 'List, table or cards for the search in the box — or for the table in front of you',
+    group: 'Notes',
+    menuSection: 'Saved searches',
+    chord: 'ctrl+alt+v',
+    terms: 'table cards grid database base properties columns view',
+    run: () => pickViewLayout(currentView()),
+  },
+  {
     id: 'folder-rename',
     label: 'Rename this folder…',
     hint: 'Changes the name of the folder being browsed, leaving it where it is',
@@ -6313,16 +7162,34 @@ const ACTIONS: Action[] = [
     run: () => openFind(true),
   },
   {
+    id: 'attachment-open',
+    label: 'Open attachment',
+    hint: 'The file the caret is on, in whatever opens that kind of file; the right-click menu offers the same',
+    group: 'Writing',
+    menuSection: 'Edit',
+    chord: 'ctrl+alt+a',
+    terms: 'file pdf launch external default app',
+    enabled: () => {
+      const link = attachmentAtCaret();
+      return link !== null && canOpenAsset(link.name);
+    },
+    run: () => {
+      const link = attachmentAtCaret();
+      if (link) void openAttachment(link.name);
+    },
+  },
+  {
     id: 'attach',
     slash: true,
-    label: 'Attach an image…',
-    hint: 'Pasting or dropping a picture does the same',
+    label: 'Attach a file…',
+    hint: 'Pasting or dropping a file does the same; a picture is drawn, a PDF or a recording plays, anything else opens in its own app',
     group: 'Writing',
     menuSection: 'Insert',
     pill: { label: 'Attach', priority: 1 },
     chord: 'ctrl+shift+i',
-    terms: 'picture photo insert',
-    run: () => void pickImages(),
+    terms: 'picture photo image pdf audio video spreadsheet document insert upload',
+    enabled: hasNote,
+    run: () => void pickFiles(),
   },
   {
     id: 'divider',
@@ -6334,7 +7201,32 @@ const ACTIONS: Action[] = [
     pill: { label: 'Divider', priority: 2 },
     chord: 'ctrl+shift+h',
     terms: 'rule horizontal line break',
+    enabled: hasNote,
     run: insertDivider,
+  },
+  {
+    id: 'callout',
+    slash: true,
+    label: 'Insert callout',
+    hint: 'A > [!note] box; change note to info, tip, warning, quote… and add a title after it. A - after the type starts it folded',
+    group: 'Writing',
+    menuSection: 'Insert',
+    chord: 'ctrl+alt+c',
+    terms: 'admonition aside box info tip warning note quote',
+    enabled: () => hasNote() && !ui.preview,
+    run: insertCallout,
+  },
+  {
+    id: 'footnote',
+    slash: true,
+    label: 'Insert footnote',
+    hint: 'A [^1] here and its [^1]: line at the end of the note, where the caret goes',
+    group: 'Writing',
+    menuSection: 'Insert',
+    chord: 'ctrl+alt+e',
+    terms: 'reference note endnote citation',
+    enabled: () => hasNote() && !ui.preview && !inCodeAtCaret(),
+    run: insertFootnote,
   },
   {
     id: 'code',
@@ -6344,6 +7236,7 @@ const ACTIONS: Action[] = [
     menuSection: 'Insert',
     chord: 'ctrl+shift+c',
     terms: 'fence monospace preformatted highlight',
+    enabled: hasNote,
     run: toggleCodeBlock,
   },
   {
@@ -6356,6 +7249,7 @@ const ACTIONS: Action[] = [
     pill: { label: 'Task', priority: 4 },
     chord: 'ctrl+shift+x',
     terms: 'todo checkbox tick',
+    enabled: hasNote,
     run: toggleTaskHere,
   },
   {
@@ -6479,6 +7373,7 @@ const ACTIONS: Action[] = [
     id: 'preview',
     label: 'Markdown preview',
     group: 'View',
+    menuSection: 'Reading',
     chord: 'ctrl+e',
     enabled: hasNote,
     on: () => ui.preview,
@@ -6489,6 +7384,7 @@ const ACTIONS: Action[] = [
     label: 'Live formatting',
     hint: 'Markdown takes shape as you type: # for headings, ** for bold, - for lists',
     group: 'View',
+    menuSection: 'Reading',
     chord: 'ctrl+shift+m',
     terms: 'markdown render inline wysiwyg markers',
     on: () => ui.liveFormat,
@@ -6499,16 +7395,61 @@ const ACTIONS: Action[] = [
     label: 'Outline',
     hint: 'The note’s headings beside it, to jump by; shown once a note has two',
     group: 'View',
+    menuSection: 'Navigation',
     chord: 'ctrl+shift+l',
     terms: 'headings contents toc navigate',
     on: () => ui.outline,
     run: toggleOutline,
   },
   {
+    id: 'footnotes',
+    label: 'Footnotes',
+    hint: 'The note’s footnotes beside it, under the outline: a number goes to its reference, the words are edited in place, ↩ Back returns you',
+    group: 'View',
+    menuSection: 'Navigation',
+    chord: 'ctrl+alt+o',
+    terms: 'endnotes references rail side notes',
+    on: () => ui.footnotes,
+    run: toggleFootnotes,
+  },
+  {
+    id: 'fold-toggle',
+    label: 'Fold or unfold at caret',
+    hint: 'The heading’s section, or the list item’s lines, the caret is on or inside; the chevron beside the line does the same',
+    group: 'View',
+    menuSection: 'Folding',
+    chord: 'ctrl+alt+.',
+    terms: 'collapse expand section outline hide',
+    enabled: () => hasNote() && !ui.preview,
+    run: toggleFoldAtCaret,
+  },
+  {
+    id: 'fold-all',
+    label: 'Fold all',
+    hint: 'Every heading and every nested list in the note, down to its head lines',
+    group: 'View',
+    menuSection: 'Folding',
+    chord: 'ctrl+alt+[',
+    terms: 'collapse everything sections',
+    enabled: () => hasNote() && !ui.preview,
+    run: foldAll,
+  },
+  {
+    id: 'unfold-all',
+    label: 'Unfold all',
+    group: 'View',
+    menuSection: 'Folding',
+    chord: 'ctrl+alt+]',
+    terms: 'expand everything sections show',
+    enabled: () => hasNote() && !ui.preview,
+    run: unfoldAll,
+  },
+  {
     id: 'focus',
     label: 'Focus mode',
     hint: 'Dims everything but the paragraph you are in',
     group: 'View',
+    menuSection: 'Workspace',
     chord: 'ctrl+shift+f',
     terms: 'dim distraction free',
     on: () => ui.focusMode,
@@ -6519,6 +7460,7 @@ const ACTIONS: Action[] = [
     label: 'Typewriter scrolling',
     hint: 'Keeps the line you are writing in the middle of the page',
     group: 'View',
+    menuSection: 'Workspace',
     chord: 'ctrl+shift+t',
     terms: 'centre center scroll',
     on: () => ui.typewriter,
@@ -6529,6 +7471,7 @@ const ACTIONS: Action[] = [
     label: 'Peek the linked note',
     hint: 'Shows what a link points at, without going there',
     group: 'View',
+    menuSection: 'Workspace',
     chord: 'alt+p',
     terms: 'preview hover glance link look',
     enabled: () => hasNote(),
@@ -6539,6 +7482,7 @@ const ACTIONS: Action[] = [
     label: 'Graph of the notes…',
     hint: 'Every note as a dot, every [[link]] as a line; click a dot to go there',
     group: 'View',
+    menuSection: 'Workspace',
     chord: 'ctrl+shift+g',
     terms: 'map links network related',
     run: () => toggleGraph(),
@@ -7614,6 +8558,7 @@ function refuseIfTyping(id: string, force: boolean | undefined): void {
 /** Puts the caret at a text offset of the note on screen, or at the end when the offset is past it. */
 function placeCaretAt(offset: number): void {
   el.editor.focus();
+  revealOffset(offset);
   const { segments } = readEditor(el.editor);
   const pos = posAt(segments, offset);
   if (!pos) {
@@ -7796,7 +8741,7 @@ const cliHandlers: Record<string, CliHandler> = {
   },
   'export.render': async ({ id, path, kind }: { id: string; path: string; kind: 'png' | 'pdf' | 'html' }) => {
     const n = noteById(id);
-    const request: ExportRequest = { kind, ...(await renderedExport(n, kind === 'pdf' ? 'paper' : 'ink')) };
+    const request: ExportRequest = { kind, ...(await renderedExport(n, kind === 'pdf' ? 'paper' : 'ink', kind !== 'html')) };
     await window.notesApi.exportNoteTo(path, request);
     return { path };
   },
@@ -7835,7 +8780,7 @@ async function init(): Promise<void> {
   folderScope = folders.some((f) => folderKey(f) === folderKey(ui.folder)) ? ui.folder : ROOT_FOLDER;
   tagsOpen = ui.tags;
   loaded = true;
-  if (ui.selectedId && !notes.some((n) => n.id === ui.selectedId)) ui.selectedId = null;
+  if (ui.selectedId && !tabExists(ui.selectedId)) ui.selectedId = null;
   if (!ui.selectedId) ui.selectedId = sortByEdited(notes)[0]?.id ?? null;
   // The panes come next: everything after this point is drawn into one.
   openPanes();
@@ -7844,6 +8789,7 @@ async function init(): Promise<void> {
   applyLayout();
   applyWriting();
   el.outlineShow.checked = ui.outline;
+  el.footnotesShow.checked = ui.footnotes;
   el.liveFormat.checked = ui.liveFormat;
   el.controlsShow.checked = ui.controls;
   renderList();

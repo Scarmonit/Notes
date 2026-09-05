@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_SETTINGS, cleanSettings, cleanViews, parseSettings, viewNamed, withView } from './settings';
+import { DEFAULT_SETTINGS, cleanPresentation, cleanSettings, cleanViews, parseSettings, presentationOf, viewNamed, withView } from './settings';
 
 describe('parseSettings', () => {
   it('reads a file it wrote itself', () => {
@@ -81,5 +81,34 @@ describe('saved searches', () => {
   it('reads views out of a file and writes them back', () => {
     expect(parseSettings('{"views":[{"name":"Due","query":"due:week todo:"}]}').views).toEqual([{ name: 'Due', query: 'due:week todo:' }]);
     expect(parseSettings('{"views":"nope"}').views).toEqual([]);
+  });
+});
+
+describe('how a saved search is shown', () => {
+  it('reads a layout, columns, sort and grouping back, and drops what means the default or is malformed', () => {
+    expect(cleanPresentation({ layout: 'table', columns: ['title', 'prop:status', 'junk', 'updated', 'prop:status'], sortBy: 'prop:rating', sortDir: 'desc', groupBy: 'prop:status' })).toEqual({
+      layout: 'table',
+      columns: ['title', 'prop:status', 'updated'],
+      sortBy: 'prop:rating',
+      sortDir: 'desc',
+      groupBy: 'prop:status',
+    });
+    expect(cleanPresentation({ layout: 'list', columns: [], sortBy: 'nope', sortDir: 'desc', groupBy: 'title' })).toEqual({});
+    expect(cleanPresentation({ sortBy: 'title', sortDir: 'sideways' })).toEqual({ sortBy: 'title' });
+    expect(cleanPresentation('junk')).toEqual({});
+  });
+
+  it('keeps a view from before 0.28 exactly as it was, and carries a presentation through a file', () => {
+    const plain = cleanViews([{ name: 'Due', query: 'due:week' }]);
+    expect(plain).toEqual([{ name: 'Due', query: 'due:week' }]);
+    const text = JSON.stringify({ views: [{ name: 'Board', query: 'prop:status', layout: 'cards', groupBy: 'prop:status' }] });
+    expect(parseSettings(text).views).toEqual([{ name: 'Board', query: 'prop:status', layout: 'cards', groupBy: 'prop:status' }]);
+  });
+
+  it('saving a search again keeps the table it had, unless a new presentation is given', () => {
+    const views = withView([], 'Board', 'prop:status', { layout: 'table', columns: ['title', 'prop:status'] });
+    expect(withView(views, 'Board', 'prop:status=draft')[0]).toEqual({ name: 'Board', query: 'prop:status=draft', layout: 'table', columns: ['title', 'prop:status'] });
+    expect(withView(views, 'Board', 'prop:status', { layout: 'cards' })[0]).toEqual({ name: 'Board', query: 'prop:status', layout: 'cards' });
+    expect(presentationOf(views[0])).toEqual({ layout: 'table', columns: ['title', 'prop:status'] });
   });
 });

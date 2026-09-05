@@ -106,7 +106,13 @@ describe('where the menu is wired', () => {
   });
 
   it('is the only place in the app that suppresses the native menu', () => {
-    expect(source.match(/'contextmenu'/g)).toHaveLength(1);
+    // The editor listens too, since 0.28.0, but only to tell the native menu
+    // which attachment the pointer is on; it never prevents the default.
+    expect(source.match(/'contextmenu'/g)).toHaveLength(2);
+    const at = source.indexOf("onPane('editor', 'contextmenu'");
+    const handler = source.slice(at, source.indexOf('\n});', at));
+    expect(handler).not.toContain('preventDefault');
+    expect(handler).toContain('window.notesApi.contextAttachment(name)');
   });
 
   it('draws the rows with the clicked note in view', () => {

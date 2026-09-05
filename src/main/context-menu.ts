@@ -1,4 +1,17 @@
 import { BrowserWindow, Menu, MenuItem, clipboard } from 'electron';
+import { assetNameFromUrl, canOpenAsset } from '../shared/assets';
+import { openAttachment } from './attachments';
+
+/**
+ * The attachment the pointer was over as the right-click began, told by the
+ * renderer just before this menu opens: in the editor an attachment is plain
+ * markdown text, which the native menu's own `linkURL` knows nothing of.
+ */
+let contextAttachment: string | null = null;
+export function setContextAttachment(name: string | null): void {
+  contextAttachment = name;
+}
+
 
 /**
  * The right-click menu. There is no application menu (its accelerators would
@@ -33,7 +46,21 @@ export function installContextMenu(win: BrowserWindow): void {
       menu.append(new MenuItem({ type: 'separator' }));
     }
 
-    if (params.linkURL) {
+    // An attachment, in the preview (a real link) or in the editor (the
+    // renderer said which one the pointer was on): offered, greyed for a kind
+    // the app does not launch.
+    const attachment = assetNameFromUrl(params.linkURL) ?? contextAttachment;
+    contextAttachment = null;
+    if (attachment) {
+      menu.append(
+        new MenuItem({
+          label: 'Open attachment',
+          enabled: canOpenAsset(attachment),
+          click: () => void openAttachment(attachment),
+        }),
+      );
+      menu.append(new MenuItem({ type: 'separator' }));
+    } else if (params.linkURL) {
       menu.append(new MenuItem({ label: 'Copy link', click: () => clipboard.writeText(params.linkURL) }));
       menu.append(new MenuItem({ type: 'separator' }));
     }

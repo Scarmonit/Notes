@@ -128,3 +128,37 @@ describe('0.13.1 regressions', () => {
     expect(renderMarkdown('$x^2$')).toMatch(/style="[^"]*height/);
   });
 });
+
+describe('callouts, footnotes and attachments survive sanitising', () => {
+  it('keeps a foldable callout as a details element with its state', () => {
+    const html = renderMarkdown('> [!note]+ Open\n> body');
+    expect(html).toContain('<details class="callout" data-callout="note" open="">');
+    expect(html).toContain('<summary class="callout-head">');
+  });
+
+  it('keeps footnote anchors, ids and the endnotes', () => {
+    const html = renderMarkdown('x[^1]\n\n[^1]: words');
+    expect(html).toMatch(/<sup class="footnote-ref"><a href="#fn-[a-z0-9]+-1" id="fnref-[a-z0-9]+-1-1" data-footnote="1"/);
+    expect(html).toContain('<li id="fn-');
+    expect(html).toContain('class="footnote-back"');
+  });
+
+  it('keeps the PDF frame the core made and drops a frame written by hand', () => {
+    const ours = renderMarkdown('[report.pdf](note-asset://0123456789abcdef.pdf)');
+    expect(ours).toContain('<iframe class="attachment-frame" src="note-asset://0123456789abcdef.pdf"');
+    const hand = renderMarkdown('<iframe class="attachment-frame" src="https://example.com"></iframe>\n\n<iframe src="note-asset://0123456789abcdef.pdf"></iframe>');
+    expect(hand).not.toContain('<iframe');
+  });
+
+  it('keeps media players with their controls and source', () => {
+    const html = renderMarkdown('[a.mp3](note-asset://0123456789abcdef.mp3)');
+    expect(html).toContain('<audio class="attachment-player" controls="" preload="none" src="note-asset://0123456789abcdef.mp3">');
+  });
+
+  it('keeps an attachment chip and its data attributes', () => {
+    const html = renderMarkdown('[budget.xlsx](note-asset://0123456789abcdef.xlsx)');
+    expect(html).toContain('data-asset="0123456789abcdef.xlsx"');
+    expect(html).toContain('data-asset-size="0123456789abcdef.xlsx"');
+    expect(html).toContain('href="note-asset://0123456789abcdef.xlsx"');
+  });
+});

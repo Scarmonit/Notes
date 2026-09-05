@@ -3,6 +3,9 @@ import { marked, type TokenizerAndRendererExtension, type Tokens } from 'marked'
 import { highlightCode } from '../renderer/highlight';
 import { withoutMarkers } from '../core/blocks';
 import { LINK_PATTERN, formatLinkAddress, linkLabel, parseLinkAddress } from '../renderer/notes';
+import { assetKind, assetNameFromUrl, assetUrl } from './assets';
+import { calloutHead, QUOTE_PREFIX } from './callouts';
+import { scanFootnotes, type FootnoteScan } from './footnotes';
 
 /**
  * How markdown becomes HTML, in one place: the wikilink and math
@@ -165,12 +168,255 @@ const inlineMath: TokenizerAndRendererExtension = {
   },
 };
 
+/**
+ * How a render should differ from the preview. `paper` is the PDF, the PNG
+ * and print: nothing there can be clicked or played, so a foldable callout is
+ * shown open, a footnote's back-links are left off, and an attachment is a
+ * name rather than a frame.
+ */
+export interface RenderOptions {
+  paper?: boolean;
+}
+
+/** The options for the render in progress. */
+let renderOptions: RenderOptions = {};
+
+// --- callouts ---------------------------------------------------------------
+
+// The first line of a callout: a quote marker and `[!type]`.
+const CALLOUT_START = /^ {0,3}>[ ]?\[!/;
+
+/** Whether a line goes on with the quote that is being read. */
+const quoted = (line: string): boolean => /^ {0,3}>/.test(line);
+
+const callout: TokenizerAndRendererExtension = {
+  name: 'callout',
+  level: 'block',
+  // As with block math: only a `> [!` that begins a line can start one. Marked
+  // asks this of the source one character in, so answering 0 here would cut a
+  // paragraph one character after it began; a block start is always after a
+  // newline, and at the very start of the source the tokenizer is tried anyway.
+  start: (src: string) => {
+    const m = /\n {0,3}>[ ]?\[!/.exec(src);
+    return m ? m.index + 1 : -1;
+  },
+  tokenizer(src: string) {
+    if (!CALLOUT_START.test(src)) return undefined;
+    const lines = src.split('\n');
+    const head = calloutHead(lines[0].replace(QUOTE_PREFIX, ''));
+    if (!head) return undefined;
+    let n = 1;
+    while (n < lines.length && quoted(lines[n])) n++;
+    const raw = lines.slice(0, n).join('\n') + (n < lines.length ? '\n' : '');
+    const inner = lines
+      .slice(1, n)
+      .map((l) => l.replace(QUOTE_PREFIX, ''))
+      .join('\n');
+    return {
+      type: 'callout',
+      raw,
+      kind: head.kind,
+      label: head.label,
+      fold: head.fold,
+      titleTokens: head.title ? this.lexer.inlineTokens(head.title) : [],
+      tokens: inner.trim() ? this.lexer.blockTokens(inner) : [],
+    };
+  },
+  renderer(token) {
+    const kind = escapeHtml(token.kind as string);
+    const fold = token.fold as '-' | '+' | null;
+    const title = (token.titleTokens as Tokens.Generic[]).length > 0 ? `<span class="callout-title">${this.parser.parseInline(token.titleTokens as Tokens.Generic[])}</span>` : '';
+    const label = `<span class="callout-label u">${escapeHtml(token.label as string)}</span>${title}`;
+    const body = this.parser.parse(token.tokens ?? []);
+    if (fold && !renderOptions.paper) {
+      return `<details class="callout" data-callout="${kind}"${fold === '+' ? ' open' : ''}><summary class="callout-head">${label}</summary><div class="callout-body">${body}</div></details>\n`;
+    }
+    return `<div class="callout" data-callout="${kind}"><div class="callout-head">${label}</div><div class="callout-body">${body}</div></div>\n`;
+  },
+};
+
+// --- footnotes --------------------------------------------------------------
+
+/** The footnotes of the note being rendered, or null when it has none. */
+let footnotes: FootnoteScan | null = null;
+/** How many times each numbered footnote has been referred to so far in this render. */
+let refCounts = new Map<number, number>();
+/** Which inline notes have been drawn, so each is numbered once. */
+let inlinesDrawn = 0;
+/** A short name for this render, so two renders on one page cannot share an id. */
+let renderTag = '';
+let renders = 0;
+
+const FOOTNOTE_REF = /^\[\^([^\s[\]]+)\](?!:)/;
+
+function refHtml(number: number): string {
+  const k = (refCounts.get(number) ?? 0) + 1;
+  refCounts.set(number, k);
+  return `<sup class="footnote-ref"><a href="#fn-${renderTag}-${number}" id="fnref-${renderTag}-${number}-${k}" data-footnote="${number}">${number}</a></sup>`;
+}
+
+const footnoteRef: TokenizerAndRendererExtension = {
+  name: 'footnoteRef',
+  level: 'inline',
+  start: (src: string) => src.indexOf('[^'),
+  tokenizer(src: string) {
+    const m = FOOTNOTE_REF.exec(src);
+    if (!m || !footnotes) return undefined;
+    const entry = footnotes.entries.find((e) => e.kind === 'named' && e.id === m[1]);
+    // An id nothing defines stays the characters that were typed.
+    if (!entry) return undefined;
+    return { type: 'footnoteRef', raw: m[0], number: entry.number };
+  },
+  renderer(token) {
+    return refHtml(token.number as number);
+  },
+};
+
+/** `^[words]`, balanced, escapes honoured; null when the brackets never close. */
+function inlineNoteAt(src: string): string | null {
+  if (!src.startsWith('^[')) return null;
+  let depth = 0;
+  for (let j = 1; j < src.length; j++) {
+    const c = src[j];
+    if (c === '\\') {
+      j++;
+      continue;
+    }
+    if (c === '\n') return null;
+    if (c === '[') depth++;
+    else if (c === ']') {
+      depth--;
+      if (depth === 0) return src.slice(0, j + 1);
+    }
+  }
+  return null;
+}
+
+const footnoteInline: TokenizerAndRendererExtension = {
+  name: 'footnoteInline',
+  level: 'inline',
+  start: (src: string) => src.indexOf('^['),
+  tokenizer(src: string) {
+    const raw = inlineNoteAt(src);
+    if (!raw || !footnotes) return undefined;
+    // The scan numbered every inline note in source order; they are drawn in
+    // that order too, so the next undrawn one is this one.
+    const inline = footnotes.entries.filter((e) => e.kind === 'inline');
+    const entry = inline[inlinesDrawn];
+    if (!entry) return undefined;
+    inlinesDrawn++;
+    return { type: 'footnoteInline', raw, number: entry.number };
+  },
+  renderer(token) {
+    return refHtml(token.number as number);
+  },
+};
+
+/** The endnotes: every numbered footnote, its words, and a way back to each reference. */
+function footnotesHtml(): string {
+  if (!footnotes || footnotes.entries.length === 0) return '';
+  const items = footnotes.entries.map((e) => {
+    const text = e.kind === 'named' ? e.def.text : e.note.text;
+    let body = markdown.parser(markdown.lexer(text)).trim();
+    if (!renderOptions.paper) {
+      const count = refCounts.get(e.number) ?? 1;
+      const backs = Array.from({ length: count }, (_, i) => {
+        const k = i + 1;
+        return `<a class="footnote-back" href="#fnref-${renderTag}-${e.number}-${k}" aria-label="Back to reference ${k} of footnote ${e.number}">↩</a>`;
+      }).join('');
+      // Inside the last paragraph, so the arrow sits at the end of the words.
+      body = body.endsWith('</p>') ? `${body.slice(0, -4)} ${backs}</p>` : `${body} ${backs}`;
+    }
+    const id = e.kind === 'named' ? ` data-footnote-id="${escapeHtml(e.id)}"` : ' data-footnote-inline=""';
+    return `<li id="fn-${renderTag}-${e.number}" class="footnote"${id}>${body}</li>`;
+  });
+  return `<section class="footnotes"><span class="footnotes-label u">Footnotes</span><ol class="footnotes-list">${items.join('\n')}</ol></section>\n`;
+}
+
+/**
+ * The source with every defined, referred-to definition taken out: those are
+ * drawn at the end. A definition nothing refers to, and a second definition of
+ * an id, stay where they were written, as the ordinary words they are.
+ */
+function withoutDefinitions(source: string, scan: FootnoteScan): string {
+  const drawn = new Set(scan.entries.flatMap((e) => (e.kind === 'named' ? [e.def] : [])));
+  const lines = source.split('\n');
+  const skip = new Set<number>();
+  for (const d of drawn) for (let i = d.start; i < d.end; i++) skip.add(i);
+  // A definition left in place would be read by marked as a link reference
+  // definition (`[label]: url`) and vanish; escaping the bracket keeps it the
+  // words that were written.
+  const shown = new Set([...scan.unreferenced, ...scan.duplicates].map((d) => d.start));
+  const keep: string[] = [];
+  lines.forEach((l, i) => {
+    if (skip.has(i)) return;
+    keep.push(shown.has(i) ? l.replace('[', '\\[') : l);
+  });
+  return keep.join('\n');
+}
+
+// --- attachments ------------------------------------------------------------
+
+// A link to an attachment alone on its line: `[report.pdf](note-asset://….pdf)`.
+const ATTACHMENT_LINE = /^ {0,3}\[([^\]\n]+)\]\((note-asset:\/\/[^)\s]+)\)[ \t]*(?:\n+|$)/;
+
+/** The chip for an attachment: its name and, once the window or the export knows it, its size. */
+function chipHtml(name: string, text: string, link: boolean): string {
+  const inner = `<span class="attachment-name">${escapeHtml(text)}</span><span class="attachment-size" data-asset-size="${name}"></span>`;
+  return link ? `<a class="attachment attachment-chip" href="${assetUrl(name)}" data-asset="${name}">${inner}</a>` : `<span class="attachment attachment-chip" data-asset="${name}">${inner}</span>`;
+}
+
+const attachment: TokenizerAndRendererExtension = {
+  name: 'attachment',
+  level: 'block',
+  // Newline-anchored for the reason the callout's is: `![cat](note-asset://…)`
+  // seen one character in looks like this, and must not cut its paragraph.
+  start: (src: string) => {
+    const m = /\n {0,3}\[[^\]\n]+\]\(note-asset:/.exec(src);
+    return m ? m.index + 1 : -1;
+  },
+  tokenizer(src: string) {
+    const m = ATTACHMENT_LINE.exec(src);
+    if (!m) return undefined;
+    const name = assetNameFromUrl(m[2]);
+    if (!name) return undefined;
+    return { type: 'attachment', raw: m[0], text: m[1], name };
+  },
+  renderer(token) {
+    const name = token.name as string;
+    const text = token.text as string;
+    const kind = assetKind(name);
+    const paper = renderOptions.paper === true;
+    if (paper || kind === 'file' || kind === 'image') return `<p>${chipHtml(name, text, !paper)}</p>\n`;
+    const url = assetUrl(name);
+    const player =
+      kind === 'pdf'
+        ? `<iframe class="attachment-frame" src="${url}" title="${escapeHtml(text)}"></iframe>`
+        : kind === 'audio'
+          ? `<audio class="attachment-player" controls preload="none" src="${url}"></audio>`
+          : `<video class="attachment-player" controls preload="none" src="${url}"></video>`;
+    return `<figure class="attachment-figure attachment-${kind}" data-asset="${name}">${chipHtml(name, text, true)}${player}</figure>\n`;
+  },
+};
+
 /** The one marked instance, configured once. */
 export const markdown = marked.setOptions({ gfm: true, breaks: true, async: false });
 
 markdown.use({
-  extensions: [embed, wikilink, blockMath, inlineMath],
+  extensions: [callout, attachment, embed, wikilink, footnoteRef, footnoteInline, blockMath, inlineMath],
   renderer: {
+    // A link to an attachment written mid-sentence stays a link, and is marked
+    // so the window can open the file rather than try to navigate to it.
+    link({ href, title, tokens }: Tokens.Link) {
+      const name = assetNameFromUrl(href);
+      const text = this.parser.parseInline(tokens);
+      if (!name) {
+        const t = title ? ` title="${escapeHtml(title)}"` : '';
+        return `<a href="${escapeHtml(href)}"${t}>${text}</a>`;
+      }
+      if (renderOptions.paper) return `<span class="attachment-link" data-asset="${name}">${text}</span>`;
+      return `<a class="attachment-link" href="${assetUrl(name)}" data-asset="${name}">${text}</a>`;
+    },
     // Code is highlighted here, before sanitising, so the spans the
     // highlighter adds are checked like any other markup in the note. A
     // mermaid fence is handed on as its source for the window to draw.
@@ -190,19 +436,33 @@ markdown.use({
  * embed, which is what an export made with no notebook to hand can honestly
  * say.
  */
-export function parseMarkdown(source: string, embeds?: EmbedSource): string {
+export function parseMarkdown(source: string, embeds?: EmbedSource, options: RenderOptions = {}): string {
   embedSource = embeds ?? null;
   embedding.length = 0;
+  renderOptions = options;
+  // Block addresses are how the source says where a link may point; they
+  // are not something to read. The editor keeps them visible because they
+  // are the file's own characters — every rendered surface takes them off.
+  const text = withoutMarkers(source);
+  const scan = scanFootnotes(text);
+  footnotes = scan.entries.length > 0 ? scan : null;
+  refCounts = new Map();
+  inlinesDrawn = 0;
+  renderTag = (++renders).toString(36);
   try {
-    // Block addresses are how the source says where a link may point; they
-    // are not something to read. The editor keeps them visible because they
-    // are the file's own characters — every rendered surface takes them off.
-    return markdown.parse(withoutMarkers(source), { async: false }) as string;
+    const hasDefs = scan.defs.length > 0 || scan.duplicates.length > 0;
+    const html = markdown.parse(hasDefs ? withoutDefinitions(text, scan) : text, { async: false }) as string;
+    return html + footnotesHtml();
   } finally {
     embedSource = null;
     embedding.length = 0;
+    footnotes = null;
+    renderOptions = {};
   }
 }
+
+/** The footnotes of a body as the preview numbers them. */
+export { scanFootnotes };
 
 /** Whether rendered HTML holds any KaTeX output, so a page only carries the math stylesheet when it needs it. */
 export const hasMath = (html: string): boolean => html.includes('class="katex');

@@ -44,12 +44,50 @@ export interface Settings {
  * box and the command line already read, so a view is a saved question
  * rather than a new kind of thing.
  */
-export interface SavedView {
+export interface SavedView extends ViewPresentation {
   name: string;
   query: string;
 }
 
+/** How a view is laid out: as the list it always was, or as a table or cards over the notes' properties. */
+export type ViewLayout = 'list' | 'table' | 'cards';
+
+/**
+ * How a saved search is shown, beyond the query. Every field is optional and
+ * absent means the plain list, so a settings file from before 0.28 reads the
+ * same, and the command line — which reads only `query` — is untouched.
+ * A column is `title`, `updated` or `prop:<key>`.
+ */
+export interface ViewPresentation {
+  layout?: ViewLayout;
+  columns?: string[];
+  sortBy?: string;
+  sortDir?: 'asc' | 'desc';
+  groupBy?: string;
+}
+
 export const MAX_VIEWS = 24;
+
+const LAYOUTS = new Set<ViewLayout>(['list', 'table', 'cards']);
+const COLUMN = /^(?:title|updated|prop:[^\s]+)$/;
+
+/** A presentation as it should be stored: known layouts, well-formed columns, nothing that means the default. */
+export function cleanPresentation(raw: unknown): ViewPresentation {
+  if (!raw || typeof raw !== 'object') return {};
+  const v = raw as Record<string, unknown>;
+  const out: ViewPresentation = {};
+  if (typeof v.layout === 'string' && LAYOUTS.has(v.layout as ViewLayout) && v.layout !== 'list') out.layout = v.layout as ViewLayout;
+  if (Array.isArray(v.columns)) {
+    const columns = Array.from(new Set(v.columns.filter((c): c is string => typeof c === 'string' && COLUMN.test(c))));
+    if (columns.length > 0) out.columns = columns;
+  }
+  if (typeof v.sortBy === 'string' && COLUMN.test(v.sortBy)) {
+    out.sortBy = v.sortBy;
+    if (v.sortDir === 'desc') out.sortDir = 'desc';
+  }
+  if (typeof v.groupBy === 'string' && /^prop:[^\s]+$/.test(v.groupBy)) out.groupBy = v.groupBy;
+  return out;
+}
 
 /** Views as they should be stored: named, non-empty, no two by the same name. */
 export function cleanViews(raw: unknown): SavedView[] {
@@ -61,7 +99,7 @@ export function cleanViews(raw: unknown): SavedView[] {
     const name = typeof v.name === 'string' ? v.name.trim() : '';
     const query = typeof v.query === 'string' ? v.query.trim() : '';
     if (!name || !query || out.some((o) => o.name.toLowerCase() === name.toLowerCase())) continue;
-    out.push({ name, query });
+    out.push({ name, query, ...cleanPresentation(v) });
     if (out.length >= MAX_VIEWS) break;
   }
   return out;
@@ -77,12 +115,22 @@ export function viewNamed(views: SavedView[], name: string): SavedView | null {
   return started.length === 1 ? started[0] : null;
 }
 
-/** A view added or replaced by name, keeping the order the others are in. */
-export function withView(views: SavedView[], name: string, query: string): SavedView[] {
-  const clean = { name: name.trim(), query: query.trim() };
-  const at = views.findIndex((v) => v.name.toLowerCase() === clean.name.toLowerCase());
+/**
+ * A view added or replaced by name, keeping the order the others are in. A
+ * presentation given here is the view's; none given keeps what the view of
+ * that name already had, so saving a search again does not flatten its table.
+ */
+export function withView(views: SavedView[], name: string, query: string, presentation?: ViewPresentation): SavedView[] {
+  const at = views.findIndex((v) => v.name.toLowerCase() === name.trim().toLowerCase());
+  const kept = presentation ?? (at >= 0 ? presentationOf(views[at]) : {});
+  const clean: SavedView = { name: name.trim(), query: query.trim(), ...cleanPresentation(kept) };
   if (at < 0) return cleanViews([...views, clean]);
   return cleanViews(views.map((v, i) => (i === at ? clean : v)));
+}
+
+/** Just the presentation of a view, without its name and query. */
+export function presentationOf(view: ViewPresentation): ViewPresentation {
+  return cleanPresentation({ layout: view.layout, columns: view.columns, sortBy: view.sortBy, sortDir: view.sortDir, groupBy: view.groupBy });
 }
 
 export const DEFAULT_SETTINGS: Settings = {

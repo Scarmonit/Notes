@@ -1,3 +1,4 @@
+import { calloutHead, QUOTE_PREFIX } from '../shared/callouts';
 import { isFenceLine } from './fences';
 
 /**
@@ -34,7 +35,12 @@ const INLINE = new RegExp(
     '(?<strong>\\*\\*(?=\\S)[\\s\\S]+?(?<=\\S)\\*\\*|__(?=\\S)[\\s\\S]+?(?<=\\S)__)',
     '(?<strike>~~(?=\\S)[\\s\\S]+?(?<=\\S)~~)',
     '(?<em>(?<![\\w*])\\*(?=[^\\s*])[^*\\n]+?(?<=[^\\s*])\\*(?![\\w*])|(?<![\\w_])_(?=[^\\s_])[^_\\n]+?(?<=[^\\s_])_(?![\\w_]))',
+    // A footnote written where it is referred to: `^[words]`, one level of
+    // brackets inside allowed, so a `[[link]]` in the note still reads.
+    '(?<fninline>(?<!\\\\)\\^\\[(?:\\\\.|\\[(?:\\[[^\\[\\]\\n]*\\]|[^\\[\\]\\n])*\\]|[^\\[\\]\\n])+\\])',
     '(?<link>\\[[^\\]\\n]+\\]\\([^)\\n]*\\))',
+    // A footnote reference, `[^id]`; a `[^id]:` is a definition, handled per line.
+    '(?<fnref>(?<!\\\\)\\[\\^[^\\s\\[\\]]+\\](?!:))',
     '(?<tag>(?<![^\\s])#\\p{L}[\\p{L}\\p{N}_-]*(?:\\/[\\p{L}\\p{N}_-]+)*)',
     // A block address at the end of a line. Faded like every other marker and
     // never hidden: a marker Chromium's delete can skip over survives as
@@ -70,6 +76,10 @@ export function inlineHtml(text: string, depth = 0): string {
     } else if (g.link !== undefined) {
       const close = raw.indexOf('](');
       out += `<span class="md-link">${mark('[')}${inlineHtml(raw.slice(1, close), depth + 1)}${mark(raw.slice(close))}</span>`;
+    } else if (g.fninline !== undefined) {
+      out += `<span class="md-fninline">${mark('^[')}${inlineHtml(raw.slice(2, -1), depth + 1)}${mark(']')}</span>`;
+    } else if (g.fnref !== undefined) {
+      out += `<span class="md-fnref">${mark('[^')}<span class="md-fnid">${esc(raw.slice(2, -1))}</span>${mark(']')}</span>`;
     } else if (g.block !== undefined) {
       out += `<span class="md-block">${mark(raw)}</span>`;
     } else {
@@ -110,13 +120,27 @@ const HEADING = /^([ \t]{0,3}#{1,6}[ \t]+)([\s\S]*)$/;
 const QUOTE = /^([ \t]*>[ \t]?)([\s\S]*)$/;
 const LIST = /^([ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+)([\s\S]*)$/;
 const TASK = /^(\[([ xX])\][ \t]+)([\s\S]*)$/;
+// A footnote's definition: `[^id]:` at the start of the line, then its words.
+const FNDEF = /^([ ]{0,3}\[\^[^\s[\]]+\]:[ \t]?)([\s\S]*)$/;
+// The head of a callout, after the quote marker: `[!type]`, a fold sign, a title.
+const CALLOUT_TYPE = /^(\[![A-Za-z][A-Za-z0-9_-]*\][+-]?)((?:[ \t]+[\s\S]*)?)$/;
+
+/** Where a line stands in a callout, worked out over the whole body by decorateLines. */
+export type CalloutPart = 'head' | 'body' | null;
+
+/** Whether a line heads something that can fold, and whether it is folded now; worked out by the editor. */
+export type FoldHint = 'foldable' | 'folded' | null;
+
+/** The classes and state a fold hint puts on a head line's first wrapper. */
+const foldAttrs = (fold: FoldHint): string => (fold ? ` md-foldable${fold === 'folded' ? ' md-folded' : ''}" data-fold="${fold === 'folded' ? 'closed' : 'open'}"` : '"');
 
 /**
  * One line as HTML. `inFence` says whether the line sits inside a code
  * block, where nothing is markdown; `chips` are the spans of the line the
- * editor draws itself.
+ * editor draws itself; `callout` says whether the line begins or continues a
+ * callout, which only a pass over the lines around it can know.
  */
-export function decorateLine(line: string, inFence: boolean, chips: Protected[] = []): string {
+export function decorateLine(line: string, inFence: boolean, chips: Protected[] = [], callout: CalloutPart = null, fold: FoldHint = null): string {
   if (line === '') return '';
   if (isFenceLine(line)) return `<span class="md-fence">${plainWithChips(line, chips)}</span>`;
   if (inFence) return `<span class="md-codeline">${plainWithChips(line, chips)}</span>`;
@@ -126,15 +150,26 @@ export function decorateLine(line: string, inFence: boolean, chips: Protected[] 
   const heading = HEADING.exec(line);
   if (heading) {
     const level = heading[1].trim().length;
-    return `<span class="md-h md-h${level}">${mark(heading[1])}${inlineWithChips(heading[2], chips, heading[1].length)}</span>`;
+    return `<span class="md-h md-h${level}${foldAttrs(fold)}>${mark(heading[1])}${inlineWithChips(heading[2], chips, heading[1].length)}</span>`;
   }
   const quote = QUOTE.exec(line);
   if (quote) {
-    return `<span class="md-quote">${mark(quote[1])}${inlineWithChips(quote[2], chips, quote[1].length)}</span>`;
+    const cls = callout ? ` md-callout md-callout-${callout}` : '';
+    const head = callout === 'head' ? CALLOUT_TYPE.exec(quote[2]) : null;
+    if (head) {
+      // The type is the label the box wears, so it stays legible; only the quote marker fades.
+      const at = quote[1].length + head[1].length;
+      return `<span class="md-quote${cls}">${mark(quote[1])}<span class="md-callout-type">${esc(head[1])}</span>${inlineWithChips(head[2], chips, at)}</span>`;
+    }
+    return `<span class="md-quote${cls}">${mark(quote[1])}${inlineWithChips(quote[2], chips, quote[1].length)}</span>`;
+  }
+  const fndef = FNDEF.exec(line);
+  if (fndef) {
+    return `<span class="md-fndef"><span class="md-fnlabel">${esc(fndef[1])}</span>${inlineWithChips(fndef[2], chips, fndef[1].length)}</span>`;
   }
   const list = LIST.exec(line);
   if (list) {
-    const bullet = `<span class="md-bullet">${esc(list[1])}</span>`;
+    const bullet = `<span class="md-bullet${foldAttrs(fold)}>${esc(list[1])}</span>`;
     const task = TASK.exec(list[2]);
     if (task) {
       const offset = list[1].length + task[1].length;
@@ -150,13 +185,69 @@ export function decorateLine(line: string, inFence: boolean, chips: Protected[] 
  * Every line of a body as HTML, with code fences tracked from line to line
  * so the lines inside one are drawn as code rather than parsed as markdown.
  */
-export function decorateLines(lines: string[], chips: Protected[][] = []): string[] {
+export function decorateLines(lines: string[], chips: Protected[][] = [], folds: FoldHint[] = []): string[] {
   let inFence = false;
+  const parts = calloutParts(lines);
   return lines.map((line, i) => {
-    const html = decorateLine(line, inFence, chips[i] ?? []);
+    const html = decorateLine(line, inFence, chips[i] ?? [], parts[i], folds[i] ?? null);
     if (isFenceLine(line)) inFence = !inFence;
     return html;
   });
+}
+
+/** How deep in quotes a line is: the number of `>` markers that open it. */
+function quoteDepth(line: string): number {
+  let depth = 0;
+  let rest = line;
+  for (;;) {
+    const m = QUOTE_PREFIX.exec(rest);
+    if (!m) return depth;
+    depth++;
+    rest = rest.slice(m[0].length);
+  }
+}
+
+/** The text of a quoted line past `depth` markers. */
+function unquote(line: string, depth: number): string {
+  let rest = line;
+  for (let i = 0; i < depth; i++) rest = rest.replace(QUOTE_PREFIX, '');
+  return rest;
+}
+
+/**
+ * Which lines are callouts. A `> [!type]` line at some depth begins one, and
+ * every following line quoted at least that deep continues it; the callout
+ * ends at the first line that is not, or at a fence. Nested callouts are
+ * callouts too, so a line inside one is marked as a body line whichever
+ * callout it is inside — the box is drawn the same at every depth.
+ */
+export function calloutParts(lines: readonly string[]): CalloutPart[] {
+  const out: CalloutPart[] = new Array(lines.length).fill(null);
+  let inFence = false;
+  // The depths of the callouts open at this line, innermost last.
+  let open: number[] = [];
+  lines.forEach((line, i) => {
+    if (isFenceLine(line)) {
+      inFence = !inFence;
+      open = [];
+      return;
+    }
+    if (inFence) return;
+    const depth = quoteDepth(line);
+    if (depth === 0) {
+      open = [];
+      return;
+    }
+    open = open.filter((d) => depth >= d);
+    // The innermost quote on this line may itself open a callout.
+    if (calloutHead(unquote(line, depth)) && !open.includes(depth)) {
+      open.push(depth);
+      out[i] = 'head';
+      return;
+    }
+    if (open.length > 0) out[i] = 'body';
+  });
+  return out;
 }
 
 /** Whether a line's HTML is more than its text: something on it is formatted. */

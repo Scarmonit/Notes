@@ -474,3 +474,32 @@ describe('embeds in the editor', () => {
     expect(bodyTokens('```\n![[Plans]]\n```')).toEqual([]);
   });
 });
+
+describe('folded lines', () => {
+  it('serialises the lines a fold hides, and keeps a placed caret out of them', () => {
+    const root = editor();
+    renderEditor(root, '# Head\nhidden one\nhidden two\nafter');
+    // What the editor does when it folds: the head's line break and the hidden
+    // lines go inside a marker whose content is not displayed.
+    const text = docOf(root).firstChild as Text;
+    const range = document.createRange();
+    range.setStart(text, '# Head'.length);
+    range.setEnd(text, '# Head\nhidden one\nhidden two'.length);
+    const content = document.createElement('span');
+    content.className = 'fold-content';
+    content.append(range.extractContents());
+    const marker = document.createElement('span');
+    marker.className = 'fold-hidden';
+    marker.append(content);
+    range.insertNode(marker);
+    expect(serializeEditor(root)).toBe('# Head\nhidden one\nhidden two\nafter');
+    const { segments } = readEditor(root);
+    expect(segments.some((s) => s.hidden)).toBe(true);
+    // The end of the head line: the visible text node wins over the hidden one that starts at the same offset.
+    const pos = posAt(segments, '# Head'.length);
+    expect(pos?.node).toBe(text);
+    // An offset inside the hidden words has nowhere visible to go, and says so.
+    const inside = posAt(segments, '# Head\nhid'.length);
+    expect(inside && (inside.node.parentNode as HTMLElement).closest('.fold-content')).not.toBeNull();
+  });
+});
