@@ -197,6 +197,10 @@ const el = {
   helpBtn: $<HTMLButtonElement>('help'),
   layoutBtn: $<HTMLButtonElement>('layout'),
   layoutSheet: $('layout-sheet'),
+  uiScale: $<HTMLInputElement>('ui-scale'),
+  uiScaleOut: $<HTMLOutputElement>('ui-scale-out'),
+  readingScale: $<HTMLInputElement>('reading-scale'),
+  readingScaleOut: $<HTMLOutputElement>('reading-scale-out'),
   textW: $<HTMLInputElement>('text-w'),
   textWOut: $<HTMLOutputElement>('text-w-out'),
   marginW: $<HTMLInputElement>('margin-w'),
@@ -367,6 +371,10 @@ interface UiState {
   selectedId: string | null;
   preview: boolean;
   sidebarHidden: boolean;
+  /** Multiplier on everything that is not the note: 1 is the designed size, 1.4 the largest. */
+  uiScale: number;
+  /** Multiplier on the note's own type — the words, their headings, the title. */
+  readingScale: number;
   /** Width of the writing column in px, before the window's own limit. */
   textW: number;
   /** Width of the marginalia column in px. */
@@ -425,8 +433,24 @@ const TEXT_DEFAULT = 960;
 const TEXT_MIN = 520;
 const TEXT_MAX = 1800;
 
+// The interface never goes below its designed size: the scale's smallest step
+// is already the floor the chrome was redrawn to. The note may go smaller,
+// because a long note read on a large monitor is a different task from a menu.
+const UI_SCALE_DEFAULT = 1;
+const UI_SCALE_MIN = 1;
+const UI_SCALE_MAX = 1.4;
+const READING_SCALE_DEFAULT = 1;
+const READING_SCALE_MIN = 0.85;
+const READING_SCALE_MAX = 1.6;
+
 const clamp = (value: unknown, min: number, max: number, fallback: number): number =>
   Math.min(max, Math.max(min, Number(value) || fallback));
+
+/** A multiplier, clamped and kept to two decimals so 1.05 never comes back as 1.0500000000000003. */
+const clampScale = (value: unknown, min: number, max: number, fallback: number): number => Math.round(clamp(value, min, max, fallback) * 100) / 100;
+
+/** How a multiplier reads on its slider: a percentage of the designed size. */
+const percent = (scale: number): string => `${Math.round(scale * 100)} %`;
 
 const UI_KEY = 'notes.ui';
 
@@ -435,6 +459,8 @@ function loadUi(): UiState {
     selectedId: null,
     preview: false,
     sidebarHidden: false,
+    uiScale: UI_SCALE_DEFAULT,
+    readingScale: READING_SCALE_DEFAULT,
     textW: TEXT_DEFAULT,
     marginW: MARGIN_DEFAULT,
     marginHidden: false,
@@ -456,6 +482,8 @@ function loadUi(): UiState {
     const state = raw ? { ...fallback, ...(JSON.parse(raw) as Partial<UiState>) } : fallback;
     state.marginW = clamp(state.marginW, MARGIN_MIN, MARGIN_MAX, MARGIN_DEFAULT);
     state.textW = clamp(state.textW, TEXT_MIN, TEXT_MAX, TEXT_DEFAULT);
+    state.uiScale = clampScale(state.uiScale, UI_SCALE_MIN, UI_SCALE_MAX, UI_SCALE_DEFAULT);
+    state.readingScale = clampScale(state.readingScale, READING_SCALE_MIN, READING_SCALE_MAX, READING_SCALE_DEFAULT);
     state.recent = parseRecent(state.recent);
     state.panes = (Array.isArray(state.panes) ? state.panes : []).map(parsePane).filter((p): p is PaneShape => p !== null);
     state.paneAt = Number.isInteger(state.paneAt) ? Math.max(0, state.paneAt) : 0;
@@ -1909,6 +1937,15 @@ function applySidebar(): void {
 }
 
 function applyLayout(): void {
+  // On <html>, not the app root: the size tokens are defined in :root and a
+  // custom property resolves its var() where it is defined, so a multiplier
+  // set any lower down would never reach them.
+  document.documentElement.style.setProperty('--ui-scale', String(ui.uiScale));
+  document.documentElement.style.setProperty('--reading-scale', String(ui.readingScale));
+  el.uiScale.value = String(ui.uiScale);
+  el.uiScaleOut.value = percent(ui.uiScale);
+  el.readingScale.value = String(ui.readingScale);
+  el.readingScaleOut.value = percent(ui.readingScale);
   el.app.style.setProperty('--text-w', `${ui.textW}px`);
   el.app.style.setProperty('--margin-w', `${ui.marginW}px`);
   el.textW.value = String(ui.textW);
@@ -3598,11 +3635,21 @@ function toggleLayout(force?: boolean): void {
   const open = force ?? el.layoutSheet.hidden;
   el.layoutSheet.hidden = !open;
   if (open) {
-    el.textW.focus();
+    el.uiScale.focus();
     void refreshCliRow();
   } else focusEditor();
 }
 
+el.uiScale.addEventListener('input', () => {
+  ui.uiScale = clampScale(el.uiScale.value, UI_SCALE_MIN, UI_SCALE_MAX, UI_SCALE_DEFAULT);
+  saveUi();
+  applyLayout();
+});
+el.readingScale.addEventListener('input', () => {
+  ui.readingScale = clampScale(el.readingScale.value, READING_SCALE_MIN, READING_SCALE_MAX, READING_SCALE_DEFAULT);
+  saveUi();
+  applyLayout();
+});
 el.textW.addEventListener('input', () => {
   ui.textW = Number(el.textW.value);
   saveUi();
@@ -3789,11 +3836,7 @@ function renderSettings(warnings: Partial<Record<HotkeyRow['key'], string>> = {}
     if (row.recording) {
       row.btn.append('Press a combination…');
     } else if (chord) {
-      for (const part of keyLabel(chord)) {
-        const k = document.createElement('kbd');
-        k.textContent = part;
-        row.btn.append(k);
-      }
+      row.btn.append(chordKeys(chord));
     } else {
       row.btn.append('None');
     }
@@ -6598,15 +6641,14 @@ const ACTIONS: Action[] = [
 
 const CHORDS = keyMap(ACTIONS);
 
-/** One <kbd> per part of a chord. */
-function chordKeys(chord: string): DocumentFragment {
-  const frag = document.createDocumentFragment();
-  for (const part of keyLabel(chord)) {
-    const k = document.createElement('kbd');
-    k.textContent = part;
-    frag.append(k);
-  }
-  return frag;
+/**
+ * One <kbd> for the whole chord — "Ctrl+Shift+K" — the way the pane menus
+ * already print it. A chip per key read as three separate keys to learn.
+ */
+function chordKeys(chord: string): HTMLElement {
+  const k = document.createElement('kbd');
+  k.textContent = keyLabel(chord).join('+');
+  return k;
 }
 
 // --- the pane's controls, written from the registry -------------------------
@@ -7720,6 +7762,14 @@ const cliHandlers: Record<string, CliHandler> = {
     } else if (key === 'textW' || key === 'marginW') {
       if (typeof value !== 'number') throw new CliRefusal(`${key} is a number of pixels`, 2);
       ui[key] = key === 'textW' ? clamp(value, TEXT_MIN, TEXT_MAX, TEXT_DEFAULT) : clamp(value, MARGIN_MIN, MARGIN_MAX, MARGIN_DEFAULT);
+      applyLayout();
+      saveUi();
+    } else if (key === 'uiScale' || key === 'readingScale') {
+      if (typeof value !== 'number') throw new CliRefusal(`${key} is a multiplier, 1 being the designed size`, 2);
+      ui[key] =
+        key === 'uiScale'
+          ? clampScale(value, UI_SCALE_MIN, UI_SCALE_MAX, UI_SCALE_DEFAULT)
+          : clampScale(value, READING_SCALE_MIN, READING_SCALE_MAX, READING_SCALE_DEFAULT);
       applyLayout();
       saveUi();
     } else {

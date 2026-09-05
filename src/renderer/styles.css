@@ -8,24 +8,37 @@
   --raised: #1a2130;
   --hover: #1e2635;
   --selected: #232c3d;
-  --line: #242c3b;
+  --line: #344055;
   --paper: #e8e4dc;
   --paper-dim: #a3a9b6;
-  --paper-faint: #6b7385;
+  --paper-faint: #8791a3;
   --margin: #b9555b;
   --margin-rule: rgba(185, 85, 91, 0.6);
   --blue: #7aa2d6;
   --blue-soft: rgba(122, 162, 214, 0.18);
   --focus: 0 0 0 2px var(--ink), 0 0 0 4px var(--blue);
-  --sidebar-w: 284px;
-  --head-h: 40px;
+  /* Two multipliers the Layout sheet owns: one for everything that is not the
+     note, one for the note. Every chrome size below is a step of a five-step
+     scale times the first; the reading sizes are the second. They are set on
+     <html> because a token defined here resolves its var() here. */
+  --ui-scale: 1;
+  --reading-scale: 1;
+  --ui-xs: calc(12.5px * var(--ui-scale));
+  --ui-sm: calc(13.5px * var(--ui-scale));
+  --ui-md: calc(15px * var(--ui-scale));
+  --ui-lg: calc(17px * var(--ui-scale));
+  --ui-xl: calc(20px * var(--ui-scale));
+  --read: calc(17px * var(--reading-scale));
+  --read-title: calc(27px * var(--reading-scale));
+  --sidebar-w: calc(352px * var(--ui-scale));
+  --head-h: calc(48px * var(--ui-scale));
   --margin-w: 176px;
   /* The writing column, in px. Measured in px on purpose: a `ch` here would be
      the 13px utility font, not the 17px serif the words are actually set in. */
   --text-w: 960px;
   /* Syntax highlighting: one warm and one cool family against the raised
      panel, kept quiet enough that a code block still reads as part of a note. */
-  --code-comment: #6b7385;
+  --code-comment: #8791a3;
   --code-keyword: #d08a90;
   --code-string: #9ec89a;
   --code-number: #d6a06a;
@@ -54,7 +67,7 @@ body {
   overflow: hidden;
   background: var(--ink);
   color: var(--paper);
-  font: 13px/1.45 var(--utility);
+  font: var(--ui-md)/1.45 var(--utility);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -77,7 +90,7 @@ input:focus-visible,
 /* Utility register: small, uppercase, tracked, slightly condensed. */
 .u {
   font-family: var(--utility);
-  font-size: 11px;
+  font-size: var(--ui-xs);
   font-weight: 500;
   font-stretch: 87.5%;
   letter-spacing: 0.07em;
@@ -87,13 +100,13 @@ input:focus-visible,
 
 kbd {
   display: inline-block;
-  font: 500 10.5px/1 var(--utility);
+  font: 500 var(--ui-xs)/1 var(--utility);
   font-stretch: 87.5%;
   letter-spacing: 0.04em;
   color: var(--paper-dim);
   border: 1px solid var(--line);
   border-radius: 3px;
-  padding: 3px 5px 2px;
+  padding: calc(2px * var(--ui-scale)) calc(6px * var(--ui-scale));
   vertical-align: 1px;
 }
 
@@ -152,16 +165,16 @@ kbd {
 
 .search {
   width: 100%;
-  height: 28px;
-  padding: 0 56px 0 10px;
+  height: calc(32px * var(--ui-scale));
+  padding: 0 64px 0 10px;
   color: var(--paper);
   background: var(--raised);
   border: 1px solid transparent;
   border-radius: 5px;
-  font: 13px var(--utility);
+  font: var(--ui-md) var(--utility);
 }
 .search::placeholder {
-  color: var(--paper-faint);
+  color: var(--paper-dim);
 }
 .search:focus {
   border-color: var(--line);
@@ -187,7 +200,7 @@ kbd {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
+  width: calc(32px * var(--ui-scale));
   height: 28px;
   border-radius: 5px;
   color: var(--paper-dim);
@@ -212,24 +225,26 @@ kbd {
   justify-content: space-between;
   gap: 6px;
   width: 100%;
-  padding: 6px 10px 3px;
-  color: var(--paper-faint);
+  /* A section's rhythm: room above it, less below, so the name belongs to
+     what follows it and not to what came before. */
+  padding: calc(16px * var(--ui-scale)) 10px calc(8px * var(--ui-scale));
+  color: var(--paper-dim);
   background: none;
   border: 0;
   text-align: left;
 }
 .rail-name {
-  font-size: 10.5px;
+  font-size: var(--ui-xs);
   letter-spacing: 0.09em;
 }
 .rail-fold {
   cursor: default;
 }
 .rail-fold:hover .rail-name {
-  color: var(--paper-dim);
+  color: var(--paper);
 }
 .rail-chev {
-  font-size: 12px;
+  font-size: var(--ui-sm);
   line-height: 1;
   transition: transform 120ms ease;
 }
@@ -238,13 +253,15 @@ kbd {
 }
 .rail-add {
   flex: none;
-  width: 18px;
-  height: 18px;
+  /* A finger-sized target that does not push the row taller than its name. */
+  width: calc(32px * var(--ui-scale));
+  height: calc(32px * var(--ui-scale));
+  margin: calc(-8px * var(--ui-scale)) 0;
   border: 0;
   border-radius: 4px;
   background: none;
-  color: var(--paper-faint);
-  font: 15px/1 var(--utility);
+  color: var(--paper-dim);
+  font: var(--ui-lg)/1 var(--utility);
   cursor: default;
 }
 .rail-add:hover {
@@ -256,7 +273,7 @@ kbd {
    chips below are properties you add — they should not look like each other. */
 .folder-tree {
   flex: none;
-  max-height: 174px;
+  max-height: calc(232px * var(--ui-scale));
   overflow-y: auto;
   padding: 0 10px 8px;
 }
@@ -265,13 +282,14 @@ kbd {
   align-items: baseline;
   gap: 6px;
   width: 100%;
-  padding: 3px 6px;
+  min-height: calc(32px * var(--ui-scale));
+  padding: 4px 8px;
   border: 0;
   border-left: 2px solid transparent;
   border-radius: 0 4px 4px 0;
   background: none;
   color: var(--paper-dim);
-  font: 13px/1.35 var(--utility);
+  font: var(--ui-md)/1.35 var(--utility);
   text-align: left;
   cursor: default;
 }
@@ -292,17 +310,21 @@ kbd {
 .folder-count {
   flex: none;
   margin-left: auto;
-  color: var(--paper-faint);
-  font-size: 11.5px;
+  color: var(--paper-dim);
+  font-size: var(--ui-sm);
 }
 
 /* Where a note in the list sits, when the chosen scope has folders inside it. */
 .item-where {
   flex: none;
   margin-left: auto;
-  color: var(--paper-faint);
-  font: 11.5px/1 var(--utility);
-  opacity: 0.75;
+  /* Room for three levels, and a long path loses its far end, not its near
+     one: the folder the note is actually in is the part worth keeping. */
+  max-width: calc(128px * var(--ui-scale));
+  direction: rtl;
+  text-align: left;
+  color: var(--paper-dim);
+  font: var(--ui-sm)/1 var(--utility);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -315,8 +337,8 @@ kbd {
   padding: 0;
   border: 0;
   background: none;
-  color: var(--paper-faint);
-  font: 11.5px/1 var(--utility);
+  color: var(--paper-dim);
+  font: var(--ui-sm)/1 var(--utility);
   letter-spacing: 0.02em;
   text-align: left;
   overflow: hidden;
@@ -325,7 +347,7 @@ kbd {
   cursor: default;
 }
 .where:hover {
-  color: var(--paper-dim);
+  color: var(--paper);
 }
 
 .tags {
@@ -362,7 +384,7 @@ kbd {
 .tag-child {
   background: transparent;
   box-shadow: inset 0 0 0 1px var(--line);
-  font-size: 12px;
+  font-size: var(--ui-xs);
 }
 .tag-child[aria-pressed='true'] {
   background: var(--blue-soft);
@@ -379,12 +401,12 @@ kbd {
 .item {
   display: block;
   width: 100%;
-  padding: 10px 10px 11px;
+  padding: calc(12px * var(--ui-scale)) calc(16px * var(--ui-scale));
   margin-bottom: 2px;
   border-radius: 5px;
   /* Room for the rule on the open note, so the words never shift. */
   border-left: 2px solid transparent;
-  padding-left: 8px;
+  padding-left: calc(14px * var(--ui-scale));
   cursor: default;
   user-select: none;
 }
@@ -415,7 +437,7 @@ kbd {
   display: flex;
   align-items: center;
   gap: 6px;
-  font: 600 15px/1.3 var(--serif);
+  font: 600 var(--ui-lg)/1.3 var(--serif);
   color: var(--paper);
   white-space: nowrap;
   overflow: hidden;
@@ -441,7 +463,7 @@ kbd {
   display: flex;
   align-items: baseline;
   gap: 10px;
-  margin-top: 5px;
+  margin-top: calc(4px * var(--ui-scale));
   white-space: nowrap;
   overflow: hidden;
 }
@@ -450,8 +472,8 @@ kbd {
   color: var(--paper-dim);
 }
 .item-snippet {
-  font: 12.5px/1 var(--utility);
-  color: var(--paper-faint);
+  font: var(--ui-sm)/1.2 var(--utility);
+  color: var(--paper-dim);
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -459,8 +481,8 @@ kbd {
 .list-empty {
   padding: 32px 14px;
   text-align: center;
-  color: var(--paper-faint);
-  font: italic 14px/1.6 var(--serif);
+  color: var(--paper-dim);
+  font: italic var(--ui-md)/1.6 var(--serif);
 }
 .list-empty .u {
   display: block;
@@ -481,15 +503,15 @@ kbd {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 32px;
-  padding: 0 16px;
+  min-height: calc(40px * var(--ui-scale));
+  padding: 0 12px;
   border-top: 1px solid var(--line);
-  color: var(--paper-faint);
+  color: var(--paper-dim);
   flex: none;
 }
 
 .link-btn {
-  color: var(--paper-faint);
+  color: var(--paper-dim);
   border-radius: 3px;
   padding: 3px 4px;
 }
@@ -541,7 +563,7 @@ kbd {
   align-items: stretch;
   gap: 2px;
   padding: 0 8px;
-  height: 30px;
+  height: calc(36px * var(--ui-scale));
   flex: none;
   overflow-x: auto;
   scrollbar-width: none;
@@ -576,7 +598,7 @@ kbd {
 .tab-name {
   flex: 1;
   min-width: 0;
-  height: 28px;
+  height: calc(34px * var(--ui-scale));
   padding: 0;
   color: inherit;
   font: inherit;
@@ -628,7 +650,9 @@ kbd {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: var(--head-h);
+  /* A minimum, not a height: scaled-up controls that no longer fit on one
+     line wrap onto a second rather than clip, and the header grows to hold them. */
+  min-height: var(--head-h);
   padding: 0 8px;
   flex: none;
 }
@@ -648,7 +672,7 @@ kbd {
   display: flex;
   align-items: center;
   gap: 10px;
-  color: var(--paper-faint);
+  color: var(--paper-dim);
   white-space: nowrap;
   overflow: hidden;
 }
@@ -664,14 +688,21 @@ kbd {
 
 .pane-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 4px;
 }
 
 .pill {
-  height: 26px;
-  padding: 1px 10px 0;
+  height: calc(30px * var(--ui-scale));
+  padding: 1px 12px 0;
   border-radius: 5px;
   color: var(--paper-dim);
+}
+/* Two registers in one header: the insert buttons stand back in the dim
+   paper, the four menus — the map of every command — speak in the full one. */
+.menu-btn {
+  color: var(--paper);
 }
 .pill:hover {
   background: var(--hover);
@@ -712,8 +743,8 @@ kbd {
 
 .ctl-rule {
   width: 1px;
-  height: 15px;
-  margin: 0 4px;
+  height: calc(18px * var(--ui-scale));
+  margin: 0 8px;
   background: var(--line);
 }
 
@@ -729,7 +760,7 @@ kbd {
   position: static;
 }
 .menu-bar .menu {
-  min-width: 264px;
+  min-width: calc(300px * var(--ui-scale));
 }
 
 .menu-btn[aria-expanded='true'] {
@@ -746,9 +777,9 @@ kbd {
    greyed rather than gone, and the tick gutter is there on every row whether
    or not the row is a toggle. */
 .menu-head {
-  margin: 8px 10px 4px;
-  color: var(--paper-faint);
-  font-size: 10px;
+  margin: 10px 14px 4px;
+  color: var(--paper-dim);
+  font-size: var(--ui-xs);
   letter-spacing: 0.09em;
 }
 .menu-head:first-child {
@@ -757,7 +788,7 @@ kbd {
 
 .menu-tick {
   flex: none;
-  width: 12px;
+  width: 14px;
   color: var(--paper-dim);
   text-align: center;
 }
@@ -776,8 +807,13 @@ kbd {
   margin-left: 10px;
 }
 .menu-item:disabled {
-  opacity: 0.38;
+  /* Greyed, not faded: the faint paper reads as "not now" and still reads. */
+  color: var(--paper-faint);
+  opacity: 1;
   pointer-events: none;
+}
+.menu-item:disabled kbd {
+  color: var(--paper-faint);
 }
 /* An armed Delete keeps its warning under the pointer: the hover rule is
    further down this file and would otherwise paint over it. */
@@ -821,7 +857,7 @@ kbd {
   align-items: flex-end;
   gap: 10px;
   padding: 50px 16px 0 24px;
-  color: var(--paper-faint);
+  color: var(--paper-dim);
   text-align: right;
 }
 .marginalia .edited {
@@ -856,7 +892,7 @@ kbd {
   outline: none;
   background: transparent;
   color: var(--paper);
-  font: 600 27px/1.2 var(--serif-display);
+  font: 600 var(--read-title)/1.2 var(--serif-display);
   letter-spacing: -0.015em;
   caret-color: var(--margin);
 }
@@ -877,7 +913,7 @@ kbd {
   flex: 1;
   min-height: 0;
   padding: 18px 36px 45vh 28px;
-  font: 17px/1.75 var(--serif);
+  font: var(--read)/1.75 var(--serif);
   color: var(--paper);
   overflow-y: auto;
 }
@@ -936,7 +972,7 @@ kbd {
   background: transparent;
   box-shadow: inset 0 0 0 1px var(--line);
   color: var(--paper-dim);
-  font: 12px/1.35 var(--utility);
+  font: var(--ui-sm)/1.35 var(--utility);
   letter-spacing: 0.02em;
 }
 .view:hover {
@@ -995,8 +1031,8 @@ kbd {
 .markdown .embed-name {
   display: block;
   margin-bottom: 6px;
-  color: var(--paper-faint);
-  font: 11px/1.4 var(--utility);
+  color: var(--paper-dim);
+  font: var(--ui-xs)/1.4 var(--utility);
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -1004,7 +1040,7 @@ kbd {
   color: var(--paper-faint);
 }
 .markdown .embed-why {
-  font: 13px/1.5 var(--utility);
+  font: var(--ui-sm)/1.5 var(--utility);
 }
 
 /* The same thing while it is being written: a chip, marked as an embed. */
@@ -1037,8 +1073,8 @@ kbd {
   background: var(--raised);
   color: var(--paper-dim);
   /* A note title, set as one: the label beside it carries the utility register. */
-  font: 12.5px/1.1 var(--serif);
-  max-width: 220px;
+  font: var(--ui-sm)/1.1 var(--serif);
+  max-width: calc(240px * var(--ui-scale));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1164,7 +1200,7 @@ kbd {
 }
 .empty-title {
   margin: 0;
-  font: italic 22px/1.3 var(--serif);
+  font: italic calc(22px * var(--ui-scale))/1.3 var(--serif);
   color: var(--paper-dim);
 }
 .empty-hint {
@@ -1410,7 +1446,7 @@ kbd {
   border-bottom: 1px solid var(--line);
 }
 .markdown th {
-  font: 500 11px/1 var(--utility);
+  font: 500 var(--ui-xs)/1 var(--utility);
   font-stretch: 87.5%;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -1424,7 +1460,7 @@ kbd {
   gap: 6px;
 }
 .layout-card {
-  width: 360px;
+  width: min(calc(560px * var(--ui-scale)), calc(100vw - 48px));
 }
 .layout-row {
   display: flex;
@@ -1434,14 +1470,14 @@ kbd {
   color: var(--paper-dim);
 }
 .layout-row > span:first-child {
-  flex: 0 0 96px;
+  flex: 0 0 calc(128px * var(--ui-scale));
 }
 .layout-row input[type='range'] {
   flex: 1;
   accent-color: var(--blue);
 }
 .layout-row output {
-  flex: 0 0 56px;
+  flex: 0 0 calc(64px * var(--ui-scale));
   text-align: right;
   color: var(--paper);
   font-variant-numeric: tabular-nums;
@@ -1456,7 +1492,7 @@ kbd {
   align-self: flex-start;
 }
 .layout-name {
-  flex: 0 0 108px;
+  flex: 0 0 calc(136px * var(--ui-scale));
   color: var(--paper-dim);
 }
 .layout-check .layout-text {
@@ -1471,11 +1507,11 @@ kbd {
 }
 .layout-head {
   margin: 22px 0 2px;
-  font: 500 11px/1 var(--utility);
+  font: 500 var(--ui-xs)/1 var(--utility);
   font-stretch: 87.5%;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--paper-faint);
+  color: var(--paper-dim);
 }
 .layout-note {
   margin: -6px 0 0;
@@ -1490,12 +1526,12 @@ kbd {
   gap: 4px;
   flex: 1;
   padding: 5px 10px;
-  min-height: 28px;
+  min-height: calc(32px * var(--ui-scale));
   border: 1px solid var(--line);
   border-radius: 5px;
   background: var(--ink-deep);
   color: var(--paper-dim);
-  font: 12px/1 var(--utility);
+  font: var(--ui-sm)/1 var(--utility);
 }
 .hotkey-btn:hover {
   border-color: var(--paper-faint);
@@ -1518,8 +1554,8 @@ kbd {
 }
 
 .sheet-card {
-  width: min(480px, calc(100vw - 40px));
-  max-height: calc(100vh - 40px);
+  width: min(calc(680px * var(--ui-scale)), calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
   overflow-y: auto;
   padding: 24px 28px 20px;
   background: var(--raised);
@@ -1530,14 +1566,14 @@ kbd {
 }
 .sheet-card h2 {
   margin: 0 0 18px;
-  font: 600 20px/1.2 var(--serif-display);
+  font: 600 var(--ui-xl)/1.2 var(--serif-display);
   letter-spacing: -0.01em;
 }
 
 .keys {
   display: grid;
   /* One width for every group's key column, so the sheet lines up top to bottom. */
-  grid-template-columns: 150px 1fr;
+  grid-template-columns: calc(190px * var(--ui-scale)) 1fr;
   gap: 12px 16px;
   margin: 0;
   align-items: baseline;
@@ -1551,7 +1587,7 @@ kbd {
 .keys dd {
   margin: 0;
   color: var(--paper);
-  font-size: 13px;
+  font-size: var(--ui-md);
   line-height: 1.4;
 }
 .key-name {
@@ -1560,8 +1596,8 @@ kbd {
 .key-hint {
   display: block;
   margin-top: 2px;
-  color: var(--paper-faint);
-  font-size: 12px;
+  color: var(--paper-dim);
+  font-size: var(--ui-sm);
   line-height: 1.4;
 }
 
@@ -1576,11 +1612,11 @@ kbd {
 
 .keys-head {
   margin: 20px 0 10px;
-  font: 500 11px/1 var(--utility);
+  font: 500 var(--ui-xs)/1 var(--utility);
   font-stretch: 87.5%;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--paper-faint);
+  color: var(--paper-dim);
 }
 #key-groups > .keys-head:first-child {
   margin-top: 0;
@@ -1590,17 +1626,17 @@ kbd {
 .sheet-foot {
   margin: 20px 0 0;
   text-align: center;
-  color: var(--paper-faint);
+  color: var(--paper-dim);
   text-transform: none;
   letter-spacing: 0.02em;
-  font-size: 11.5px;
+  font-size: var(--ui-sm);
   line-height: 1.7;
 }
 
 /* --- note history ------------------------------------------------------- */
 
 .history-card {
-  width: min(760px, calc(100vw - 40px));
+  width: min(calc(760px * var(--ui-scale)), calc(100vw - 48px));
 }
 .history-body {
   display: flex;
@@ -1608,14 +1644,14 @@ kbd {
   height: min(420px, 52vh);
 }
 .history-list {
-  flex: 0 0 240px;
+  flex: 0 0 calc(272px * var(--ui-scale));
   overflow-y: auto;
   padding-right: 4px;
 }
 .history-row {
   display: block;
   width: 100%;
-  padding: 7px 9px;
+  padding: 8px 10px;
   border-radius: 5px;
   text-align: left;
 }
@@ -1641,7 +1677,7 @@ kbd {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--paper);
-  font: 13px/1.3 var(--serif);
+  font: var(--ui-sm)/1.3 var(--serif);
 }
 .history-restore {
   background: var(--blue-soft);
@@ -1666,7 +1702,7 @@ kbd {
   border: 1px solid var(--line);
   border-radius: 6px;
   color: var(--paper-dim);
-  font: 12px/1.6 var(--mono);
+  font: var(--ui-sm)/1.6 var(--mono);
   white-space: pre-wrap;
   overflow-wrap: break-word;
 }
@@ -1689,7 +1725,7 @@ kbd {
 .palette-card {
   display: flex;
   flex-direction: column;
-  width: min(520px, calc(100vw - 40px));
+  width: min(calc(600px * var(--ui-scale)), calc(100vw - 48px));
   max-height: 62vh;
   background: var(--raised);
   border: 1px solid var(--line);
@@ -1704,11 +1740,11 @@ kbd {
   border-bottom: 1px solid var(--line);
   background: transparent;
   color: var(--paper);
-  font: 15px/1.2 var(--utility);
+  font: var(--ui-md)/1.2 var(--utility);
   outline: none;
 }
 .palette-input::placeholder {
-  color: var(--paper-faint);
+  color: var(--paper-dim);
 }
 .palette-input:focus-visible {
   box-shadow: none;
@@ -1725,19 +1761,22 @@ kbd {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 12px;
+  padding: calc(10px * var(--ui-scale)) calc(14px * var(--ui-scale));
   border-radius: 5px;
+  line-height: 1.2;
   cursor: pointer;
 }
 .palette-row.at {
   background: var(--selected);
 }
+/* Inline, not a flex row: the matched letters are their own <b> elements, and
+   a flex gap between them spaced the word out letter by letter. */
 .palette-name {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--paper);
 }
 .palette-name b {
@@ -1746,16 +1785,18 @@ kbd {
 }
 /* A lit dot marks a toggle that is currently on. */
 .palette-on {
+  display: inline-block;
   width: 6px;
   height: 6px;
+  margin-left: 8px;
   border-radius: 50%;
   background: var(--blue);
-  flex: 0 0 auto;
+  vertical-align: middle;
 }
 .palette-group {
   flex: 0 0 auto;
-  font-size: 11px;
-  color: var(--paper-faint);
+  font-size: var(--ui-xs);
+  color: var(--paper-dim);
 }
 .palette-hint {
   flex: 0 1 auto;
@@ -1763,8 +1804,8 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--paper-faint);
-  font-size: 12px;
+  color: var(--paper-dim);
+  font-size: var(--ui-sm);
 }
 .palette-keys {
   display: flex;
@@ -1825,7 +1866,7 @@ kbd {
    the pane's menus, where several groups share one panel. */
 .menu-rule {
   height: 1px;
-  margin: 5px 8px;
+  margin: 6px 10px;
   background: var(--line);
 }
 
@@ -1835,9 +1876,9 @@ kbd {
   justify-content: space-between;
   gap: 18px;
   width: 100%;
-  padding: 8px 10px;
+  padding: calc(10px * var(--ui-scale)) calc(14px * var(--ui-scale));
   border-radius: 4px;
-  font: 13px/1 var(--utility);
+  font: var(--ui-md)/1.2 var(--utility);
   color: var(--paper);
   text-align: left;
 }
@@ -1847,7 +1888,7 @@ kbd {
   box-shadow: none;
 }
 .menu-ext {
-  color: var(--paper-faint);
+  color: var(--paper-dim);
 }
 
 /* --- drop target -------------------------------------------------------- */
@@ -2008,7 +2049,7 @@ body.capture {
   border-radius: 4px;
   background: var(--ink-deep);
   color: var(--paper);
-  font: 13px var(--utility);
+  font: var(--ui-md) var(--utility);
   outline: none;
 }
 .find-input:focus {
@@ -2091,22 +2132,22 @@ body.capture {
    and every one of them is still in a menu — so a pane can get narrow but a
    command can never get out of reach. The menus themselves go last, and only
    into a single Commands button holding all four groups. */
-@container pane (max-width: 640px) {
+@container pane (max-width: 800px) {
   .ctl-pill:nth-last-of-type(1) {
     display: none;
   }
 }
-@container pane (max-width: 580px) {
+@container pane (max-width: 720px) {
   .ctl-pill:nth-last-of-type(2) {
     display: none;
   }
 }
-@container pane (max-width: 520px) {
+@container pane (max-width: 640px) {
   .ctl-pill:nth-last-of-type(3) {
     display: none;
   }
 }
-@container pane (max-width: 460px) {
+@container pane (max-width: 560px) {
   .ctl-pill,
   .ctl-rule {
     display: none;
@@ -2134,15 +2175,15 @@ body.capture {
 .outline-label {
   display: block;
   margin: 0 0 10px 8px;
-  color: var(--paper-faint);
+  color: var(--paper-dim);
 }
 .outline-item {
   display: block;
   width: 100%;
-  padding: 4px 8px 5px;
+  padding: 5px 8px 6px;
   border-radius: 4px;
   color: var(--paper-dim);
-  font: 12.5px/1.35 var(--utility);
+  font: var(--ui-sm)/1.35 var(--utility);
   text-align: left;
   white-space: nowrap;
   overflow: hidden;
@@ -2169,7 +2210,6 @@ body.capture {
 .outline-item.l5,
 .outline-item.l6 {
   padding-left: 38px;
-  font-size: 12px;
 }
 @media (max-width: 1000px) {
   .outline {
@@ -2280,7 +2320,7 @@ body.capture {
 .layout-text {
   flex: 1;
   color: var(--paper-faint);
-  font-size: 12px;
+  font-size: var(--ui-sm);
   line-height: 1.35;
 }
 .layout-row .pill {
@@ -2301,11 +2341,11 @@ body.capture {
   flex: none;
   margin: 0;
   padding: 2px 12px 8px;
-  color: var(--paper-faint);
+  color: var(--paper-dim);
   line-height: 1.6;
   text-transform: none;
   letter-spacing: 0.02em;
-  font-size: 11px;
+  font-size: var(--ui-xs);
   border-bottom: 1px solid var(--line);
 }
 .search-ops b {
@@ -2352,7 +2392,7 @@ body.capture {
 /* An undrawn diagram is its source in a panel, the moment before mermaid replaces it. */
 .markdown pre.mermaid {
   color: var(--paper-faint);
-  font-size: 12px;
+  font-size: var(--ui-sm);
 }
 .markdown .diagram {
   margin: 0 0 1em;
@@ -2376,13 +2416,13 @@ body.capture {
   background: transparent;
   padding: 0;
   color: var(--paper-faint);
-  font-size: 12px;
+  font-size: var(--ui-sm);
 }
 
 /* --- 0.13: scheduled tasks sheet ---------------------------------------- */
 
 .due-card {
-  width: min(680px, calc(100vw - 40px));
+  width: min(calc(720px * var(--ui-scale)), calc(100vw - 48px));
 }
 .due-list {
   max-height: min(480px, 60vh);
@@ -2391,11 +2431,11 @@ body.capture {
 }
 .due-group {
   margin: 14px 8px 6px;
-  font: 500 11px/1 var(--utility);
+  font: 500 var(--ui-xs)/1 var(--utility);
   font-stretch: 87.5%;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--paper-faint);
+  color: var(--paper-dim);
 }
 .due-list > .due-group:first-child {
   margin-top: 0;
@@ -2421,7 +2461,7 @@ body.capture {
   accent-color: var(--blue);
 }
 .due-text {
-  font: 15px/1.35 var(--serif);
+  font: var(--ui-md)/1.35 var(--serif);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2432,9 +2472,9 @@ body.capture {
   color: var(--paper-faint);
 }
 .due-note {
-  color: var(--paper-faint);
+  color: var(--paper-dim);
   margin-left: 8px;
-  font: 12px/1 var(--utility);
+  font: var(--ui-sm)/1 var(--utility);
 }
 .due-when {
   color: var(--paper-dim);
@@ -2446,8 +2486,8 @@ body.capture {
 .due-empty {
   padding: 28px 8px;
   text-align: center;
-  color: var(--paper-faint);
-  font: italic 14px/1.6 var(--serif);
+  color: var(--paper-dim);
+  font: italic var(--ui-md)/1.6 var(--serif);
 }
 
 /* --- 0.13: graph sheet -------------------------------------------------- */
@@ -2547,12 +2587,12 @@ html.export.paper .markdown img {
 
 .confirm-card,
 .prompt-card {
-  width: min(520px, calc(100vw - 40px));
+  width: min(calc(560px * var(--ui-scale)), calc(100vw - 48px));
 }
 /* The sentence is the whole point of the sheet: the note's own face, one size up. */
 .confirm-text {
   margin: 0 0 14px;
-  font: 400 17px/1.45 var(--serif);
+  font: 400 var(--ui-lg)/1.45 var(--serif);
   color: var(--paper);
 }
 .confirm-count {
@@ -2585,13 +2625,13 @@ html.export.paper .markdown img {
 }
 .confirm-changes {
   flex: 0 0 auto;
-  color: var(--paper-faint);
+  color: var(--paper-dim);
 }
 
 .prompt-label {
   display: block;
   margin: 0 0 10px;
-  font: 400 15px/1.4 var(--serif);
+  font: 400 var(--ui-md)/1.4 var(--serif);
   color: var(--paper);
 }
 .prompt-input {
@@ -2601,7 +2641,7 @@ html.export.paper .markdown img {
   border-radius: 5px;
   background: var(--ink);
   color: var(--paper);
-  font: 400 15px/1.4 var(--serif);
+  font: 400 var(--ui-md)/1.4 var(--serif);
   outline: none;
 }
 .prompt-input:focus-visible {
@@ -2612,7 +2652,9 @@ html.export.paper .markdown img {
 /* A picker row that is shown for what it says but cannot be chosen. */
 .palette-row.disabled {
   cursor: default;
-  opacity: 0.45;
+}
+.palette-row.disabled .palette-name {
+  color: var(--paper-faint);
 }
 
 /* --- properties -------------------------------------------------------- */
@@ -2624,21 +2666,21 @@ html.export.paper .markdown img {
 }
 
 .props-card {
-  width: min(680px, 92vw);
+  width: min(calc(720px * var(--ui-scale)), calc(100vw - 48px));
   max-height: 78vh;
   overflow-y: auto;
 }
 
 .props-note {
   margin: -6px 0 18px;
-  color: var(--paper-faint);
+  color: var(--paper-dim);
 }
 
 .props-head {
   margin: 18px 0 8px;
-  font-size: 11px;
+  font-size: var(--ui-xs);
   letter-spacing: 0.08em;
-  color: var(--paper-faint);
+  color: var(--paper-dim);
   font-weight: 500;
 }
 
@@ -2649,7 +2691,7 @@ html.export.paper .markdown img {
 .props-field,
 .props-row {
   display: grid;
-  grid-template-columns: 132px minmax(0, 1fr) auto;
+  grid-template-columns: calc(150px * var(--ui-scale)) minmax(0, 1fr) auto;
   gap: 12px;
   align-items: baseline;
   padding: 6px 0;
@@ -2660,15 +2702,15 @@ html.export.paper .markdown img {
   flex-direction: column;
   gap: 1px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--ui-sm);
   color: var(--paper-dim);
   overflow-wrap: anywhere;
 }
 
 .props-value-read,
 .props-how {
-  color: var(--paper-faint);
-  font-size: 12px;
+  color: var(--paper-dim);
+  font-size: var(--ui-sm);
 }
 
 .props-how {
@@ -2679,7 +2721,7 @@ html.export.paper .markdown img {
 .props-value {
   width: 100%;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--ui-md);
   color: var(--paper);
   background: transparent;
   border: 1px solid var(--line);
@@ -2703,9 +2745,9 @@ html.export.paper .markdown img {
 .props-start {
   background: none;
   border: none;
-  color: var(--paper-faint);
+  color: var(--paper-dim);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-xs);
   letter-spacing: 0.06em;
   cursor: pointer;
   padding: 2px 0;
@@ -2723,8 +2765,8 @@ html.export.paper .markdown img {
 
 .props-dup {
   font-family: var(--utility);
-  font-size: 10px;
-  color: var(--paper-faint);
+  font-size: var(--ui-xs);
+  color: var(--paper-dim);
 }
 
 .props-complex {
@@ -2734,26 +2776,26 @@ html.export.paper .markdown img {
 }
 
 .props-type {
-  font-size: 11px;
-  color: var(--paper-faint);
+  font-size: var(--ui-xs);
+  color: var(--paper-dim);
 }
 
 .props-yaml {
   margin: 0;
   font-family: var(--mono);
-  font-size: 11px;
-  color: var(--paper-faint);
+  font-size: var(--ui-sm);
+  color: var(--paper-dim);
   white-space: pre-wrap;
 }
 
 .props-empty {
-  color: var(--paper-faint);
+  color: var(--paper-dim);
   margin: 4px 0;
 }
 
 .props-add {
   display: grid;
-  grid-template-columns: 132px minmax(0, 1fr);
+  grid-template-columns: calc(150px * var(--ui-scale)) minmax(0, 1fr);
   gap: 12px;
   margin-top: 12px;
   padding-top: 12px;
@@ -2773,7 +2815,7 @@ html.export.paper .markdown img {
   background: none;
   border: none;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ui-sm);
   color: var(--paper);
   text-align: left;
   padding: 4px 6px;
@@ -2788,14 +2830,14 @@ html.export.paper .markdown img {
 }
 
 .props-count {
-  color: var(--paper-faint);
-  font-size: 11px;
+  color: var(--paper-dim);
+  font-size: var(--ui-xs);
 }
 
 /* --- the notebook's property vocabulary --------------------------------- */
 
 .vocab-card {
-  width: min(620px, 92vw);
+  width: min(calc(660px * var(--ui-scale)), calc(100vw - 48px));
 }
 
 .vocab-list {
@@ -2820,7 +2862,7 @@ html.export.paper .markdown img {
   background: none;
   border: none;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--ui-sm);
   color: var(--paper);
   text-align: left;
   padding: 0;
@@ -2834,16 +2876,16 @@ html.export.paper .markdown img {
 }
 
 .vocab-count {
-  color: var(--paper-faint);
-  font-size: 11px;
+  color: var(--paper-dim);
+  font-size: var(--ui-xs);
 }
 
 .vocab-more {
   background: none;
   border: none;
-  color: var(--paper-faint);
+  color: var(--paper-dim);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-xs);
   letter-spacing: 0.06em;
   cursor: pointer;
   padding: 0;
@@ -2864,7 +2906,7 @@ html.export.paper .markdown img {
 
 .vocab-filter {
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ui-sm);
   color: var(--paper);
   background: transparent;
   border: 1px solid var(--line);
@@ -2885,7 +2927,7 @@ html.export.paper .markdown img {
   background: none;
   border: none;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ui-sm);
   color: var(--paper);
   text-align: left;
   padding: 3px 6px;
@@ -2901,7 +2943,7 @@ html.export.paper .markdown img {
 
 .layout-input {
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ui-sm);
   font-family: var(--mono);
   color: var(--paper);
   background: transparent;
@@ -2922,7 +2964,7 @@ html.export.paper .markdown img {
    raised it, and set a little smaller than the page it is over. */
 .peek {
   z-index: 60;
-  width: clamp(320px, 34vw, 440px);
+  width: clamp(calc(340px * var(--ui-scale)), 36vw, calc(480px * var(--ui-scale)));
   max-height: min(520px, 60vh);
   overflow-y: auto;
   padding: 12px 14px;
@@ -2930,7 +2972,7 @@ html.export.paper .markdown img {
   border: 1px solid var(--line);
   border-radius: 6px;
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
-  font-size: 15px;
+  font-size: var(--ui-md);
   color: var(--paper);
 }
 
@@ -2946,9 +2988,9 @@ html.export.paper .markdown img {
 
 .peek-name {
   margin: 0 0 8px;
-  font-size: 11px;
+  font-size: var(--ui-xs);
   letter-spacing: 0.06em;
-  color: var(--paper-faint);
+  color: var(--paper-dim);
 }
 
 .peek-body {
@@ -2967,13 +3009,13 @@ html.export.paper .markdown img {
 .peek-body h1,
 .peek-body h2,
 .peek-body h3 {
-  font-size: 16px;
+  font-size: var(--ui-lg);
   margin: 12px 0 6px;
 }
 
 .peek-body pre {
   overflow-x: auto;
-  font-size: 12px;
+  font-size: var(--ui-sm);
 }
 
 .peek-body img {
@@ -2988,8 +3030,8 @@ html.export.paper .markdown img {
 .peek-why,
 .peek-more {
   margin: 0;
-  color: var(--paper-faint);
-  font-size: 12px;
+  color: var(--paper-dim);
+  font-size: var(--ui-sm);
 }
 
 .peek-more {
@@ -3027,21 +3069,21 @@ html.export.paper .markdown img {
 }
 
 .peek-candidate-where {
-  font-size: 11px;
-  color: var(--paper-faint);
+  font-size: var(--ui-xs);
+  color: var(--paper-dim);
 }
 
 .peek-candidate-lines {
   grid-column: 1 / -1;
-  font-size: 12px;
+  font-size: var(--ui-sm);
   color: var(--paper-dim);
 }
 
 /* The slash menu: anchored to the caret, and the editor keeps the focus. */
 .slash {
   z-index: 60;
-  width: 300px;
-  max-height: 280px;
+  width: calc(340px * var(--ui-scale));
+  max-height: calc(320px * var(--ui-scale));
   overflow-y: auto;
   padding: 4px;
   background: var(--raised);
@@ -3055,7 +3097,7 @@ html.export.paper .markdown img {
   justify-content: space-between;
   align-items: baseline;
   gap: 12px;
-  padding: 5px 8px;
+  padding: 8px 10px;
   border-radius: 4px;
   cursor: pointer;
 }
@@ -3065,7 +3107,7 @@ html.export.paper .markdown img {
 }
 
 .slash-label {
-  font-size: 13px;
+  font-size: var(--ui-md);
   color: var(--paper);
 }
 
@@ -3078,19 +3120,19 @@ html.export.paper .markdown img {
 .slash-empty {
   margin: 0;
   padding: 6px 8px;
-  font-size: 11px;
+  font-size: var(--ui-xs);
   letter-spacing: 0.06em;
-  color: var(--paper-faint);
+  color: var(--paper-dim);
 }
 
 /* Workspaces. */
 .ws-card {
-  width: min(560px, 92vw);
+  width: min(calc(600px * var(--ui-scale)), calc(100vw - 48px));
 }
 
 .ws-note {
   margin: -6px 0 16px;
-  color: var(--paper-faint);
+  color: var(--paper-dim);
 }
 
 .ws-list {
@@ -3115,7 +3157,7 @@ html.export.paper .markdown img {
   background: none;
   border: none;
   font: inherit;
-  font-size: 14px;
+  font-size: var(--ui-md);
   color: var(--paper);
   text-align: left;
   padding: 0;
@@ -3130,8 +3172,8 @@ html.export.paper .markdown img {
 
 .ws-what {
   grid-column: 1;
-  font-size: 11px;
-  color: var(--paper-faint);
+  font-size: var(--ui-sm);
+  color: var(--paper-dim);
 }
 
 .ws-actions {
@@ -3146,9 +3188,9 @@ html.export.paper .markdown img {
 .ws-update {
   background: none;
   border: none;
-  color: var(--paper-faint);
+  color: var(--paper-dim);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-xs);
   letter-spacing: 0.06em;
   cursor: pointer;
   padding: 0;

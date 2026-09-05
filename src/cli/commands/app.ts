@@ -128,7 +128,7 @@ export function register(program: Command, use: () => Ctx): void {
   const ui = program.command('ui').description('the window layout and view toggles (the window keeps these, so it must be running)');
   ui.command('get', { isDefault: true })
     .description('every toggle, or one')
-    .argument('[key]', 'preview, liveFormat, outline, focusMode, typewriter, sidebarHidden, marginHidden, textW, marginW')
+    .argument('[key]', 'preview, liveFormat, outline, focusMode, typewriter, sidebarHidden, marginHidden, textW, marginW, uiScale, readingScale')
     .action(async (key: string | undefined) => {
       const c = ctx();
       const state = await (await c.backend(true)).uiGet();
@@ -141,8 +141,8 @@ export function register(program: Command, use: () => Ctx): void {
     });
   ui.command('set')
     .description('change one toggle or width')
-    .argument('<key>', 'preview, liveFormat, outline, focusMode, typewriter, sidebarHidden, marginHidden, textW, marginW')
-    .argument('<value>', 'on/off, or a number of pixels')
+    .argument('<key>', 'preview, liveFormat, outline, focusMode, typewriter, sidebarHidden, marginHidden, textW, marginW, uiScale, readingScale')
+    .argument('<value>', 'on/off, a number of pixels, or a size multiplier (1 is the designed size)')
     .action(async (key: string, value: string) => {
       const c = ctx();
       const state = await (await c.backend(true)).uiSet(key, parseUiValue(value));
